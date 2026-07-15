@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Brand palette from Booxin mark -->
+    <color name="booxin_cyan">#FF2EC8F0</color>
+    <color name="booxin_blue">#FF2F6BFF</color>
+    <color name="booxin_cobalt">#FF2740C8</color>
+    <color name="booxin_orange">#FFFF8A2B</color>
+    <color name="booxin_gold">#FFFFC14A</color>
+    <color name="booxin_navy">#FF0B1B3A</color>
+    <color name="booxin_navy_soft">#FF15284F</color>
+
+    <color name="md_theme_light_primary">#FF2F6BFF</color>
+    <color name="md_theme_light_onPrimary">#FFFFFFFF</color>
+    <color name="md_theme_light_primaryContainer">#FFD9E2FF</color>
+    <color name="md_theme_light_onPrimaryContainer">#FF001A41</color>
+    <color name="md_theme_light_secondary">#FFFF8A2B</color>
+    <color name="md_theme_light_onSecondary">#FFFFFFFF</color>
+    <color name="md_theme_light_secondaryContainer">#FFFFDBC7</color>
+    <color name="md_theme_light_onSecondaryContainer">#FF2E1500</color>
+    <color name="md_theme_light_tertiary">#FF2EC8F0</color>
+    <color name="md_theme_light_background">#FFF5F7FC</color>
+    <color name="md_theme_light_onBackground">#FF0B1B3A</color>
+    <color name="md_theme_light_surface">#FFFFFFFF</color>
+    <color name="md_theme_light_onSurface">#FF0B1B3A</color>
+    <color name="md_theme_light_surfaceVariant">#FFE8ECF5</color>
+    <color name="md_theme_light_outline">#FF747A88</color>
+
+    <color name="ic_launcher_background">#FFFFFFFF</color>
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+</resources>

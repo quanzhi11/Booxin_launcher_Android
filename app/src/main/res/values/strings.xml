@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Booxin Launcher</string>
+    <string name="brand_name">booxin</string>
+    <string name="tagline">我的世界手机启动器</string>
+
+    <string name="nav_home">主页</string>
+    <string name="nav_versions">版本</string>
+    <string name="nav_accounts">账号</string>
+    <string name="nav_settings">设置</string>
+
+    <string name="home_welcome">欢迎使用 Booxin</string>
+    <string name="home_selected_version">当前版本</string>
+    <string name="home_no_version">尚未选择版本</string>
+    <string name="home_launch">启动游戏</string>
+    <string name="home_install">安装 / 下载</string>
+    <string name="home_status_ready">准备就绪</string>
+    <string name="home_status_placeholder">框架阶段：启动逻辑稍后接入</string>
+
+    <string name="versions_title">游戏版本</string>
+    <string name="versions_subtitle">管理已安装与可下载的版本</string>
+    <string name="versions_empty">暂无版本数据</string>
+    <string name="versions_refresh">刷新列表</string>
+
+    <string name="accounts_title">账号</string>
+    <string name="accounts_subtitle">Microsoft / 离线账号</string>
+    <string name="accounts_add">添加账号</string>
+    <string name="accounts_empty">尚未登录账号</string>
+    <string name="accounts_offline">离线账号</string>
+    <string name="accounts_microsoft">Microsoft 账号</string>
+
+    <string name="settings_title">设置</string>
+    <string name="settings_game_dir">游戏目录</string>
+    <string name="settings_download_source">下载源</string>
+    <string name="settings_memory">内存分配</string>
+    <string name="settings_renderer">渲染器</string>
+    <string name="settings_about">关于 Booxin</string>
+    <string name="settings_version">版本 %1$s</string>
+
+    <string name="action_coming_soon">功能开发中，敬请期待</string>
+</resources>
