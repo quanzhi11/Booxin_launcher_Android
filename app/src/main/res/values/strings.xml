@@ -34,6 +34,11 @@
     <string name="settings_download_source">下载源</string>
     <string name="settings_memory">内存分配</string>
     <string name="settings_renderer">渲染器</string>
+    <string name="settings_java_env">Java 环境</string>
+    <string name="settings_java_download_17">下载 Java 17</string>
+    <string name="settings_java_downloading">正在处理 Java 环境…</string>
+    <string name="settings_java_done">Java 环境已就绪</string>
+    <string name="settings_java_failed">Java 安装失败：%1$s</string>
     <string name="settings_about">关于 Booxin</string>
     <string name="settings_version">版本 %1$s</string>
 
