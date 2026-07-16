@@ -14,7 +14,8 @@ import java.util.zip.ZipInputStream
 import kotlin.coroutines.coroutineContext
 
 /**
- * Extracts JRE archives used by Android OpenJDK packages (.tar.xz / .zip).
+ * Extracts JRE archives used by Android OpenJDK packages (.tar.xz / .zip),
+ * including FCL/Pojav split packages (`universal` + `bin-{abi}`).
  */
 object ArchiveExtractor {
 
@@ -36,7 +37,49 @@ object ArchiveExtractor {
         flattenSingleRootIfNeeded(destinationDir)
     }
 
-    private suspend fun extractTarXz(archive: File, destinationDir: File) {
+    /**
+     * Install FCL-style split JRE zip into [destinationDir].
+     * Expected zip entries: version, universal.tar.xz, bin-{abi}.tar.xz
+     */
+    suspend fun installPojavSplit(
+        zipArchive: File,
+        destinationDir: File,
+        abi: JavaAbi
+    ) = withContext(Dispatchers.IO) {
+        if (!zipArchive.exists()) throw IOException("压缩包不存在: ${zipArchive.absolutePath}")
+        val workDir = File(zipArchive.parentFile, "${zipArchive.nameWithoutExtension}-unpack")
+        if (workDir.exists()) workDir.deleteRecursively()
+        workDir.mkdirs()
+        try {
+            extractZip(zipArchive, workDir)
+            val universal = File(workDir, "universal.tar.xz")
+            val archFile = File(workDir, "bin-${abi.packageToken}.tar.xz")
+            if (!universal.exists()) throw IOException("分包缺少 universal.tar.xz")
+            if (!archFile.exists()) {
+                throw IOException("当前 ABI(${abi.packageToken}) 缺少 ${archFile.name}")
+            }
+            if (destinationDir.exists()) destinationDir.deleteRecursively()
+            destinationDir.mkdirs()
+            extractTarXz(universal, destinationDir, wipeDestination = false)
+            extractTarXz(archFile, destinationDir, wipeDestination = false)
+            val versionFile = File(workDir, "version")
+            if (versionFile.exists()) {
+                versionFile.copyTo(File(destinationDir, "version"), overwrite = true)
+            }
+        } finally {
+            workDir.deleteRecursively()
+        }
+    }
+
+    private suspend fun extractTarXz(
+        archive: File,
+        destinationDir: File,
+        wipeDestination: Boolean = true
+    ) {
+        if (wipeDestination) {
+            if (destinationDir.exists()) destinationDir.deleteRecursively()
+            destinationDir.mkdirs()
+        }
         FileInputStream(archive).use { fis ->
             BufferedInputStream(fis).use { bis ->
                 XZCompressorInputStream(bis).use { xz ->

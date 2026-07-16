@@ -10,8 +10,18 @@ data class JavaRuntimePackage(
     val abi: JavaAbi,
     val downloadUrl: String,
     val fileName: String,
-    val sha256: String? = null
+    val sha256: String? = null,
+    val packageKind: JavaPackageKind = JavaPackageKind.WHOLE_ARCHIVE,
+    val fallbackUrl: String? = null
 )
+
+enum class JavaPackageKind {
+    /** Single jreN-{abi}-*.tar.xz (or zip) that already contains a full JRE tree. */
+    WHOLE_ARCHIVE,
+
+    /** FCL/Pojav split zip: universal.tar.xz + bin-{abi}.tar.xz (+ version). */
+    POJAV_SPLIT_ZIP
+}
 
 enum class JavaInstallState {
     NOT_INSTALLED,

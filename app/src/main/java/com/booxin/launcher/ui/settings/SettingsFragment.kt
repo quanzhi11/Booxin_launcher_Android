@@ -14,8 +14,11 @@ import com.booxin.launcher.AppContainer
 import com.booxin.launcher.BuildConfig
 import com.booxin.launcher.R
 import com.booxin.launcher.core.LauncherPaths
+import com.booxin.launcher.core.download.DownloadProviders
+import com.booxin.launcher.core.download.DownloadSource
 import com.booxin.launcher.core.java.JavaInstallState
 import com.booxin.launcher.databinding.FragmentSettingsBinding
+import com.google.android.material.button.MaterialButton
 import kotlinx.coroutines.launch
 
 class SettingsFragment : Fragment() {
@@ -36,19 +39,71 @@ class SettingsFragment : Fragment() {
         super.onViewCreated(view, savedInstanceState)
         binding.textGameDir.text = LauncherPaths.rootDir.absolutePath
         binding.textAbout.text = getString(R.string.settings_version, BuildConfig.VERSION_NAME)
+        refreshDownloadSource()
         refreshJavaStatus()
 
-        binding.buttonDownloadJava17.setOnClickListener {
+        binding.buttonDownloadSource.setOnClickListener {
+            val values = DownloadSource.entries
+            val next = values[(DownloadProviders.source.ordinal + 1) % values.size]
+            DownloadProviders.source = next
+            refreshDownloadSource()
+        }
+
+        bindJavaButton(binding.buttonDownloadJava8, 8)
+        bindJavaButton(binding.buttonDownloadJava17, 17)
+        bindJavaButton(binding.buttonDownloadJava21, 21)
+        bindJavaButton(binding.buttonDownloadJava25, 25)
+
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                AppContainer.javaEnvironment.progress.collect { progress ->
+                    val b = _binding ?: return@collect
+                    if (progress == null) {
+                        b.progressJava.isVisible = false
+                        b.textJavaProgress.isVisible = false
+                        return@collect
+                    }
+                    b.textJavaProgress.isVisible = true
+                    b.textJavaProgress.text = progress.message
+                    when (progress.state) {
+                        JavaInstallState.DOWNLOADING -> {
+                            b.progressJava.isVisible = true
+                            val fraction = progress.progressFraction
+                            if (fraction >= 0f) {
+                                b.progressJava.isIndeterminate = false
+                                b.progressJava.progress = (fraction * 100).toInt()
+                            } else {
+                                b.progressJava.isIndeterminate = true
+                            }
+                        }
+                        JavaInstallState.EXTRACTING -> {
+                            b.progressJava.isVisible = true
+                            b.progressJava.isIndeterminate = true
+                        }
+                        JavaInstallState.INSTALLED, JavaInstallState.FAILED, JavaInstallState.NOT_INSTALLED -> {
+                            b.progressJava.isVisible = false
+                            refreshJavaStatus()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun bindJavaButton(button: MaterialButton, major: Int) {
+        button.setOnClickListener {
             viewLifecycleOwner.lifecycleScope.launch {
-                binding.buttonDownloadJava17.isEnabled = false
-                val result = AppContainer.javaEnvironment.ensureMajor(17)
-                binding.buttonDownloadJava17.isEnabled = true
+                setJavaButtonsEnabled(false)
+                val result = AppContainer.javaEnvironment.ensureMajor(major)
+                _binding ?: return@launch
+                setJavaButtonsEnabled(true)
                 refreshJavaStatus()
+                val context = context ?: return@launch
                 if (result.isSuccess) {
-                    Toast.makeText(requireContext(), R.string.settings_java_done, Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, R.string.settings_java_done, Toast.LENGTH_SHORT).show()
                 } else {
                     Toast.makeText(
-                        requireContext(),
+                        context,
                         getString(
                             R.string.settings_java_failed,
                             result.exceptionOrNull()?.message ?: "unknown"
@@ -58,49 +113,38 @@ class SettingsFragment : Fragment() {
                 }
             }
         }
+    }
 
-        viewLifecycleOwner.lifecycleScope.launch {
-            viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
-                AppContainer.javaEnvironment.progress.collect { progress ->
-                    if (progress == null) {
-                        binding.progressJava.isVisible = false
-                        binding.textJavaProgress.isVisible = false
-                        return@collect
-                    }
-                    binding.textJavaProgress.isVisible = true
-                    binding.textJavaProgress.text = progress.message
-                    when (progress.state) {
-                        JavaInstallState.DOWNLOADING -> {
-                            binding.progressJava.isVisible = true
-                            val fraction = progress.progressFraction
-                            if (fraction >= 0f) {
-                                binding.progressJava.isIndeterminate = false
-                                binding.progressJava.progress = (fraction * 100).toInt()
-                            } else {
-                                binding.progressJava.isIndeterminate = true
-                            }
-                        }
-                        JavaInstallState.EXTRACTING -> {
-                            binding.progressJava.isVisible = true
-                            binding.progressJava.isIndeterminate = true
-                        }
-                        JavaInstallState.INSTALLED, JavaInstallState.FAILED, JavaInstallState.NOT_INSTALLED -> {
-                            binding.progressJava.isVisible = false
-                            refreshJavaStatus()
-                        }
-                    }
-                }
-            }
-        }
+    private fun setJavaButtonsEnabled(enabled: Boolean) {
+        val b = _binding ?: return
+        b.buttonDownloadJava8.isEnabled = enabled
+        b.buttonDownloadJava17.isEnabled = enabled
+        b.buttonDownloadJava21.isEnabled = enabled
+        b.buttonDownloadJava25.isEnabled = enabled
+    }
+
+    private fun refreshDownloadSource() {
+        val b = _binding ?: return
+        val source = DownloadProviders.source
+        b.buttonDownloadSource.text = source.displayName
+        b.textDownloadSource.text = getString(R.string.settings_download_source_hint)
     }
 
     private fun refreshJavaStatus() {
-        binding.textJavaStatus.text = AppContainer.javaEnvironment.statusText()
-        val installed17 = AppContainer.javaEnvironment.isInstalled("java-17")
-        binding.buttonDownloadJava17.text = if (installed17) {
-            getString(R.string.settings_java_done)
+        val b = _binding ?: return
+        b.textJavaStatus.text = AppContainer.javaEnvironment.statusText()
+        updateJavaButton(b.buttonDownloadJava8, 8)
+        updateJavaButton(b.buttonDownloadJava17, 17)
+        updateJavaButton(b.buttonDownloadJava21, 21)
+        updateJavaButton(b.buttonDownloadJava25, 25)
+    }
+
+    private fun updateJavaButton(button: MaterialButton, major: Int) {
+        val installed = AppContainer.javaEnvironment.isInstalled("java-$major")
+        button.text = if (installed) {
+            "Java $major · ${getString(R.string.settings_java_ready)}"
         } else {
-            getString(R.string.settings_java_download_17)
+            getString(R.string.settings_java_download, major)
         }
     }
 

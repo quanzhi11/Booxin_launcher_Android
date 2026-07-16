@@ -1,6 +1,7 @@
 package com.booxin.launcher.core.java
 
 import com.booxin.launcher.core.LauncherPaths
+import com.booxin.launcher.core.net.FileDownloader
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -14,18 +15,19 @@ import java.security.MessageDigest
 /**
  * Owns Java environment discovery, download, extract, and selection.
  *
- * Layout:
+ * Layout mirrors FCL runtime java roots:
  * ```
  * filesDir/minecraft/java/
  *   java-8/
  *   java-17/
  *   java-21/
+ *   java-25/
  * filesDir/minecraft/cache/java/
- *   *.tar.xz
+ *   jreN-pojav.zip
  * ```
  */
 class JavaEnvironmentManager(
-    private val downloader: JavaDownloader = JavaDownloader()
+    private val downloader: FileDownloader = FileDownloader()
 ) {
 
     private val mutex = Mutex()
@@ -84,16 +86,7 @@ class JavaEnvironmentManager(
             emit(pkg.componentId, JavaInstallState.DOWNLOADING, message = "开始下载 ${pkg.displayName}")
 
             val cacheFile = File(LauncherPaths.javaCacheDir, pkg.fileName)
-            val downloadResult = downloader.download(pkg.downloadUrl, cacheFile) { downloaded, total ->
-                _progress.value = JavaInstallProgress(
-                    componentId = pkg.componentId,
-                    state = JavaInstallState.DOWNLOADING,
-                    downloadedBytes = downloaded,
-                    totalBytes = total,
-                    message = "下载 ${pkg.displayName}"
-                )
-            }
-            val archive = downloadResult.getOrElse { throw it }
+            val archive = downloadWithFallback(pkg, cacheFile)
 
             if (!pkg.sha256.isNullOrBlank()) {
                 val actual = sha256(archive)
@@ -104,9 +97,13 @@ class JavaEnvironmentManager(
 
             emit(pkg.componentId, JavaInstallState.EXTRACTING, message = "正在解压 ${pkg.displayName}")
             val targetDir = LauncherPaths.javaRuntimeDir(pkg.componentId)
-            ArchiveExtractor.extract(archive, targetDir)
+            val lowerName = archive.name.lowercase()
+            when {
+                lowerName.endsWith(".zip") && pkg.packageKind == JavaPackageKind.POJAV_SPLIT_ZIP ->
+                    ArchiveExtractor.installPojavSplit(archive, targetDir, pkg.abi)
+                else -> ArchiveExtractor.extract(archive, targetDir)
+            }
 
-            // Mark executable bits frequently needed on Android.
             markJavaExecutable(targetDir)
 
             val installed = locateInstalled(pkg.componentId, pkg.majorVersion)
@@ -125,6 +122,35 @@ class JavaEnvironmentManager(
                 message = error.message ?: "安装失败"
             )
         }
+    }
+
+    private suspend fun downloadWithFallback(pkg: JavaRuntimePackage, cacheFile: File): File {
+        val primary = downloader.download(pkg.downloadUrl, cacheFile) { downloaded, total ->
+            _progress.value = JavaInstallProgress(
+                componentId = pkg.componentId,
+                state = JavaInstallState.DOWNLOADING,
+                downloadedBytes = downloaded,
+                totalBytes = total,
+                message = "下载 ${pkg.displayName}"
+            )
+        }
+        if (primary.isSuccess) return primary.getOrThrow()
+
+        val fallbackUrl = pkg.fallbackUrl
+            ?: throw primary.exceptionOrNull() ?: IllegalStateException("下载失败")
+
+        emit(pkg.componentId, JavaInstallState.DOWNLOADING, message = "主源失败，尝试备用源…")
+        val fallbackName = fallbackUrl.substringAfterLast('/')
+        val fallbackFile = File(LauncherPaths.javaCacheDir, fallbackName)
+        return downloader.download(fallbackUrl, fallbackFile) { downloaded, total ->
+            _progress.value = JavaInstallProgress(
+                componentId = pkg.componentId,
+                state = JavaInstallState.DOWNLOADING,
+                downloadedBytes = downloaded,
+                totalBytes = total,
+                message = "备用源下载 ${pkg.displayName}"
+            )
+        }.getOrElse { throw it }
     }
 
     suspend fun delete(componentId: String): Result<Unit> = withContext(Dispatchers.IO) {
@@ -166,7 +192,6 @@ class JavaEnvironmentManager(
         )
         candidates.firstOrNull { it.exists() && it.isFile }?.let { return it }
 
-        // Fallback: shallow search for libjvm.so which proves a usable JRE tree.
         val libJvm = home.walkTopDown()
             .maxDepth(6)
             .firstOrNull { it.name == "libjvm.so" }

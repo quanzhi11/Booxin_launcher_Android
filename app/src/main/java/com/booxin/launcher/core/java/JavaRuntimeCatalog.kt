@@ -3,61 +3,39 @@ package com.booxin.launcher.core.java
 /**
  * Built-in Android OpenJDK package catalog.
  *
- * Packages come from PojavLauncherTeam's android-openjdk-build-multiarch releases
- * (Android-compatible JREs, not desktop Adoptium builds).
+ * Primary source: MojoLauncher rolling `jreN-pojav.zip` packages — the same
+ * FCL-compatible split layout (`universal.tar.xz` + `bin-{abi}.tar.xz`) used by
+ * FoldCraftLauncher's RuntimeUtils.installJava.
  *
- * Optional [mirrorPrefix] can rewrite GitHub URLs for restricted networks, e.g.:
- * `https://mirror.ghproxy.com/`
+ * Optional [mirrorPrefix] can rewrite GitHub URLs for restricted networks.
  */
 object JavaRuntimeCatalog {
 
-    private const val JRE17_TAG = "jre17-ec28559"
-    private const val JRE17_BASE =
-        "https://github.com/PojavLauncherTeam/android-openjdk-build-multiarch/releases/download/$JRE17_TAG"
+    /**
+     * Rolling multi-ABI packages from MojoLauncher (Pojav/FCL split format).
+     * https://github.com/MojoLauncher/android-openjdk-build-multiarch/releases/tag/rolling
+     */
+    private const val MOJO_ROLLING_BASE =
+        "https://github.com/MojoLauncher/android-openjdk-build-multiarch/releases/download/rolling"
 
     /**
-     * JRE8 release assets follow a similar naming style. Tags may evolve;
-     * URLs remain centralized here so they can be swapped without touching UI.
+     * FCL extra Java release (whole-package tar.xz, mainly arm64).
+     * Used as fallback when split zip is unavailable for an ABI.
      */
-    private const val JRE8_TAG = "jre8-32e58b7"
-    private const val JRE8_BASE =
-        "https://github.com/PojavLauncherTeam/android-openjdk-build-multiarch/releases/download/$JRE8_TAG"
+    private const val FCL_JAVA_BASE =
+        "https://github.com/FCL-Team/FoldCraftLauncher/releases/download/java"
+
+    private const val AAAAPAI_BASE =
+        "https://github.com/aaaapai/android-openjdk-build/releases/download/20260223"
 
     var mirrorPrefix: String = ""
 
     fun packagesForDevice(abi: JavaAbi = JavaAbi.current()): List<JavaRuntimePackage> {
         return listOfNotNull(
-            packageOrNull(
-                componentId = "java-8",
-                major = 8,
-                displayName = "Java 8",
-                abi = abi,
-                base = JRE8_BASE,
-                fileName = "jre8-${abi.packageToken}-release.tar.xz"
-            ),
-            packageOrNull(
-                componentId = "java-17",
-                major = 17,
-                displayName = "Java 17",
-                abi = abi,
-                base = JRE17_BASE,
-                fileName = when (abi) {
-                    JavaAbi.ARM64 -> "jre17-arm64-20210825-release.tar.xz"
-                    JavaAbi.ARM32 -> "jre17-arm-20210914-release.tar.xz"
-                    JavaAbi.X86 -> "jre17-x86-20220225-release.tar.xz"
-                    JavaAbi.X86_64 -> "jre17-x86_64-20210825-release.tar.xz"
-                }
-            ),
-            // Java 21 builds are typically published via CI artifacts; keep a slot
-            // so the environment layer can already resolve MC 1.20.5+ requirements.
-            packageOrNull(
-                componentId = "java-21",
-                major = 21,
-                displayName = "Java 21",
-                abi = abi,
-                base = JRE17_BASE.replace(JRE17_TAG, "jre21"),
-                fileName = "jre21-${abi.packageToken}-release.tar.xz"
-            )
+            splitPackage(8, abi),
+            splitPackage(17, abi),
+            splitPackage(21, abi),
+            splitPackage(25, abi)
         )
     }
 
@@ -69,23 +47,27 @@ object JavaRuntimeCatalog {
         return packagesForDevice(abi).firstOrNull { it.componentId == componentId }
     }
 
-    private fun packageOrNull(
-        componentId: String,
-        major: Int,
-        displayName: String,
-        abi: JavaAbi,
-        base: String,
-        fileName: String
-    ): JavaRuntimePackage {
-        val raw = "$base/$fileName"
+    private fun splitPackage(major: Int, abi: JavaAbi): JavaRuntimePackage {
+        val fileName = "jre$major-pojav.zip"
         return JavaRuntimePackage(
-            componentId = componentId,
+            componentId = "java-$major",
             majorVersion = major,
-            displayName = displayName,
+            displayName = "Java $major",
             abi = abi,
-            downloadUrl = applyMirror(raw),
-            fileName = fileName
+            downloadUrl = applyMirror("$MOJO_ROLLING_BASE/$fileName"),
+            fileName = fileName,
+            packageKind = JavaPackageKind.POJAV_SPLIT_ZIP,
+            fallbackUrl = fallbackWholePackage(major, abi)?.let { applyMirror(it) }
         )
+    }
+
+    private fun fallbackWholePackage(major: Int, abi: JavaAbi): String? {
+        if (abi != JavaAbi.ARM64) return null
+        return when (major) {
+            21 -> "$AAAAPAI_BASE/jre21-arm64-20260223-release.tar.xz"
+            25 -> "$FCL_JAVA_BASE/jre25-arm64-20251205-release.tar.xz"
+            else -> null
+        }
     }
 
     private fun applyMirror(url: String): String {

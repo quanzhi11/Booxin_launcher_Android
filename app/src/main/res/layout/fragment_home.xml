@@ -97,6 +97,16 @@
                 android:textColor="@color/md_theme_light_outline"
                 android:textSize="13sp" />
 
+            <ProgressBar
+                android:id="@+id/progressInstall"
+                style="?android:attr/progressBarStyleHorizontal"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:indeterminate="false"
+                android:max="100"
+                android:visibility="gone" />
+
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/buttonLaunch"
                 style="@style/Widget.Booxin.PrimaryButton"

@@ -63,9 +63,17 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="6dp"
-                android:text="官方 / BMCLAPI（待接入）"
+                android:text="@string/settings_download_source_hint"
                 android:textColor="@color/md_theme_light_outline"
                 android:textSize="13sp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/buttonDownloadSource"
+                style="@style/Widget.Booxin.SecondaryButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:text="@string/settings_download_source" />
         </LinearLayout>
 
         <LinearLayout
@@ -138,11 +146,35 @@
                 android:visibility="gone" />
 
             <com.google.android.material.button.MaterialButton
+                android:id="@+id/buttonDownloadJava8"
+                style="@style/Widget.Booxin.SecondaryButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:text="@string/settings_java_download_17" />
+
+            <com.google.android.material.button.MaterialButton
                 android:id="@+id/buttonDownloadJava17"
                 style="@style/Widget.Booxin.PrimaryButton"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
+                android:layout_marginTop="8dp"
+                android:text="@string/settings_java_download_17" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/buttonDownloadJava21"
+                style="@style/Widget.Booxin.SecondaryButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/settings_java_download_17" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/buttonDownloadJava25"
+                style="@style/Widget.Booxin.SecondaryButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
                 android:text="@string/settings_java_download_17" />
         </LinearLayout>
 

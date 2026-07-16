@@ -15,12 +15,18 @@
     <string name="home_launch">启动游戏</string>
     <string name="home_install">安装 / 下载</string>
     <string name="home_status_ready">准备就绪</string>
-    <string name="home_status_placeholder">框架阶段：启动逻辑稍后接入</string>
+    <string name="home_status_placeholder">选择版本后即可下载原版客户端</string>
+    <string name="home_installing">正在安装…</string>
+    <string name="home_install_done">版本安装完成</string>
+    <string name="home_install_failed">安装失败：%1$s</string>
+    <string name="home_launch_need_install">请先安装当前版本</string>
 
     <string name="versions_title">游戏版本</string>
-    <string name="versions_subtitle">管理已安装与可下载的版本</string>
-    <string name="versions_empty">暂无版本数据</string>
+    <string name="versions_subtitle">官方 / BMCLAPI 版本列表</string>
+    <string name="versions_empty">暂无版本数据，请点击刷新</string>
     <string name="versions_refresh">刷新列表</string>
+    <string name="versions_refreshing">正在刷新版本列表…</string>
+    <string name="versions_refresh_failed">刷新失败：%1$s</string>
 
     <string name="accounts_title">账号</string>
     <string name="accounts_subtitle">Microsoft / 离线账号</string>
@@ -32,12 +38,15 @@
     <string name="settings_title">设置</string>
     <string name="settings_game_dir">游戏目录</string>
     <string name="settings_download_source">下载源</string>
+    <string name="settings_download_source_hint">点击切换：官方 / 自动 / BMCLAPI</string>
     <string name="settings_memory">内存分配</string>
     <string name="settings_renderer">渲染器</string>
     <string name="settings_java_env">Java 环境</string>
+    <string name="settings_java_download">下载 Java %1$d</string>
     <string name="settings_java_download_17">下载 Java 17</string>
     <string name="settings_java_downloading">正在处理 Java 环境…</string>
     <string name="settings_java_done">Java 环境已就绪</string>
+    <string name="settings_java_ready">已安装</string>
     <string name="settings_java_failed">Java 安装失败：%1$s</string>
     <string name="settings_about">关于 Booxin</string>
     <string name="settings_version">版本 %1$s</string>

@@ -27,6 +27,8 @@ object LauncherPaths {
         versionsDir.mkdirs()
         librariesDir.mkdirs()
         assetsDir.mkdirs()
+        File(assetsDir, "indexes").mkdirs()
+        File(assetsDir, "objects").mkdirs()
         javaDir.mkdirs()
         javaCacheDir.mkdirs()
     }

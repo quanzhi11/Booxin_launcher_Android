@@ -11,7 +11,9 @@ data class GameVersion(
     val id: String,
     val type: VersionType,
     val installed: Boolean = false,
-    val releaseTime: String? = null
+    val releaseTime: String? = null,
+    /** Mojang/BMCL version.json URL from the manifest. */
+    val url: String? = null
 )
 
 enum class AccountType {
