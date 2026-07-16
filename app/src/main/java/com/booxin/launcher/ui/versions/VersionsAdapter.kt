@@ -3,11 +3,14 @@ package com.booxin.launcher.ui.versions
 import android.view.LayoutInflater
 import android.view.ViewGroup
 import androidx.recyclerview.widget.RecyclerView
+import com.booxin.launcher.R
 import com.booxin.launcher.data.model.GameVersion
 import com.booxin.launcher.data.model.VersionType
 import com.booxin.launcher.databinding.ItemVersionBinding
 
 class VersionsAdapter(
+    private val selectedIdProvider: () -> String? = { null },
+    private val installedMode: Boolean = true,
     private val onClick: (GameVersion) -> Unit
 ) : RecyclerView.Adapter<VersionsAdapter.Holder>() {
 
@@ -34,15 +37,25 @@ class VersionsAdapter(
         private val binding: ItemVersionBinding
     ) : RecyclerView.ViewHolder(binding.root) {
         fun bind(item: GameVersion) {
+            val context = binding.root.context
             binding.textVersionName.text = item.id
-            val status = if (item.installed) "已安装" else "未安装"
             val typeLabel = when (item.type) {
-                VersionType.RELEASE -> "正式版"
-                VersionType.SNAPSHOT -> "快照"
-                VersionType.OLD_BETA -> "旧 Beta"
-                VersionType.OLD_ALPHA -> "旧 Alpha"
+                VersionType.RELEASE -> context.getString(R.string.download_filter_release)
+                VersionType.SNAPSHOT -> context.getString(R.string.download_filter_snapshot)
+                VersionType.OLD_BETA, VersionType.OLD_ALPHA ->
+                    context.getString(R.string.download_filter_old)
             }
-            binding.textVersionMeta.text = "$typeLabel · $status"
+            val selected = selectedIdProvider() == item.id
+            binding.textVersionMeta.text = when {
+                installedMode && selected ->
+                    "$typeLabel · ${context.getString(R.string.versions_selected)}"
+                installedMode ->
+                    "$typeLabel · ${context.getString(R.string.versions_tap_select)}"
+                item.installed ->
+                    "$typeLabel · ${context.getString(R.string.download_already_installed)}"
+                else ->
+                    "$typeLabel · ${context.getString(R.string.download_tap_install)}"
+            }
             binding.textVersionBadge.text = item.type.name.lowercase()
             binding.root.setOnClickListener { onClick(item) }
         }

@@ -30,12 +30,12 @@
         app:layout_constraintTop_toBottomOf="@id/title" />
 
     <com.google.android.material.button.MaterialButton
-        android:id="@+id/buttonRefresh"
-        style="@style/Widget.Booxin.SecondaryButton"
+        android:id="@+id/buttonDownload"
+        style="@style/Widget.Booxin.PrimaryButton"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
         android:layout_marginTop="16dp"
-        android:text="@string/versions_refresh"
+        android:text="@string/versions_download"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toBottomOf="@id/subtitle" />
@@ -49,7 +49,7 @@
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/buttonRefresh"
+        app:layout_constraintTop_toBottomOf="@id/buttonDownload"
         tools:listitem="@layout/item_version" />
 
     <TextView

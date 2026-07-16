@@ -1,6 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <androidx.core.widget.NestedScrollView xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
@@ -97,16 +96,6 @@
                 android:textColor="@color/md_theme_light_outline"
                 android:textSize="13sp" />
 
-            <ProgressBar
-                android:id="@+id/progressInstall"
-                style="?android:attr/progressBarStyleHorizontal"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
-                android:indeterminate="false"
-                android:max="100"
-                android:visibility="gone" />
-
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/buttonLaunch"
                 style="@style/Widget.Booxin.PrimaryButton"
@@ -116,12 +105,12 @@
                 android:text="@string/home_launch" />
 
             <com.google.android.material.button.MaterialButton
-                android:id="@+id/buttonInstall"
+                android:id="@+id/buttonSwitchVersion"
                 style="@style/Widget.Booxin.SecondaryButton"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
-                android:text="@string/home_install" />
+                android:text="@string/home_switch_version" />
         </LinearLayout>
     </LinearLayout>
 </androidx.core.widget.NestedScrollView>

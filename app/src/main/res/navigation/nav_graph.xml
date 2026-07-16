@@ -12,7 +12,20 @@
     <fragment
         android:id="@+id/nav_versions"
         android:name="com.booxin.launcher.ui.versions.VersionsFragment"
-        android:label="@string/nav_versions" />
+        android:label="@string/nav_versions">
+        <action
+            android:id="@+id/action_versions_to_download"
+            app:destination="@id/nav_download"
+            app:enterAnim="@android:anim/slide_in_left"
+            app:exitAnim="@android:anim/fade_out"
+            app:popEnterAnim="@android:anim/fade_in"
+            app:popExitAnim="@android:anim/slide_out_right" />
+    </fragment>
+
+    <fragment
+        android:id="@+id/nav_download"
+        android:name="com.booxin.launcher.ui.download.DownloadFragment"
+        android:label="@string/download_title" />
 
     <fragment
         android:id="@+id/nav_accounts"

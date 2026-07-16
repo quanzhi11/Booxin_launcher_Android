@@ -1,6 +1,7 @@
 package com.booxin.launcher.ui
 
 import android.os.Bundle
+import android.view.View
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
@@ -29,6 +30,12 @@ class MainActivity : AppCompatActivity() {
 
         val navHost =
             supportFragmentManager.findFragmentById(R.id.nav_host_fragment) as NavHostFragment
-        binding.bottomNav.setupWithNavController(navHost.navController)
+        val navController = navHost.navController
+        binding.bottomNav.setupWithNavController(navController)
+
+        navController.addOnDestinationChangedListener { _, destination, _ ->
+            val hideBottom = destination.id == R.id.nav_download
+            binding.bottomNav.visibility = if (hideBottom) View.GONE else View.VISIBLE
+        }
     }
 }
