@@ -55,11 +55,18 @@ class HomeFragment : Fragment() {
             viewLifecycleOwner.lifecycleScope.launch {
                 val account = AppContainer.repository.accounts.value.firstOrNull { it.selected }
                 val username = account?.name ?: "Player"
-                val result = AppContainer.gameRuntime.launch(version.id, username)
-                val context = context ?: return@launch
-                val message = result.exceptionOrNull()?.message
-                    ?: getString(R.string.action_coming_soon)
-                Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+                val ctx = context ?: return@launch
+                val result = AppContainer.gameRuntime.launch(ctx, version.id, username)
+                if (result.isFailure) {
+                    Toast.makeText(
+                        ctx,
+                        getString(
+                            R.string.home_launch_failed,
+                            result.exceptionOrNull()?.message ?: "unknown"
+                        ),
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
             }
         }
     }

@@ -1,7 +1,7 @@
 package com.booxin.launcher
 
+import com.booxin.launcher.core.BooxinGameRuntime
 import com.booxin.launcher.core.GameRuntime
-import com.booxin.launcher.core.StubGameRuntime
 import com.booxin.launcher.core.download.game.VanillaGameInstaller
 import com.booxin.launcher.core.java.JavaEnvironmentManager
 import com.booxin.launcher.data.repository.LauncherRepository
@@ -17,6 +17,6 @@ object AppContainer {
         LauncherRepository(gameInstaller = gameInstaller)
     }
     val gameRuntime: GameRuntime by lazy {
-        StubGameRuntime(javaEnvironment, repository)
+        BooxinGameRuntime(javaEnvironment, repository)
     }
 }

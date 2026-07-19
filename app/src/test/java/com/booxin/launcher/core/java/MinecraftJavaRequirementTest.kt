@@ -22,4 +22,10 @@ class MinecraftJavaRequirementTest {
         assertEquals(21, MinecraftJavaRequirement.requiredMajor("1.20.5"))
         assertEquals(21, MinecraftJavaRequirement.requiredMajor("1.21.4"))
     }
+
+    @Test
+    fun mapsYearBasedVersionsToJava25() {
+        assertEquals(25, MinecraftJavaRequirement.requiredMajor("26.2"))
+        assertEquals(25, MinecraftJavaRequirement.requiredMajor("26.1"))
+    }
 }

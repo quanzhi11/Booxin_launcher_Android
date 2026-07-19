@@ -30,5 +30,19 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <activity
+            android:name=".ui.launch.LaunchActivity"
+            android:exported="true"
+            android:label="@string/launch_title"
+            android:launchMode="singleTask"
+            android:parentActivityName=".ui.MainActivity"
+            android:windowSoftInputMode="adjustResize" />
+
+        <!-- JVM only — no UI/HWUI in this process -->
+        <service
+            android:name=".core.launch.GameLaunchService"
+            android:exported="false"
+            android:process=":game" />
     </application>
 </manifest>

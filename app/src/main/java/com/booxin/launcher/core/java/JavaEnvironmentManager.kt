@@ -1,5 +1,6 @@
 package com.booxin.launcher.core.java
 
+import android.system.Os
 import com.booxin.launcher.core.LauncherPaths
 import com.booxin.launcher.core.net.FileDownloader
 import kotlinx.coroutines.Dispatchers
@@ -64,7 +65,10 @@ class JavaEnvironmentManager(
     }
 
     suspend fun ensureMajor(majorVersion: Int): Result<InstalledJavaRuntime> {
-        findInstalled(majorVersion)?.let { return Result.success(it) }
+        findInstalled(majorVersion)?.let { runtime ->
+            markJavaExecutable(runtime.homeDir)
+            return Result.success(runtime)
+        }
         val pkg = JavaRuntimeCatalog.find(majorVersion)
             ?: return Result.failure(
                 IllegalStateException("当前 ABI(${deviceAbi().packageToken}) 没有 Java $majorVersion 的下载源")
@@ -201,11 +205,18 @@ class JavaEnvironmentManager(
     }
 
     private fun markJavaExecutable(home: File) {
-        listOf("bin/java", "bin/keytool", "bin/jdb").forEach { relative ->
-            val file = File(home, relative)
-            if (file.exists()) {
-                file.setExecutable(true, false)
+        // Directories need +x to traverse; .so / bin tools need +rx for dlopen/linker.
+        home.walkTopDown().forEach { file ->
+            val needsExec = file.isDirectory ||
+                file.name == "java" ||
+                file.name.endsWith(".so") ||
+                file.parentFile?.name == "bin"
+            if (!needsExec) return@forEach
+            runCatching {
+                Os.chmod(file.absolutePath, 493) // 0755
+            }.recoverCatching {
                 file.setReadable(true, false)
+                file.setExecutable(true, false)
             }
         }
     }

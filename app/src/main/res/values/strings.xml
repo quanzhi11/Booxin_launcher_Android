@@ -22,7 +22,14 @@
     <string name="home_install_done">版本安装完成</string>
     <string name="home_install_failed">安装失败：%1$s</string>
     <string name="home_launch_need_install">请先下载并安装当前版本</string>
+    <string name="home_launch_failed">启动失败：%1$s</string>
     <string name="home_switched">已切换到 %1$s</string>
+
+    <string name="launch_title">游戏启动</string>
+    <string name="launch_meta">版本 %1$s · 玩家 %2$s</string>
+    <string name="launch_stop">停止</string>
+    <string name="launch_close">关闭</string>
+    <string name="launch_finished">进程已结束，退出码 %1$d</string>
 
     <string name="versions_title">已下载版本</string>
     <string name="versions_subtitle">管理本机已安装的游戏实例</string>
