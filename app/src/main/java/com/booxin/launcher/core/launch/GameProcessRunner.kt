@@ -28,9 +28,8 @@ class GameProcessRunner(
     suspend fun probeJava(java: InstalledJavaRuntime, env: Map<String, String> = emptyMap()): Result<String> =
         withContext(Dispatchers.IO) {
             runCatching {
-                JvmEnvironment.apply(context, java, env)
                 if (!NativeJvmLauncher.probeJvm()) {
-                    error("无法加载 libjli.so 或 JLI_Launch")
+                    error("无法加载 libjvm.so 或 JNI_CreateJavaVM")
                 }
                 "Java ${java.majorVersion} 运行时库就绪"
             }

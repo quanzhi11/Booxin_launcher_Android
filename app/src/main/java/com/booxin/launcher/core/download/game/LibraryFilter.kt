@@ -31,9 +31,12 @@ object LibraryFilter {
     )
 
     fun shouldKeep(name: String): Boolean {
-        return !name.contains("org.lwjgl") &&
-            !name.contains("jinput-platform") &&
-            !name.contains("twitch-platform")
+        // Desktop LWJGL jars/natives are glibc; Android uses a single patched lwjgl.jar
+        // plus jniLibs (.so). Drop all Mojang/Maven org.lwjgl artifacts from the classpath.
+        if (name.startsWith("org.lwjgl:") || name.startsWith("org.lwjgl.")) return false
+        if (name.contains("jinput-platform") || name.contains("twitch-platform")) return false
+        if (name.contains(":natives-") || name.contains("natives-")) return false
+        return true
     }
 
     fun upgrade(libraries: List<ResolvedLibrary>): List<ResolvedLibrary> {

@@ -54,6 +54,13 @@ android {
         viewBinding = true
         buildConfig = true
     }
+
+    // Extract jniLibs to disk so LWJGL can dlopen liblwjgl.so by path.
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
 }
 
 dependencies {

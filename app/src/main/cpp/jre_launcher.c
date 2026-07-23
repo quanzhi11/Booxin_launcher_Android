@@ -1,15 +1,20 @@
 /*
- * Booxin JVM launcher — Pojav/FCL style.
+ * Booxin JVM launcher.
  *
- * Runs JLI_Launch in the isolated :game process (no UI/HWUI threads).
- * _JAVA_VERSION_SET prevents re-exec of bin/java on Android noexec /data.
+ * Uses JNI_CreateJavaVM (not JLI_Launch) to avoid re-exec on Android noexec /data
+ * and to keep control when HotSpot init fails. Stdout/stderr are piped to logcat.
  */
 
 #include <android/log.h>
 #include <dlfcn.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <jni.h>
+#include <limits.h>
 #include <pthread.h>
 #include <signal.h>
+#include <stdbool.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -17,22 +22,30 @@
 #define LOG_TAG "BooxinJvm"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+#define LOGW(...) __android_log_print(ANDROID_LOG_WARN,  LOG_TAG, __VA_ARGS__)
 
-typedef jint (*JLI_Launch_func)(
-    int argc, char **argv,
-    int jargc, const char **jargv,
-    int appclassc, const char **appclassv,
-    const char *fullversion, const char *dotversion,
-    const char *pname, const char *lname,
-    jboolean javaargs, jboolean cpwildcard, jboolean javaw, jint ergo
-);
+typedef jint (*JNI_CreateJavaVM_func)(JavaVM **pvm, void **penv, void *args);
+typedef void (*SetupBridgeWindow_fn)(JNIEnv *, jclass, jobject);
+
+/* Stored from ART before embedded JVM starts; re-bound into HotSpot after JNI_CreateJavaVM. */
+static jobject g_bridge_surface = NULL;
+static pthread_mutex_t g_bridge_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+typedef void (*HookFn)(JNIEnv *);
 
 typedef struct {
-    int    argc;
+    JavaVMOption *opts;
+    int nOpts;
+    char *mainClass;
+    char **gameArgs;
+    int nGameArgs;
+    char *classpath; /* raw cp string for URLClassLoader */
+} ParsedArgs;
+
+typedef struct {
+    int argc;
     char **argv;
-    const char *full;
-    const char *dot;
-    jint   result;
+    jint result;
 } LaunchCtx;
 
 static char **to_argv(JNIEnv *env, jobjectArray arr, int *outArgc) {
@@ -57,6 +70,147 @@ static void free_argv(char **argv, int argc) {
     free(argv);
 }
 
+static void free_parsed(ParsedArgs *p) {
+    for (int i = 0; i < p->nOpts; i++) free((void *)p->opts[i].optionString);
+    free(p->opts);
+    for (int i = 0; i < p->nGameArgs; i++) free(p->gameArgs[i]);
+    free(p->gameArgs);
+    free(p->mainClass);
+    free(p->classpath);
+}
+
+static bool parse_args(char **argv, int argc, ParsedArgs *out) {
+    memset(out, 0, sizeof(*out));
+    out->opts = calloc((size_t)argc + 4, sizeof(JavaVMOption));
+    out->gameArgs = calloc((size_t)argc, sizeof(char *));
+    if (!out->opts || !out->gameArgs) return false;
+
+    bool nextIsClasspath = false;
+    bool seenMain = false;
+    char *cp = NULL;
+
+    for (int i = 1; i < argc; i++) {
+        char *a = argv[i];
+        if (seenMain) {
+            out->gameArgs[out->nGameArgs++] = strdup(a);
+            continue;
+        }
+        if (nextIsClasspath) {
+            cp = strdup(a);
+            nextIsClasspath = false;
+            continue;
+        }
+        if (strcmp(a, "-cp") == 0 || strcmp(a, "-classpath") == 0) {
+            nextIsClasspath = true;
+            continue;
+        }
+        if (strncmp(a, "-Djava.class.path=", 18) == 0) {
+            if (!cp) cp = strdup(a + 18);
+            continue; /* will re-add as single option below */
+        }
+        if (a[0] == '-') {
+            out->opts[out->nOpts].optionString = strdup(a);
+            out->nOpts++;
+            continue;
+        }
+        out->mainClass = strdup(a);
+        seenMain = true;
+    }
+
+    if (cp) {
+        out->classpath = strdup(cp);
+        size_t len = strlen("-Djava.class.path=") + strlen(cp) + 1;
+        char *opt = malloc(len);
+        if (opt) {
+            snprintf(opt, len, "-Djava.class.path=%s", cp);
+            memmove(&out->opts[1], &out->opts[0], (size_t)out->nOpts * sizeof(JavaVMOption));
+            out->opts[0].optionString = opt;
+            out->nOpts++;
+        }
+        free(cp);
+    }
+    return out->mainClass != NULL;
+}
+
+static void log_exception(JNIEnv *jenv, const char *where) {
+    if (!(*jenv)->ExceptionCheck(jenv)) return;
+    jthrowable ex = (*jenv)->ExceptionOccurred(jenv);
+    (*jenv)->ExceptionClear(jenv);
+    jclass exCls = (*jenv)->GetObjectClass(jenv, ex);
+    jmethodID toString = (*jenv)->GetMethodID(jenv, exCls, "toString", "()Ljava/lang/String;");
+    jmethodID getMsg = (*jenv)->GetMethodID(jenv, exCls, "getMessage", "()Ljava/lang/String;");
+    if (toString) {
+        jstring js = (jstring)(*jenv)->CallObjectMethod(jenv, ex, toString);
+        if (js) {
+            const char *msg = (*jenv)->GetStringUTFChars(jenv, js, NULL);
+            LOGE("%s: %s", where, msg ? msg : "(null)");
+            if (msg) (*jenv)->ReleaseStringUTFChars(jenv, js, msg);
+            (*jenv)->DeleteLocalRef(jenv, js);
+        }
+    }
+    if (getMsg) {
+        jstring js = (jstring)(*jenv)->CallObjectMethod(jenv, ex, getMsg);
+        if (js) {
+            const char *msg = (*jenv)->GetStringUTFChars(jenv, js, NULL);
+            LOGE("%s message: %s", where, msg ? msg : "(null)");
+            if (msg) (*jenv)->ReleaseStringUTFChars(jenv, js, msg);
+            (*jenv)->DeleteLocalRef(jenv, js);
+        }
+    }
+    (*jenv)->DeleteLocalRef(jenv, exCls);
+    (*jenv)->DeleteLocalRef(jenv, ex);
+}
+
+/* Pipe stdout/stderr to logcat so HotSpot/Minecraft messages are visible. */
+static int g_log_pipe[2] = {-1, -1};
+static pthread_t g_log_thread;
+static volatile int g_log_running = 0;
+
+static void *stdout_reader(void *arg) {
+    (void)arg;
+    char buf[512];
+    ssize_t n;
+    while (g_log_running && (n = read(g_log_pipe[0], buf, sizeof(buf) - 1)) > 0) {
+        buf[n] = '\0';
+        /* split lines */
+        char *start = buf;
+        for (char *p = buf; *p; p++) {
+            if (*p == '\n') {
+                *p = '\0';
+                if (start[0]) LOGI("[jvm] %s", start);
+                start = p + 1;
+            }
+        }
+        if (start[0]) LOGI("[jvm] %s", start);
+    }
+    return NULL;
+}
+
+static void start_stdio_capture(void) {
+    if (pipe(g_log_pipe) != 0) {
+        LOGE("pipe failed: %s", strerror(errno));
+        return;
+    }
+    /* make write end cloexec optional; redirect stdout/stderr */
+    fflush(stdout);
+    fflush(stderr);
+    dup2(g_log_pipe[1], STDOUT_FILENO);
+    dup2(g_log_pipe[1], STDERR_FILENO);
+    close(g_log_pipe[1]);
+    g_log_pipe[1] = -1;
+    g_log_running = 1;
+    pthread_create(&g_log_thread, NULL, stdout_reader, NULL);
+}
+
+static void stop_stdio_capture(void) {
+    g_log_running = 0;
+    if (g_log_pipe[0] >= 0) {
+        close(g_log_pipe[0]);
+        g_log_pipe[0] = -1;
+    }
+    pthread_join(g_log_thread, NULL);
+}
+
 static void reset_signals(void) {
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
@@ -67,41 +221,430 @@ static void reset_signals(void) {
     }
 }
 
-static jint call_jli_launch(LaunchCtx *ctx) {
-    reset_signals();
-    setenv("_JAVA_VERSION_SET", "true", 1);
-    setenv("JDK_JAVA_OPTIONS", "", 0);
-
-    void *libjli = dlopen("libjli.so", RTLD_LAZY | RTLD_GLOBAL);
-    if (!libjli) {
-        LOGE("libjli.so: %s", dlerror());
-        return -2;
+static jobject build_url_classloader(JNIEnv *jenv, const char *classpath) {
+    if (!classpath || !classpath[0]) {
+        LOGE("classpath empty");
+        return NULL;
     }
 
-    JLI_Launch_func launch = (JLI_Launch_func)dlsym(libjli, "JLI_Launch");
-    if (!launch) {
-        LOGE("JLI_Launch: %s", dlerror());
+    jclass fileCls = (*jenv)->FindClass(jenv, "java/io/File");
+    jmethodID fileCtor = (*jenv)->GetMethodID(jenv, fileCls, "<init>", "(Ljava/lang/String;)V");
+    jmethodID toURI = (*jenv)->GetMethodID(jenv, fileCls, "toURI", "()Ljava/net/URI;");
+    jclass uriCls = (*jenv)->FindClass(jenv, "java/net/URI");
+    jmethodID toURL = (*jenv)->GetMethodID(jenv, uriCls, "toURL", "()Ljava/net/URL;");
+    jclass urlCls = (*jenv)->FindClass(jenv, "java/net/URL");
+    log_exception(jenv, "URL helpers");
+
+    /* count entries */
+    int n = 1;
+    for (const char *p = classpath; *p; p++) if (*p == ':') n++;
+
+    jobjectArray urls = (*jenv)->NewObjectArray(jenv, n, urlCls, NULL);
+    char *copy = strdup(classpath);
+    char *save = NULL;
+    char *tok = strtok_r(copy, ":", &save);
+    int idx = 0;
+    int ok = 0;
+    while (tok && idx < n) {
+        jstring path = (*jenv)->NewStringUTF(jenv, tok);
+        jobject file = (*jenv)->NewObject(jenv, fileCls, fileCtor, path);
+        jobject uri = (*jenv)->CallObjectMethod(jenv, file, toURI);
+        jobject url = uri ? (*jenv)->CallObjectMethod(jenv, uri, toURL) : NULL;
+        if (url && !(*jenv)->ExceptionCheck(jenv)) {
+            (*jenv)->SetObjectArrayElement(jenv, urls, idx, url);
+            ok++;
+        } else {
+            log_exception(jenv, "bad classpath entry");
+            LOGW("skip cp entry: %s", tok);
+        }
+        if (path) (*jenv)->DeleteLocalRef(jenv, path);
+        if (file) (*jenv)->DeleteLocalRef(jenv, file);
+        if (uri) (*jenv)->DeleteLocalRef(jenv, uri);
+        if (url) (*jenv)->DeleteLocalRef(jenv, url);
+        idx++;
+        tok = strtok_r(NULL, ":", &save);
+    }
+    free(copy);
+    LOGI("URLClassLoader entries ok=%d / %d", ok, n);
+
+    jclass clCls = (*jenv)->FindClass(jenv, "java/lang/ClassLoader");
+    jmethodID getSys = (*jenv)->GetStaticMethodID(
+        jenv, clCls, "getSystemClassLoader", "()Ljava/lang/ClassLoader;");
+    jobject parent = (*jenv)->CallStaticObjectMethod(jenv, clCls, getSys);
+    log_exception(jenv, "getSystemClassLoader");
+
+    jclass urlClCls = (*jenv)->FindClass(jenv, "java/net/URLClassLoader");
+    jmethodID urlCtor = (*jenv)->GetMethodID(
+        jenv, urlClCls, "<init>", "([Ljava/net/URL;Ljava/lang/ClassLoader;)V");
+    jobject loader = (*jenv)->NewObject(jenv, urlClCls, urlCtor, urls, parent);
+    if ((*jenv)->ExceptionCheck(jenv)) {
+        log_exception(jenv, "URLClassLoader.<init>");
+        return NULL;
+    }
+    return loader;
+}
+
+static SetupBridgeWindow_fn resolve_setup_bridge_window(void *pojav_lib) {
+    if (!pojav_lib) return NULL;
+    return (SetupBridgeWindow_fn)dlsym(
+        pojav_lib, "Java_org_lwjgl_glfw_CallbackBridge_setupBridgeWindow");
+}
+
+typedef jint (*JNI_OnLoad_func)(JavaVM *, void *);
+
+static void *open_pojavexec(void) {
+    /* Prefer the already-loaded handle (staged System.load path). Avoid a second
+     * copy from APK nativeLibraryDir — separate pojav_environ / br_init = crash. */
+    void *lib = dlopen("libpojavexec.so", RTLD_LAZY | RTLD_NOLOAD);
+    if (lib) return lib;
+    const char *nativeDir = getenv("POJAV_NATIVEDIR");
+    if (!nativeDir || !nativeDir[0]) nativeDir = getenv("FCL_NATIVEDIR");
+    if (nativeDir && nativeDir[0]) {
+        char path[PATH_MAX];
+        snprintf(path, sizeof(path), "%s/libpojavexec.so", nativeDir);
+        lib = dlopen(path, RTLD_LAZY | RTLD_GLOBAL);
+        if (lib) return lib;
+    }
+    return dlopen("libpojavexec.so", RTLD_LAZY | RTLD_GLOBAL);
+}
+
+/* pojavexec JNI_OnLoad must run twice: once on ART (dalvikJavaVMPtr), once on
+ * HotSpot (runtimeJavaVMPtr). We dlopen pojavexec without going through
+ * System.loadLibrary, so both calls must be explicit. */
+static bool call_pojav_jni_onload(JavaVM *vm, JNIEnv *env, const char *label) {
+    if (!vm) return false;
+    void *lib = open_pojavexec();
+    if (!lib) {
+        LOGE("%s: dlopen pojavexec: %s", label, dlerror());
+        return false;
+    }
+    JNI_OnLoad_func onLoad = (JNI_OnLoad_func)dlsym(lib, "JNI_OnLoad");
+    if (!onLoad) {
+        LOGE("%s: dlsym JNI_OnLoad: %s", label, dlerror());
+        return false;
+    }
+    jint ver = onLoad(vm, NULL);
+    if (env && (*env)->ExceptionCheck(env)) {
+        log_exception(env, label);
+        return false;
+    }
+    LOGI("%s: pojavexec JNI_OnLoad ok (version 0x%x)", label, (int)ver);
+    return true;
+}
+
+static void log_pojav_environ(const char *where) {
+    void *lib = open_pojavexec();
+    if (!lib) return;
+    void ***pp = (void ***)dlsym(lib, "pojav_environ");
+    if (!pp || !*pp) {
+        LOGW("%s: pojav_environ missing", where);
+        return;
+    }
+    void *win = **pp;
+    const char *renderer = getenv("POJAV_RENDERER");
+    const char *egl = getenv("POJAVEXEC_EGL");
+    LOGI("%s: pojav_environ=%p window=%p POJAV_RENDERER=%s POJAVEXEC_EGL=%s",
+         where, (void *)*pp, win,
+         renderer ? renderer : "(null)",
+         egl ? egl : "(null)");
+}
+
+static bool call_setup_bridge_window(JNIEnv *env, jobject surface) {
+    if (!surface) {
+        LOGE("setupBridgeWindow: null surface");
+        return false;
+    }
+
+    void *lib = open_pojavexec();
+    if (!lib) {
+        LOGE("setupBridgeWindow dlopen pojavexec: %s", dlerror());
+        return false;
+    }
+
+    SetupBridgeWindow_fn fn = resolve_setup_bridge_window(lib);
+    if (!fn) {
+        LOGE("setupBridgeWindow dlsym: %s", dlerror());
+        return false;
+    }
+
+    jclass cbCls = (*env)->FindClass(env, "org/lwjgl/glfw/CallbackBridge");
+    if (!cbCls || (*env)->ExceptionCheck(env)) {
+        if ((*env)->ExceptionCheck(env)) log_exception(env, "FindClass CallbackBridge");
+        LOGE("setupBridgeWindow: CallbackBridge class missing");
+        return false;
+    }
+
+    fn(env, cbCls, surface);
+    if ((*env)->ExceptionCheck(env)) {
+        log_exception(env, "setupBridgeWindow");
+        (*env)->DeleteLocalRef(env, cbCls);
+        return false;
+    }
+    (*env)->DeleteLocalRef(env, cbCls);
+    LOGI("setupBridgeWindow ok");
+    log_pojav_environ("after setupBridgeWindow");
+    return true;
+}
+
+static void init_pojav_hooks(JNIEnv *env);
+
+static void preload_pojav_deps(void) {
+    /* Do NOT preload libgl4es_114.so / MobileGlues here — early MG constructors
+     * fight ART, and APK holy-gl4es must not be pulled in before LWJGL libname. */
+    const char *libs[] = {
+        "libbytehook.so",
+        "liblinkerhook.so",
+        "libdriver_helper.so",
+        "libfcl.so",
+        NULL
+    };
+    for (int i = 0; libs[i]; i++) {
+        void *h = dlopen(libs[i], RTLD_LAZY | RTLD_GLOBAL);
+        if (!h) LOGW("preload %s: %s", libs[i], dlerror());
+    }
+}
+
+static jint launch_embedded(LaunchCtx *ctx) {
+    reset_signals();
+    setenv("_JAVA_VERSION_SET", "true", 1);
+    preload_pojav_deps();
+    start_stdio_capture();
+
+    void *libjvm = dlopen("libjvm.so", RTLD_LAZY | RTLD_GLOBAL);
+    if (!libjvm) {
+        LOGE("dlopen libjvm.so: %s", dlerror());
+        stop_stdio_capture();
+        return -2;
+    }
+    LOGI("libjvm.so loaded");
+
+    JNI_CreateJavaVM_func createVM =
+        (JNI_CreateJavaVM_func)dlsym(libjvm, "JNI_CreateJavaVM");
+    if (!createVM) {
+        LOGE("JNI_CreateJavaVM missing: %s", dlerror());
+        stop_stdio_capture();
         return -3;
     }
 
-    const char *prog = (ctx->argv && ctx->argv[0]) ? ctx->argv[0] : "java";
-    const char *full = ctx->full ? ctx->full : "21.0.1-internal";
-    const char *dot  = ctx->dot  ? ctx->dot  : "21.0.1";
+    ParsedArgs pa;
+    if (!parse_args(ctx->argv, ctx->argc, &pa)) {
+        LOGE("parse_args failed (no main class?)");
+        stop_stdio_capture();
+        return -4;
+    }
+    LOGI("main=%s jvmOpts=%d gameArgs=%d cpLen=%d",
+         pa.mainClass, pa.nOpts, pa.nGameArgs,
+         pa.classpath ? (int)strlen(pa.classpath) : 0);
 
-    LOGI("JLI_Launch argc=%d", ctx->argc);
-    return launch(
-        ctx->argc, ctx->argv,
-        0, NULL, 0, NULL,
-        full, dot, prog, prog,
-        JNI_FALSE, JNI_TRUE, JNI_FALSE, 0
-    );
+    JavaVMInitArgs vmArgs;
+    vmArgs.version = 0x00010006; /* JNI_VERSION_1_6 */
+    vmArgs.nOptions = pa.nOpts;
+    vmArgs.options = pa.opts;
+    vmArgs.ignoreUnrecognized = JNI_TRUE;
+
+    JavaVM *jvm = NULL;
+    JNIEnv *jenv = NULL;
+    jint rc = createVM(&jvm, (void **)&jenv, &vmArgs);
+    if (rc != JNI_OK || !jenv) {
+        LOGE("JNI_CreateJavaVM failed: %d", (int)rc);
+        free_parsed(&pa);
+        stop_stdio_capture();
+        return rc != 0 ? rc : -5;
+    }
+    LOGI("JVM created");
+
+    /* HotSpot pass: registers natives and sets runtimeJavaVMPtr. */
+    if (!call_pojav_jni_onload(jvm, jenv, "HotSpot")) {
+        LOGW("HotSpot pojavexec JNI_OnLoad failed — render thread may crash");
+    } else {
+        log_pojav_environ("after HotSpot JNI_OnLoad");
+    }
+
+    /* pojavexec hookExec/installLwjglDlopenHook crash in embedded HotSpot; rely on
+     * JNI_OnLoad + POJAV_RENDERER env + ART setupBridgeWindow instead. */
+
+    /* Prefer system classloader first (uses -Djava.class.path) */
+    jclass clCls = (*jenv)->FindClass(jenv, "java/lang/ClassLoader");
+    jmethodID getSys = (*jenv)->GetStaticMethodID(
+        jenv, clCls, "getSystemClassLoader", "()Ljava/lang/ClassLoader;");
+    jobject sysLoader = (*jenv)->CallStaticObjectMethod(jenv, clCls, getSys);
+    log_exception(jenv, "getSystemClassLoader");
+
+    jmethodID loadClass = (*jenv)->GetMethodID(
+        jenv, clCls, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
+    jstring mainName = (*jenv)->NewStringUTF(jenv, pa.mainClass);
+    jclass mainCls = NULL;
+
+    if (sysLoader && loadClass) {
+        mainCls = (jclass)(*jenv)->CallObjectMethod(jenv, sysLoader, loadClass, mainName);
+        if ((*jenv)->ExceptionCheck(jenv) || !mainCls) {
+            log_exception(jenv, "system loadClass");
+            mainCls = NULL;
+        }
+    }
+
+    if (!mainCls) {
+        LOGW("falling back to URLClassLoader");
+        jobject urlLoader = build_url_classloader(jenv, pa.classpath);
+        if (urlLoader) {
+            mainCls = (jclass)(*jenv)->CallObjectMethod(jenv, urlLoader, loadClass, mainName);
+            if ((*jenv)->ExceptionCheck(jenv) || !mainCls) {
+                log_exception(jenv, "URLClassLoader loadClass");
+                mainCls = NULL;
+            }
+        }
+    }
+    (*jenv)->DeleteLocalRef(jenv, mainName);
+
+    if (!mainCls) {
+        LOGE("failed to load main class %s", pa.mainClass);
+        (*jvm)->DestroyJavaVM(jvm);
+        free_parsed(&pa);
+        stop_stdio_capture();
+        return -6;
+    }
+    LOGI("Loaded %s", pa.mainClass);
+
+    jmethodID mainMethod = (*jenv)->GetStaticMethodID(
+        jenv, mainCls, "main", "([Ljava/lang/String;)V");
+    if (!mainMethod) {
+        log_exception(jenv, "GetStaticMethodID main");
+        (*jvm)->DestroyJavaVM(jvm);
+        free_parsed(&pa);
+        stop_stdio_capture();
+        return -7;
+    }
+
+    jclass strCls = (*jenv)->FindClass(jenv, "java/lang/String");
+    jobjectArray argsArr = (*jenv)->NewObjectArray(jenv, pa.nGameArgs, strCls, NULL);
+    for (int i = 0; i < pa.nGameArgs; i++) {
+        jstring js = (*jenv)->NewStringUTF(jenv, pa.gameArgs[i]);
+        (*jenv)->SetObjectArrayElement(jenv, argsArr, i, js);
+        (*jenv)->DeleteLocalRef(jenv, js);
+    }
+
+    LOGI("Invoking main(%d args)", pa.nGameArgs);
+    (*jenv)->CallStaticVoidMethod(jenv, mainCls, mainMethod, argsArr);
+    if ((*jenv)->ExceptionCheck(jenv)) {
+        log_exception(jenv, "main()");
+        (*jvm)->DestroyJavaVM(jvm);
+        free_parsed(&pa);
+        stop_stdio_capture();
+        return 1;
+    }
+
+    (*jvm)->DestroyJavaVM(jvm);
+    free_parsed(&pa);
+    stop_stdio_capture();
+    LOGI("JVM exited cleanly");
+    return 0;
 }
 
-static void *jli_thread(void *arg) {
+static void *launch_thread(void *arg) {
     LaunchCtx *ctx = (LaunchCtx *)arg;
-    ctx->result = call_jli_launch(ctx);
-    LOGI("JLI_Launch exit=%d", ctx->result);
+    ctx->result = launch_embedded(ctx);
     return NULL;
+}
+
+static void *ensure_pojavexec(void) {
+    return open_pojavexec();
+}
+
+typedef jint (*PojavLaunchJvm_fn)(JNIEnv *, jclass, jobjectArray);
+
+static void init_pojav_hooks(JNIEnv *env) {
+    void *lib = ensure_pojavexec();
+    if (!lib) {
+        LOGE("init_pojav_hooks: pojavexec not loaded");
+        return;
+    }
+
+    HookFn hookExec = (HookFn)dlsym(lib, "hookExec");
+    if (hookExec) {
+        hookExec(env);
+        if ((*env)->ExceptionCheck(env)) {
+            log_exception(env, "hookExec");
+        } else {
+            LOGI("hookExec ok");
+        }
+    } else {
+        LOGW("hookExec not found: %s", dlerror());
+    }
+
+    HookFn installLwjglHook = (HookFn)dlsym(lib, "installLwjglDlopenHook");
+    if (installLwjglHook) {
+        installLwjglHook(env);
+        if ((*env)->ExceptionCheck(env)) {
+            log_exception(env, "installLwjglDlopenHook");
+        } else {
+            LOGI("installLwjglDlopenHook ok");
+        }
+    } else {
+        LOGW("installLwjglDlopenHook not found: %s", dlerror());
+    }
+}
+
+static jint launch_via_pojavexec(JNIEnv *env, jobjectArray argsArray) {
+    void *lib = ensure_pojavexec();
+    if (!lib) {
+        LOGE("launch_via_pojavexec: dlopen pojavexec: %s", dlerror());
+        return -8;
+    }
+    PojavLaunchJvm_fn launch = (PojavLaunchJvm_fn)dlsym(
+        lib, "Java_com_oracle_dalvik_VMLauncher_launchJVM");
+    if (!launch) {
+        LOGE("launch_via_pojavexec: dlsym VMLauncher.launchJVM: %s", dlerror());
+        return -9;
+    }
+    LOGI("delegating to pojavexec VMLauncher.launchJVM");
+    jint code = launch(env, NULL, argsArray);
+    if ((*env)->ExceptionCheck(env)) {
+        log_exception(env, "VMLauncher.launchJVM");
+        return 1;
+    }
+    return code;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_booxin_launcher_core_launch_NativeJvmLauncher_nativeInitializeHooks(
+    JNIEnv *env, jclass clazz)
+{
+    (void)clazz;
+    init_pojav_hooks(env);
+    return JNI_TRUE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_booxin_launcher_core_launch_NativeJvmLauncher_nativeSetupBridgeWindow(
+    JNIEnv *env, jclass clazz, jobject surface)
+{
+    (void)clazz;
+    if (!surface) return JNI_FALSE;
+
+    pthread_mutex_lock(&g_bridge_mutex);
+    if (g_bridge_surface) {
+        (*env)->DeleteGlobalRef(env, g_bridge_surface);
+        g_bridge_surface = NULL;
+    }
+    g_bridge_surface = (*env)->NewGlobalRef(env, surface);
+    pthread_mutex_unlock(&g_bridge_mutex);
+    if (!g_bridge_surface) {
+        LOGE("setupBridgeWindow: NewGlobalRef failed");
+        return JNI_FALSE;
+    }
+
+    JavaVM *artVm = NULL;
+    if ((*env)->GetJavaVM(env, &artVm) != JNI_OK || !artVm) {
+        LOGE("setupBridgeWindow: GetJavaVM failed");
+        return JNI_FALSE;
+    }
+    /* ART pass: saves dalvikJavaVMPtr before binding the Surface window. */
+    if (!call_pojav_jni_onload(artVm, env, "ART")) {
+        return JNI_FALSE;
+    }
+    log_pojav_environ("after ART JNI_OnLoad");
+
+    return call_setup_bridge_window(env, surface) ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT jboolean JNICALL
@@ -121,16 +664,16 @@ JNIEXPORT jboolean JNICALL
 Java_com_booxin_launcher_core_launch_NativeJvmLauncher_nativeProbeJvm(
     JNIEnv *env, jclass clazz)
 {
-    void *lib = dlopen("libjli.so", RTLD_LAZY | RTLD_GLOBAL);
+    void *lib = dlopen("libjvm.so", RTLD_LAZY | RTLD_GLOBAL);
     if (!lib) {
-        LOGE("probe libjli: %s", dlerror());
+        LOGE("probe libjvm: %s", dlerror());
         return JNI_FALSE;
     }
-    if (!dlsym(lib, "JLI_Launch")) {
-        LOGE("probe JLI_Launch missing");
+    if (!dlsym(lib, "JNI_CreateJavaVM")) {
+        LOGE("probe JNI_CreateJavaVM missing");
         return JNI_FALSE;
     }
-    LOGI("probe ok (JLI_Launch)");
+    LOGI("probe ok (JNI_CreateJavaVM)");
     return JNI_TRUE;
 }
 
@@ -153,34 +696,36 @@ Java_com_booxin_launcher_core_launch_NativeJvmLauncher_nativeLaunchJvm(
     jstring fullVersion,
     jstring dotVersion)
 {
+    (void)fullVersion;
+    (void)dotVersion;
+    (void)clazz;
+
+    if (!argsArray) return -1;
+
+    /* pojavexec VMLauncher uses JLI_Launch → exec(), which is blocked by SELinux on /data.
+     * Always use embedded JNI_CreateJavaVM instead. */
+    (void)launch_via_pojavexec; /* suppress unused-function warning */
+
     int argc = 0;
     char **argv = to_argv(env, argsArray, &argc);
     if (!argv || argc <= 0) return -1;
 
-    const char *full = (*env)->GetStringUTFChars(env, fullVersion, NULL);
-    const char *dot  = (*env)->GetStringUTFChars(env, dotVersion, NULL);
-
-    LaunchCtx ctx = { .argc = argc, .argv = argv, .full = full, .dot = dot, .result = -1 };
+    LaunchCtx ctx = { .argc = argc, .argv = argv, .result = -1 };
 
     pthread_attr_t attr;
     pthread_t thread;
     pthread_attr_init(&attr);
     pthread_attr_setstacksize(&attr, 16 * 1024 * 1024);
 
-    int cr = pthread_create(&thread, &attr, jli_thread, &ctx);
+    int cr = pthread_create(&thread, &attr, launch_thread, &ctx);
     pthread_attr_destroy(&attr);
     if (cr != 0) {
         LOGE("pthread_create: %d", cr);
-        if (full) (*env)->ReleaseStringUTFChars(env, fullVersion, full);
-        if (dot)  (*env)->ReleaseStringUTFChars(env, dotVersion, dot);
         free_argv(argv, argc);
         return -4;
     }
 
     pthread_join(thread, NULL);
-
-    if (full) (*env)->ReleaseStringUTFChars(env, fullVersion, full);
-    if (dot)  (*env)->ReleaseStringUTFChars(env, dotVersion, dot);
     free_argv(argv, argc);
     return ctx.result;
 }

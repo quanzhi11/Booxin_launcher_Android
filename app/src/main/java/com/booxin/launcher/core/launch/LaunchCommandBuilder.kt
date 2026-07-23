@@ -57,7 +57,7 @@ class LaunchCommandBuilder(
         versionId: String,
         username: String,
         java: InstalledJavaRuntime,
-        maxMemoryMb: Int = 2048,
+        maxMemoryMb: Int = 1024,
         windowWidth: Int = 854,
         windowHeight: Int = 480
     ): LaunchCommand {
@@ -74,15 +74,30 @@ class LaunchCommandBuilder(
         val assetIndexId = root.optJSONObject("assetIndex")?.optString("id")
             ?: root.optString("assets").ifBlank { "legacy" }
 
+        AndroidGameRuntime.ensure(context)
+        val bridgePatch = AndroidGameRuntime.lwjglBridgePatchJar()
+        val androidLwjgl = AndroidGameRuntime.lwjglJar()
+        require(bridgePatch.isFile) {
+            "缺少 LWJGL bridge patch: ${bridgePatch.absolutePath}"
+        }
+        require(androidLwjgl.isFile) {
+            "缺少 Android LWJGL: ${androidLwjgl.absolutePath}"
+        }
+
         val classpath = linkedSetOf<File>()
+        // Use the bridge patch jar ahead of lwjgl.jar so embedded HotSpot resolves
+        // the Android-compatible CallbackBridge instead of the desktop stub.
+        classpath += bridgePatch
+        classpath += androidLwjgl
         val libraries = root.optJSONArray("libraries") ?: JSONArray()
         for (i in 0 until libraries.length()) {
             val lib = libraries.getJSONObject(i)
             val name = lib.getString("name")
             if (!LibraryFilter.shouldKeep(name)) continue
-            if (lib.has("natives")) continue
-            if (!rulesAllow(lib.optJSONArray("rules"))) continue
+            // Keep artifact jars even if the library also declares desktop natives.
             val artifact = lib.optJSONObject("downloads")?.optJSONObject("artifact")
+            if (artifact == null && lib.has("natives")) continue
+            if (!rulesAllow(lib.optJSONArray("rules"))) continue
             val path = artifact?.optString("path")?.ifBlank { null }
                 ?: GameJsonParser.mavenPath(name)
             val file = File(LauncherPaths.librariesDir, path)
@@ -94,7 +109,6 @@ class LaunchCommandBuilder(
         require(jarFile.exists()) { "缺少客户端 jar: ${jarFile.absolutePath}" }
 
         val gameDir = versionRoot
-        val nativesDir = File(LauncherPaths.rootDir, "natives/$versionId").also { it.mkdirs() }
         val assetsDir = LauncherPaths.assetsDir
         val uuidNoDash = OfflineAuth.uuidNoDash(username)
         val accessToken = "0"
@@ -114,7 +128,7 @@ class LaunchCommandBuilder(
             "user_properties" to userProperties,
             "auth_session" to accessToken,
             "game_assets" to File(assetsDir, "virtual/$assetIndexId").absolutePath,
-            "natives_directory" to nativesDir.absolutePath,
+            "natives_directory" to AndroidGameRuntime.nativesDir().absolutePath,
             "launcher_name" to "BooxinLauncher",
             "launcher_version" to "0.1.0",
             "classpath" to existingClasspath.joinToString(File.pathSeparator) { it.absolutePath },
@@ -129,7 +143,6 @@ class LaunchCommandBuilder(
         val classpathString = existingClasspath.joinToString(File.pathSeparator) { it.absolutePath }
         val jvmArgs = buildJvmArgs(
             jarFile = jarFile,
-            nativesDir = nativesDir,
             gameDir = gameDir,
             maxMemoryMb = maxMemoryMb,
             windowWidth = windowWidth,
@@ -140,16 +153,40 @@ class LaunchCommandBuilder(
 
         val gameArgs = buildGameArgs(root, tokens)
 
-        val libraryPath = buildLibraryPath(java.homeDir)
+        val stagedNatives = AndroidGameRuntime.nativesDir().absolutePath
+        val mobileGlues = File(stagedNatives, "libmobileglues.so")
+        require(mobileGlues.isFile) {
+            "缺少 MobileGlues: ${mobileGlues.absolutePath}"
+        }
+        val libraryPath = buildLibraryPath(java.homeDir, stagedNatives)
+        // Zalith/FCL plugin style: POJAV_RENDERER must stay opengles* or br_init stays NULL.
+        // POJAVEXEC_EGL / LIBGL_EGL use MobileGlues basename (not absolute gl4es disguise).
         val env = linkedMapOf(
             "JAVA_HOME" to java.homeDir.absolutePath,
             "HOME" to gameDir.absolutePath,
             "TMPDIR" to context.cacheDir.absolutePath,
             "PATH" to "${File(java.homeDir, "bin").absolutePath}:${System.getenv("PATH").orEmpty()}",
             "LD_LIBRARY_PATH" to libraryPath,
-            "POJAV_NATIVEDIR" to context.applicationInfo.nativeLibraryDir,
-            "FCL_NATIVEDIR" to context.applicationInfo.nativeLibraryDir,
-            "FORCE_VSYNC" to "false"
+            "POJAV_NATIVEDIR" to stagedNatives,
+            "FCL_NATIVEDIR" to stagedNatives,
+            "POJAV_RENDERER" to "opengles3",
+            "LIBGL_ES" to "3",
+            "LIBGL_NAME" to mobileGlues.absolutePath,
+            "LIBGL_STRING" to "MobileGlues",
+            "LIBGL_EGL" to "libmobileglues.so",
+            "POJAVEXEC_EGL" to "libmobileglues.so",
+            "LIBGL_NOERROR" to "1",
+            "LIBGL_MIPMAP" to "3",
+            "LIBGL_NOINTOVLHACK" to "1",
+            "LIBGL_NORMALIZE" to "1",
+            "FORCE_VSYNC" to "false",
+            "AWTSTUB_WIDTH" to windowWidth.toString(),
+            "AWTSTUB_HEIGHT" to windowHeight.toString(),
+            "MESA_GLSL_CACHE_DIR" to context.cacheDir.absolutePath,
+            "MG_DIR_PATH" to File(context.filesDir, "MG").absolutePath,
+            "allow_higher_compat_version" to "true",
+            "allow_glsl_extension_directive_midshader" to "true",
+            "force_glsl_extensions_warn" to "true"
         )
 
         return LaunchCommand(
@@ -166,7 +203,6 @@ class LaunchCommandBuilder(
 
     private fun buildJvmArgs(
         jarFile: File,
-        nativesDir: File,
         gameDir: File,
         maxMemoryMb: Int,
         windowWidth: Int,
@@ -174,10 +210,13 @@ class LaunchCommandBuilder(
         javaHome: File,
         classpath: String
     ): List<String> {
-        val nativeDir = context.applicationInfo.nativeLibraryDir
+        val nativeDir = AndroidGameRuntime.nativesDir().absolutePath
+        val jnaPath = buildJnaBootLibraryPath()
         return buildList {
             add("-Xmx${maxMemoryMb}m")
-            add("-Xms512m")
+            add("-Xms64m")
+            add("-XX:ActiveProcessorCount=${Runtime.getRuntime().availableProcessors()}")
+            add("--enable-native-access=ALL-UNNAMED")
             add("-Djava.home=${javaHome.absolutePath}")
             add("-Djava.class.path=$classpath")
             add("-Djava.rmi.server.useCodebaseOnly=true")
@@ -194,13 +233,25 @@ class LaunchCommandBuilder(
             add("-Duser.country=${Locale.getDefault().country}")
             add("-Duser.timezone=${TimeZone.getDefault().id}")
             add("-Dfml.earlyprogresswindow=false")
+            add("-Dloader.disable_forked_guis=true")
+            add("-Djdk.lang.Process.launchMechanism=FORK")
             add("-Dglfwstub.windowWidth=$windowWidth")
             add("-Dglfwstub.windowHeight=$windowHeight")
             add("-Dglfwstub.initEgl=false")
-            add("-Djava.library.path=${nativesDir.absolutePath}:${nativeDir}:${buildLibraryPath(javaHome)}")
-            add("-Dorg.lwjgl.opengl.libname=libgl4es_114.so")
+            // Staged filesDir natives — system nativeLibraryDir is empty when not extracted.
+            add("-Djava.library.path=$nativeDir")
+            add("-Dorg.lwjgl.librarypath=$nativeDir")
+            add("-Dorg.lwjgl.opengl.libname=$nativeDir/libmobileglues.so")
+            add("-Dorg.lwjgl.freetype.libname=$nativeDir/libfreetype.so")
             add("-Dorg.lwjgl.openal.libname=$nativeDir/libopenal.so")
-            add("-Djna.boot.library.path=$nativeDir")
+            add("-Dorg.lwjgl.vulkan.libname=libvulkan.so")
+            // mapLibraryNameBundled adds lib…/.so — pass base names only.
+            add("-Dorg.lwjgl.spvc.libname=spirv-cross-c-shared")
+            add("-Dorg.lwjgl.shaderc.libname=shaderc")
+            add("-Djna.boot.library.path=$jnaPath:$nativeDir")
+            add("-Djna.nosys=true")
+            add("-Djna.nounpack=true")
+            add("-Djna.tmpdir=${context.cacheDir.absolutePath}")
         }
     }
 
@@ -276,9 +327,10 @@ class LaunchCommandBuilder(
         return allowed
     }
 
-    private fun buildLibraryPath(javaHome: File): String {
+    private fun buildLibraryPath(javaHome: File, stagedNatives: String): String {
         val parts = mutableListOf<String>()
-        val nativeDir = context.applicationInfo.nativeLibraryDir
+        // Staged natives first so libmobileglues / disguised libgl4es win over APK holy-gl4es.
+        parts += stagedNatives
         listOf(
             File(javaHome, "lib"),
             File(javaHome, "lib/aarch64"),
@@ -289,11 +341,24 @@ class LaunchCommandBuilder(
             File(javaHome, "jre/lib/aarch64"),
             File(javaHome, "jre/lib/arm")
         ).forEach { if (it.exists()) parts += it.absolutePath }
-        parts += nativeDir
+        // APK nativeLibraryDir last (real libgl4es_114.so must not win dlopen).
+        parts += context.applicationInfo.nativeLibraryDir
         parts += "/system/lib64"
         parts += "/system/lib"
         parts += "/vendor/lib64"
         parts += "/vendor/lib"
         return parts.joinToString(":")
+    }
+
+    private fun buildJnaBootLibraryPath(): String {
+        val versionRoot = File(LauncherPaths.runtimeDir, "jna/jna")
+        val preferredVersions = listOf("5.15.0", "5.16.0", "5.14.0", "5.13.0")
+        for (version in preferredVersions) {
+            val dir = File(versionRoot, version)
+            if (File(dir, "libjnidispatch.so").isFile) {
+                return dir.absolutePath
+            }
+        }
+        return AndroidGameRuntime.nativesDir().absolutePath
     }
 }

@@ -139,10 +139,11 @@ object GameJsonParser {
             val name = lib.getString("name")
             if (!LibraryFilter.shouldKeep(name)) continue
             if (!appliesToCurrentEnvironment(lib.optJSONArray("rules"))) continue
-            // Skip native classifiers — Android uses launcher-provided LWJGL (FCL LibFilter style).
-            if (lib.has("natives")) continue
-
+            // Keep the Java artifact even when the entry also lists desktop natives.
+            // Android does not use those native classifiers.
             val artifact = lib.optJSONObject("downloads")?.optJSONObject("artifact")
+            if (artifact == null && lib.has("natives")) continue
+
             val path = artifact?.optString("path")?.ifBlank { null } ?: mavenPath(name)
             val url = when {
                 artifact?.has("url") == true -> artifact.getString("url")

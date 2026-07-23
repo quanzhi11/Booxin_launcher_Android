@@ -30,6 +30,9 @@
     <string name="launch_stop">停止</string>
     <string name="launch_close">关闭</string>
     <string name="launch_finished">进程已结束，退出码 %1$d</string>
+    <string name="launch_fg_channel">游戏运行</string>
+    <string name="launch_fg_title">Minecraft 正在运行</string>
+    <string name="launch_fg_text">Booxin 正在启动/运行游戏，请勿划掉通知</string>
 
     <string name="versions_title">已下载版本</string>
     <string name="versions_subtitle">管理本机已安装的游戏实例</string>

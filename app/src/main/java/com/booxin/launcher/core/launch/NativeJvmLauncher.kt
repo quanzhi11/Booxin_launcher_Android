@@ -1,5 +1,7 @@
 package com.booxin.launcher.core.launch
 
+import android.view.Surface
+
 object NativeJvmLauncher {
     init {
         System.loadLibrary("booxin_jvm")
@@ -10,6 +12,10 @@ object NativeJvmLauncher {
     }
 
     fun probeJvm(): Boolean = nativeProbeJvm()
+
+    fun setupBridgeWindow(surface: Surface): Boolean = nativeSetupBridgeWindow(surface)
+
+    fun initializeHooks(): Boolean = nativeInitializeHooks()
 
     fun launchJvm(args: Array<String>, majorVersion: Int): Int {
         val full = "$majorVersion.0.1-internal"
@@ -24,6 +30,10 @@ object NativeJvmLauncher {
     private external fun nativeProbeJvm(): Boolean
 
     private external fun nativeDlopen(absolutePath: String): Boolean
+
+    private external fun nativeSetupBridgeWindow(surface: Surface): Boolean
+
+    private external fun nativeInitializeHooks(): Boolean
 
     private external fun nativeLaunchJvm(
         args: Array<String>,

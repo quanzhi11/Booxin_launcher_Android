@@ -16,9 +16,11 @@ object JvmEnvironment {
         java: InstalledJavaRuntime,
         extraEnv: Map<String, String> = emptyMap()
     ) {
+        AndroidGameRuntime.ensure(context)
         val javaHome = java.homeDir
-        val nativeLibDir = context.applicationInfo.nativeLibraryDir
-        val ldLibraryPath = buildLdLibraryPath(javaHome, nativeLibDir)
+        val stagedNatives = AndroidGameRuntime.nativesDir().absolutePath
+        val systemNative = context.applicationInfo.nativeLibraryDir
+        val ldLibraryPath = buildLdLibraryPath(javaHome, "$stagedNatives:$systemNative")
         val jvmLibDir = resolveJvmLibDir(javaHome)
 
         val env = linkedMapOf(
@@ -27,8 +29,8 @@ object JvmEnvironment {
             "PATH" to "${File(javaHome, "bin").absolutePath}:${Os.getenv("PATH").orEmpty()}",
             "HOME" to javaHome.absolutePath,
             "TMPDIR" to context.cacheDir.absolutePath,
-            "POJAV_NATIVEDIR" to nativeLibDir,
-            "FCL_NATIVEDIR" to nativeLibDir,
+            "POJAV_NATIVEDIR" to stagedNatives,
+            "FCL_NATIVEDIR" to stagedNatives,
             "_JAVA_VERSION_SET" to "true"
         )
         env.putAll(extraEnv)
@@ -37,7 +39,11 @@ object JvmEnvironment {
             Os.setenv(key, value, true)
         }
 
-        preloadLibraries(javaHome, jvmLibDir, nativeLibDir)
+        loadGraphicsLibrary(stagedNatives)
+        preloadLibraries(javaHome, jvmLibDir, stagedNatives)
+        if (systemNative != stagedNatives) {
+            preloadLibraries(javaHome, jvmLibDir, systemNative)
+        }
     }
 
     fun buildLdLibraryPath(javaHome: File, nativeLibDir: String): String {
@@ -69,6 +75,15 @@ object JvmEnvironment {
         return parts.joinToString(":")
     }
 
+    /**
+     * Pojav loads the GLES translator before pojavexec hooks so LIBGL_ES is honored at init.
+     */
+    fun loadGraphicsLibrary(stagedNatives: String) {
+        // Never preload the GLES translator early. MobileGlues constructors fight ART,
+        // and libgl4es_114.so may be a MobileGlues disguise. LWJGL loads via libname.
+        return
+    }
+
     private fun preloadLibraries(javaHome: File, jvmLibDir: File, nativeLibDir: String) {
         val candidates = linkedSetOf<String>()
         // Load in dependency order: jli → jvm → core JDK libs → extras
@@ -96,7 +111,26 @@ object JvmEnvironment {
         ).forEach { name ->
             findLibrary(javaHome, name)?.let { candidates += it.absolutePath }
         }
-        File(nativeLibDir, "libopenal.so").takeIf { it.isFile }?.let { candidates += it.absolutePath }
+        // pojavexec is loaded via System.loadLibrary in PojavExecLoader (clean hook path).
+        listOf(
+            "libc++_shared.so",
+            "libbytehook.so",
+            "liblinkerhook.so",
+            "libdriver_helper.so",
+            "libfcl.so",
+            "libopenal.so",
+            "libfreetype.so",
+            "libshaderc.so",
+            "libspirv-cross-c-shared.so",
+            // Do not preload MobileGlues here — see loadGraphicsLibrary().
+            "liblwjgl.so",
+            "liblwjgl_opengl.so",
+            "liblwjgl_stb.so",
+            "liblwjgl_tinyfd.so",
+            "liblwjgl_vma.so"
+        ).forEach { name ->
+            File(nativeLibDir, name).takeIf { it.isFile }?.let { candidates += it.absolutePath }
+        }
 
         candidates.forEach { path ->
             runCatching { NativeJvmLauncher.preloadLibrary(path) }

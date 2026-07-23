@@ -14,3 +14,16 @@ dist/
 *.aab
 *.ap_
 *.dex
+tools/fcl-extract/
+tools/mobileglues/
+tools/*.log
+*.txt
+!app/src/main/assets/**/version
+!**/CMakeLists.txt
+!**/proguard-rules.pro
+clean_c_drive.py
+migrate_folders*.py
+scan_*.py
+scan_*.ps1
+diag.bat
+diag.ps1

@@ -20,6 +20,9 @@ object LauncherPaths {
     val javaDir: File get() = File(rootDir, "java")
     val javaCacheDir: File get() = File(rootDir, "cache/java")
 
+    /** Android-patched LWJGL / JNA extracted from APK assets. */
+    val runtimeDir: File get() = File(rootDir, "runtime")
+
     fun javaRuntimeDir(componentId: String): File = File(javaDir, componentId)
 
     fun init(context: Context) {
@@ -31,5 +34,6 @@ object LauncherPaths {
         File(assetsDir, "objects").mkdirs()
         javaDir.mkdirs()
         javaCacheDir.mkdirs()
+        runtimeDir.mkdirs()
     }
 }

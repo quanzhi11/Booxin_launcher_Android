@@ -1,7 +1,6 @@
 package com.booxin.launcher.core.download.game
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -25,7 +24,7 @@ class GameJsonParserTest {
     }
 
     @Test
-    fun filtersLwjglLibraries() {
+    fun keepsLwjglClassJarsDropsNativesOnly() {
         val json = """
             {
               "id":"1.20.4",
@@ -34,15 +33,15 @@ class GameJsonParserTest {
               "downloads":{"client":{"url":"https://example/client.jar","sha1":"def","size":10}},
               "libraries":[
                 {"name":"com.mojang:logging:1.1.1","downloads":{"artifact":{"path":"com/mojang/logging/1.1.1/logging-1.1.1.jar","sha1":"aaa","url":"https://libraries.minecraft.net/com/mojang/logging/1.1.1/logging-1.1.1.jar"}}},
-                {"name":"org.lwjgl:lwjgl:3.3.1"},
-                {"name":"org.lwjgl:lwjgl-opengl:3.3.1","natives":{"linux":"natives-linux"}}
+                {"name":"org.lwjgl:lwjgl:3.3.1","downloads":{"artifact":{"path":"org/lwjgl/lwjgl/3.3.1/lwjgl-3.3.1.jar","sha1":"bbb","url":"https://libraries.minecraft.net/org/lwjgl/lwjgl/3.3.1/lwjgl-3.3.1.jar"}}},
+                {"name":"org.lwjgl:lwjgl-opengl:3.3.1","natives":{"linux":"natives-linux"},"downloads":{"artifact":{"path":"org/lwjgl/lwjgl-opengl/3.3.1/lwjgl-opengl-3.3.1.jar","sha1":"ccc","url":"https://libraries.minecraft.net/org/lwjgl/lwjgl-opengl/3.3.1/lwjgl-opengl-3.3.1.jar"},"classifiers":{"natives-linux":{"path":"org/lwjgl/lwjgl-opengl/3.3.1/lwjgl-opengl-3.3.1-natives-linux.jar"}}}}
               ]
             }
         """.trimIndent()
         val version = GameJsonParser.parseVersionJson(json)
-        assertEquals(1, version.libraries.size)
-        assertEquals("com.mojang:logging:1.1.1", version.libraries[0].name)
-        assertFalse(version.libraries.any { it.name.contains("lwjgl") })
+        assertEquals(3, version.libraries.size)
+        assertTrue(version.libraries.any { it.name == "org.lwjgl:lwjgl:3.3.1" })
+        assertTrue(version.libraries.any { it.name == "org.lwjgl:lwjgl-opengl:3.3.1" })
         assertTrue(version.client?.url?.contains("client.jar") == true)
     }
 
