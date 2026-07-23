@@ -1,32 +1,111 @@
 package com.booxin.launcher.ui.launch
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.BroadcastReceiver
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
+import android.view.Gravity
+import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.View
+import android.view.WindowManager
+import android.widget.FrameLayout
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import com.booxin.launcher.R
 import com.booxin.launcher.core.launch.GameLaunchLogBus
 import com.booxin.launcher.core.launch.GameLaunchService
 import com.booxin.launcher.core.launch.GameSurfaceBridge
 import com.booxin.launcher.databinding.ActivityLaunchBinding
+import com.booxin.launcher.ui.launch.input.ControlLayoutController
+import com.booxin.launcher.ui.launch.input.GameInput
+import com.booxin.launcher.ui.launch.input.GestureMode
+import com.booxin.launcher.ui.launch.input.MouseMoveMode
+import org.lwjgl.glfw.CallbackBridge
+import kotlin.math.abs
 
 /**
  * Runs in `:game` with [SurfaceView] + JVM so pojavexec can bind ANativeWindow.
+ * Touch / virtual controls inject GLFW events via [CallbackBridge].
  */
 class LaunchActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityLaunchBinding
+    private lateinit var controlLayout: ControlLayoutController
     private val logBuffer = StringBuilder()
     private var logReceiver: BroadcastReceiver? = null
     private var pendingVersionId: String = ""
     private var pendingUsername: String = "Player"
     private var serviceStarted = false
+    private var surfaceWidth = 0
+    private var surfaceHeight = 0
+    private var controlsVisible = true
+    private var inputReady = false
+    private var overlayHidden = false
+    private var loadingPercent = 0
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var overlayHideTimeout: Runnable? = null
+    private var inputArmRetries = 0
+    private val inputArmRunnable = object : Runnable {
+        override fun run() {
+            val ok = CallbackBridge.enableAndroidInput()
+            if (ok || inputArmRetries >= 12) {
+                if (ok && !CallbackBridge.isStackQueueEnabled()) {
+                    appendLog("输入桥: stack queue 状态异常")
+                }
+                return
+            }
+            inputArmRetries++
+            mainHandler.postDelayed(this, 2_000L)
+        }
+    }
+
+    /**
+     * Only hide the loading cover when the game is actually showable.
+     * Do NOT include early boot noise (GLFW / OpenGL / Loading / pojavexec) —
+     * those fire long before the first frame and caused black-screen flash.
+     */
+    private val overlayReadyPatterns = listOf(
+        "Setting user",
+        "Reloading ResourceManager",
+        "Reload of ResourceManager",
+        "Narrator library successfully loaded",
+        "Sound engine started",
+    )
+
+    /** Coarse stage → percent mapping from our launcher + Minecraft logs. */
+    private val loadingStages = listOf(
+        "等待 Surface" to 5,
+        "启动游戏前台服务" to 8,
+        "准备 Java" to 12,
+        "Java 就绪" to 18,
+        "构建启动命令" to 22,
+        "配置 Pojav" to 28,
+        "初始化 pojavexec" to 35,
+        "输入桥已就绪" to 40,
+        "GLFW 窗口已绑定" to 48,
+        "探测 Java" to 52,
+        "启动 Minecraft JVM" to 58,
+        "LWJGL" to 65,
+        "OpenGL" to 70,
+        "Setting user" to 78,
+        "Loading Minecraft" to 82,
+        "Reloading ResourceManager" to 88,
+        "Sound engine" to 92,
+        "Narrator" to 95,
+        "Backend library" to 96,
+    )
 
     private val notifPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -41,7 +120,13 @@ class LaunchActivity : AppCompatActivity() {
             maybeStartGameService()
         }
 
-        override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) = Unit
+        override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+            surfaceWidth = width
+            surfaceHeight = height
+            GameSurfaceBridge.onSurfaceSizeChanged(width, height)
+            appendLog("Surface 尺寸: ${width}x${height}")
+            maybeStartGameService()
+        }
 
         override fun surfaceDestroyed(holder: SurfaceHolder) {
             GameSurfaceBridge.onSurfaceDestroyed()
@@ -50,18 +135,22 @@ class LaunchActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         binding = ActivityLaunchBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        hideSystemBars()
 
         pendingVersionId = intent.getStringExtra(EXTRA_VERSION_ID).orEmpty()
         pendingUsername = intent.getStringExtra(EXTRA_USERNAME).orEmpty().ifBlank { "Player" }
         if (pendingVersionId.isBlank()) {
             appendLog("缺少版本 ID")
-            binding.progressLaunch.visibility = View.GONE
+            updateLoadingUi(0, "缺少版本 ID")
             return
         }
 
         binding.textLaunchMeta.text = getString(R.string.launch_meta, pendingVersionId, pendingUsername)
+        updateLoadingUi(0, getString(R.string.launch_loading_status_init))
         binding.buttonClose.setOnClickListener {
             GameLaunchService.stop(this)
             finish()
@@ -71,6 +160,21 @@ class LaunchActivity : AppCompatActivity() {
             GameLaunchService.stop(this)
         }
 
+        // Manual dismiss only after game is far enough that Surface isn't pure black.
+        binding.panelOverlay.setOnClickListener {
+            if (loadingPercent >= 70 || CallbackBridge.areNativesLinked()) {
+                hideOverlayIfNeeded(force = true)
+            } else {
+                appendLog("仍在加载（${loadingPercent}%），请稍候再点进入")
+            }
+        }
+
+        setupControls()
+        // FCL: screen size is fixed at TouchPad/FCLInput construction — never 0.
+        GameInput.initScreenSize(
+            resources.displayMetrics.widthPixels,
+            resources.displayMetrics.heightPixels
+        )
         binding.surfaceGame.holder.addCallback(surfaceCallback)
 
         logReceiver = GameLaunchLogBus.register(
@@ -78,14 +182,14 @@ class LaunchActivity : AppCompatActivity() {
             onLine = { line ->
                 runOnUiThread {
                     appendLog(line)
-                    if (line.contains("Render thread") || line.contains("Backend library")) {
-                        hideOverlay()
-                    }
+                    onLaunchLogLine(line)
                 }
             },
             onFinished = {
                 runOnUiThread {
-                    binding.progressLaunch.visibility = View.GONE
+                    if (!overlayHidden) {
+                        updateLoadingUi(loadingPercent, "进程已结束")
+                    }
                 }
             }
         )
@@ -101,22 +205,340 @@ class LaunchActivity : AppCompatActivity() {
         }
     }
 
+    private fun setupControls() {
+        controlLayout = ControlLayoutController(
+            context = this,
+            host = binding.panelCustomButtons,
+            joystick = binding.joystickMove,
+            floatingBall = binding.btnFloatingBall,
+            editBar = binding.panelEditBar,
+            onEditModeChanged = { editing ->
+                binding.touchPad.isEnabled = !editing
+                refreshMoveVisibility()
+            }
+        )
+
+        // Screen touch = mouse (FCL): GUI click-to-point; in-world BUILD gestures
+        binding.touchPad.mouseMoveMode = MouseMoveMode.CLICK
+        binding.touchPad.gestureMode = GestureMode.BUILD
+        binding.touchPad.lookSensitivity = 1.2f
+        binding.touchPad.guiSensitivity = 1.0f
+        // FCL-style cursor layout: left/top gravity so translationX/Y map from (0,0)
+        binding.cursorView.layoutParams = (binding.cursorView.layoutParams as FrameLayout.LayoutParams).apply {
+            gravity = Gravity.TOP or Gravity.START
+            leftMargin = 0
+            topMargin = 0
+        }
+        binding.touchPad.addOnLayoutChangeListener { v, _, _, _, _, _, _, _, _ ->
+            GameInput.bindCursor(binding.cursorView, v.width, v.height)
+        }
+
+        binding.btnEditAdd.setOnClickListener { controlLayout.addButton() }
+        binding.btnEditDelete.setOnClickListener { controlLayout.deleteSelected() }
+        binding.btnEditShrink.setOnClickListener { controlLayout.resizeSelected(-8) }
+        binding.btnEditGrow.setOnClickListener { controlLayout.resizeSelected(8) }
+        binding.btnEditReset.setOnClickListener { controlLayout.resetToDefault() }
+        binding.btnEditDone.setOnClickListener { controlLayout.exitEditMode(save = true) }
+
+        setupFloatingBall()
+
+        // Grab sync fires immediately on register (often grabbing=false) — must not
+        // hide the loading cover there. Only a later grab=true means the game is up.
+        CallbackBridge.setGrabListener { grabbing ->
+            Log.i(TAG, "grabListener grabbing=$grabbing overlayHidden=$overlayHidden")
+            if (!overlayHidden) {
+                if (grabbing) {
+                    hideOverlayIfNeeded(force = true)
+                }
+                return@setGrabListener
+            }
+            refreshMoveVisibility()
+            // Prevent stuck LMB/RMB from freezing the game until chat opens.
+            binding.touchPad.resetTouchState()
+            GameInput.releaseAllMouseButtons()
+            GameInput.refreshCursorVisibility()
+            if (grabbing) {
+                binding.touchPad.syncCursorToCenter()
+            } else {
+                // FCL: keep view-space pointer; re-push so game cursor matches overlay.
+                GameInput.setPointer(GameInput.pointerX, GameInput.pointerY)
+            }
+            binding.joystickMove.releaseKeys()
+            // Re-arm stack-queue after GLFW grab transitions.
+            CallbackBridge.enableAndroidInput()
+        }
+    }
+
+    private fun onLaunchLogLine(line: String) {
+        if (overlayHidden) return
+        val ready = overlayReadyPatterns.any { pattern ->
+            line.contains(pattern, ignoreCase = true)
+        }
+        if (ready) {
+            updateLoadingUi(100, line.trim().take(80))
+            hideOverlayIfNeeded(force = true)
+        }
+    }
+
+    private fun updateLoadingFromLog(line: String) {
+        // Prefer explicit "xx%" in Minecraft / installer output.
+        val pctMatch = PERCENT_IN_LOG.find(line)
+        if (pctMatch != null) {
+            val pct = pctMatch.groupValues[1].toIntOrNull()?.coerceIn(0, 99)
+            if (pct != null && pct >= loadingPercent) {
+                updateLoadingUi(pct, shortenStatus(line))
+                return
+            }
+        }
+        var best = loadingPercent
+        var status: String? = null
+        for ((needle, pct) in loadingStages) {
+            if (line.contains(needle, ignoreCase = true) && pct >= best) {
+                best = pct
+                status = shortenStatus(line)
+            }
+        }
+        if (best > loadingPercent || status != null && best == loadingPercent) {
+            updateLoadingUi(best, status ?: shortenStatus(line))
+        } else if (line.isNotBlank() && loadingPercent in 1..98) {
+            // Keep status fresh without jumping percent backward.
+            binding.textLoadingStatus.text = shortenStatus(line)
+        }
+    }
+
+    private fun updateLoadingUi(percent: Int, status: String) {
+        loadingPercent = percent.coerceIn(0, 100)
+        binding.progressLaunch.progress = loadingPercent
+        binding.textLoadingPercent.text = getString(R.string.launch_loading_percent_fmt, loadingPercent)
+        if (status.isNotBlank()) {
+            binding.textLoadingStatus.text = status
+        }
+    }
+
+    private fun shortenStatus(line: String): String {
+        val trimmed = line.trim().removePrefix("[Booxin]").trim()
+        return if (trimmed.length <= 96) trimmed else trimmed.take(93) + "…"
+    }
+
+    private fun hideOverlayIfNeeded(force: Boolean = false) {
+        if (overlayHidden) return
+        if (!force) return
+        overlayHidden = true
+        overlayHideTimeout?.let { mainHandler.removeCallbacks(it) }
+        overlayHideTimeout = null
+        Log.i(TAG, "hideOverlay percent=$loadingPercent")
+        updateLoadingUi(100, "进入游戏")
+        hideOverlay()
+    }
+
+    private fun scheduleOverlayFallbackHide() {
+        overlayHideTimeout?.let { mainHandler.removeCallbacks(it) }
+        // Safety net only — real hide should come from ready logs / first grab / tap.
+        overlayHideTimeout = Runnable {
+            appendLog("加载超时，显示游戏画面（可点覆盖层手动进入）")
+            updateLoadingUi(99, "仍在加载，点击屏幕进入游戏")
+            // Do not auto-force-hide on timeout; leave cover so user can tap.
+            // Black surface behind is worse than a stuck loading UI.
+        }
+        mainHandler.postDelayed(overlayHideTimeout!!, 45_000L)
+    }
+
+    private fun refreshMoveVisibility() {
+        if (!inputReady || binding.panelControls.visibility != View.VISIBLE) {
+            // GONE so it does not steal blank-area touches while hidden.
+            binding.joystickMove.visibility = View.GONE
+            return
+        }
+        binding.joystickMove.visibility = View.VISIBLE
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private fun setupFloatingBall() {
+        val ball = binding.btnFloatingBall
+        var downX = 0f
+        var downY = 0f
+        var startL = 0
+        var startT = 0
+        var moved = false
+
+        ball.setOnTouchListener { v, event ->
+            val parent = v.parent as? FrameLayout ?: return@setOnTouchListener false
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downX = event.rawX
+                    downY = event.rawY
+                    val lp = v.layoutParams as FrameLayout.LayoutParams
+                    if (lp.gravity != (Gravity.TOP or Gravity.START)) {
+                        lp.gravity = Gravity.TOP or Gravity.START
+                        lp.leftMargin = v.left
+                        lp.topMargin = v.top
+                        v.layoutParams = lp
+                    }
+                    startL = lp.leftMargin
+                    startT = lp.topMargin
+                    moved = false
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = (event.rawX - downX).toInt()
+                    val dy = (event.rawY - downY).toInt()
+                    if (abs(dx) > 8 || abs(dy) > 8) moved = true
+                    if (moved) {
+                        val lp = v.layoutParams as FrameLayout.LayoutParams
+                        lp.leftMargin = (startL + dx).coerceIn(0, parent.width - v.width)
+                        lp.topMargin = (startT + dy).coerceIn(0, parent.height - v.height)
+                        v.layoutParams = lp
+                    }
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    if (moved) {
+                        controlLayout.updateFloatingBallFromView()
+                    } else {
+                        showFloatingMenu()
+                    }
+                    true
+                }
+                MotionEvent.ACTION_CANCEL -> true
+                else -> false
+            }
+        }
+    }
+
+    private fun showFloatingMenu() {
+        if (controlLayout.editMode) {
+            controlLayout.exitEditMode(save = true)
+            return
+        }
+        val hideLabel = if (controlsVisible) {
+            getString(R.string.control_menu_hide)
+        } else {
+            getString(R.string.control_menu_show)
+        }
+        val items = arrayOf(
+            getString(R.string.control_menu_edit),
+            hideLabel
+        )
+        AlertDialog.Builder(this)
+            .setTitle(R.string.control_menu_title)
+            .setItems(items) { _, which ->
+                when (which) {
+                    0 -> {
+                        setControlsVisible(true)
+                        controlLayout.enterEditMode()
+                    }
+                    1 -> setControlsVisible(!controlsVisible)
+                }
+            }
+            .show()
+    }
+
+    private fun setControlsVisible(visible: Boolean) {
+        controlsVisible = visible
+        if (!inputReady) return
+        if (controlLayout.editMode && !visible) {
+            controlLayout.exitEditMode(save = true)
+        }
+        binding.panelControls.visibility = View.VISIBLE
+        // Hide only action buttons; move stick + touch→mouse stay.
+        controlLayout.setButtonsVisible(visible)
+        binding.touchPad.visibility = View.VISIBLE
+        refreshMoveVisibility()
+        if (!visible) {
+            controlLayout.releaseAllHolds()
+        }
+    }
+
+    private fun enableGameInput() {
+        if (inputReady) {
+            // Overlay may have hidden before pojavexec loaded; re-arm native bridge.
+            CallbackBridge.enableAndroidInput()
+            scheduleInputArmRetries()
+            return
+        }
+        inputReady = true
+        val ok = CallbackBridge.enableAndroidInput()
+        binding.panelControls.visibility = View.VISIBLE
+        binding.touchPad.visibility = View.VISIBLE
+        binding.touchPad.isEnabled = true
+        GameInput.bindCursor(binding.cursorView, binding.touchPad.width, binding.touchPad.height)
+        GameInput.refreshCursorVisibility()
+        // FCL starts cursor near screen center for GUI.
+        if (CallbackBridge.windowWidth > 0 && CallbackBridge.windowHeight > 0) {
+            binding.touchPad.syncCursorToCenter()
+        }
+        setControlsVisible(true)
+        refreshMoveVisibility()
+        Log.i(TAG, "enableGameInput ok=$ok w=${CallbackBridge.windowWidth} h=${CallbackBridge.windowHeight}")
+        appendLog(
+            if (ok) "触控已启用：屏幕触摸 = 鼠标（FCL 模式）"
+            else "触控 UI 已显示，等待 pojavexec 输入桥…"
+        )
+        scheduleInputArmRetries()
+    }
+
+    /** Keep re-arming stack queue until GLFW callbacks exist (FCL timing). */
+    private fun scheduleInputArmRetries() {
+        mainHandler.removeCallbacks(inputArmRunnable)
+        inputArmRetries = 0
+        mainHandler.postDelayed(inputArmRunnable, 500L)
+        mainHandler.postDelayed({ CallbackBridge.enableAndroidInput() }, 1_500L)
+        mainHandler.postDelayed({ CallbackBridge.enableAndroidInput() }, 4_000L)
+        mainHandler.postDelayed({ CallbackBridge.enableAndroidInput() }, 8_000L)
+    }
+
+    override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
+        if (inputReady && GameInput.handleGenericMotion(event)) return true
+        return super.dispatchGenericMotionEvent(event)
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (inputReady && GameInput.handleKeyEvent(event)) return true
+        return super.dispatchKeyEvent(event)
+    }
+
+    private fun hideSystemBars() {
+        val controller = WindowInsetsControllerCompat(window, window.decorView)
+        controller.hide(WindowInsetsCompat.Type.systemBars())
+        controller.systemBarsBehavior =
+            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+    }
+
     private fun maybeStartGameService() {
         if (serviceStarted || pendingVersionId.isBlank()) return
         if (!GameSurfaceBridge.hasSurface()) {
             appendLog("等待 Surface…")
             return
         }
+        if (surfaceWidth <= 0 || surfaceHeight <= 0) {
+            appendLog("等待 Surface 尺寸…")
+            return
+        }
         serviceStarted = true
-        appendLog("启动游戏前台服务（:game 进程）…")
-        GameLaunchService.start(this, pendingVersionId, pendingUsername)
+        appendLog("启动游戏前台服务（:game 进程，${surfaceWidth}x${surfaceHeight}）…")
+        scheduleOverlayFallbackHide()
+        GameLaunchService.start(
+            this,
+            pendingVersionId,
+            pendingUsername,
+            surfaceWidth,
+            surfaceHeight
+        )
     }
 
     private fun hideOverlay() {
+        if (binding.panelOverlay.visibility != View.VISIBLE) {
+            enableGameInput()
+            return
+        }
         binding.panelOverlay.animate()
             .alpha(0f)
             .setDuration(300)
-            .withEndAction { binding.panelOverlay.visibility = View.GONE }
+            .withEndAction {
+                binding.panelOverlay.visibility = View.GONE
+                binding.panelOverlay.isClickable = false
+                enableGameInput()
+            }
             .start()
     }
 
@@ -128,9 +550,19 @@ class LaunchActivity : AppCompatActivity() {
         binding.scrollLog.post {
             binding.scrollLog.fullScroll(View.FOCUS_DOWN)
         }
+        if (!overlayHidden) {
+            updateLoadingFromLog(line)
+        }
     }
 
     override fun onDestroy() {
+        overlayHideTimeout?.let { mainHandler.removeCallbacks(it) }
+        mainHandler.removeCallbacks(inputArmRunnable)
+        CallbackBridge.setGrabListener(null)
+        if (::controlLayout.isInitialized) {
+            controlLayout.releaseAllHolds()
+        }
+        binding.joystickMove.releaseKeys()
         binding.surfaceGame.holder.removeCallback(surfaceCallback)
         logReceiver?.let { unregisterReceiver(it) }
         logReceiver = null
@@ -140,5 +572,8 @@ class LaunchActivity : AppCompatActivity() {
     companion object {
         const val EXTRA_VERSION_ID = "version_id"
         const val EXTRA_USERNAME = "username"
+        private const val TAG = "LaunchActivity"
+
+        private val PERCENT_IN_LOG = Regex("""(?<![\d.])(\d{1,3})\s*%""")
     }
 }

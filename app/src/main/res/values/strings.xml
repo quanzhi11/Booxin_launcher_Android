@@ -34,6 +34,24 @@
     <string name="launch_fg_title">Minecraft 正在运行</string>
     <string name="launch_fg_text">Booxin 正在启动/运行游戏，请勿划掉通知</string>
 
+    <string name="launch_overlay_tap">点击屏幕进入游戏</string>
+    <string name="launch_loading_title">加载中</string>
+    <string name="launch_loading_percent">0%</string>
+    <string name="launch_loading_percent_fmt">%1$d%%</string>
+    <string name="launch_loading_status_init">正在准备游戏环境…</string>
+    <string name="launch_loading_status_fmt">%1$s</string>
+    <string name="control_floating_ball">控</string>
+    <string name="control_menu_edit">自定义布局</string>
+    <string name="control_menu_hide">隐藏按键</string>
+    <string name="control_menu_show">显示按键</string>
+    <string name="control_edit_add">添加按键</string>
+    <string name="control_edit_delete">删除按键</string>
+    <string name="control_edit_shrink">缩小</string>
+    <string name="control_edit_grow">放大</string>
+    <string name="control_edit_reset">恢复默认</string>
+    <string name="control_edit_done">完成</string>
+    <string name="control_menu_title">操控设置</string>
+
     <string name="versions_title">已下载版本</string>
     <string name="versions_subtitle">管理本机已安装的游戏实例</string>
     <string name="versions_empty">暂无已下载版本</string>

@@ -23,6 +23,11 @@ public class CallbackBridge {
 
     public static final boolean INPUT_DEBUG_ENABLED;
 
+    public static volatile int windowWidth;
+    public static volatile int windowHeight;
+    public static volatile int physicalWidth;
+    public static volatile int physicalHeight;
+
     private static volatile boolean isGrabbing;
 
     static {

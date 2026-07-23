@@ -25,6 +25,9 @@ object NativeJvmLauncher {
 
     fun chdir(path: String): Boolean = nativeChdir(path)
 
+    /** Snapshot pojav_environ input gates (ready / callbacks / queue). */
+    fun dumpInputBridge(): String = nativeDumpInputBridge() ?: "null"
+
     private external fun nativeChdir(path: String): Boolean
 
     private external fun nativeProbeJvm(): Boolean
@@ -34,6 +37,8 @@ object NativeJvmLauncher {
     private external fun nativeSetupBridgeWindow(surface: Surface): Boolean
 
     private external fun nativeInitializeHooks(): Boolean
+
+    private external fun nativeDumpInputBridge(): String?
 
     private external fun nativeLaunchJvm(
         args: Array<String>,

@@ -22,6 +22,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import org.lwjgl.glfw.CallbackBridge
 
 /**
  * Headless foreground service in `:game` process.
@@ -54,6 +55,8 @@ class GameLaunchService : Service() {
 
         val versionId = intent?.getStringExtra(EXTRA_VERSION_ID).orEmpty()
         val username = intent?.getStringExtra(EXTRA_USERNAME).orEmpty().ifBlank { "Player" }
+        val windowWidth = intent?.getIntExtra(EXTRA_WINDOW_WIDTH, 0) ?: 0
+        val windowHeight = intent?.getIntExtra(EXTRA_WINDOW_HEIGHT, 0) ?: 0
         if (versionId.isBlank()) {
             // Still enter FGS briefly so startForegroundService contract is met.
             startAsForeground("缺少版本 ID")
@@ -72,7 +75,7 @@ class GameLaunchService : Service() {
 
         launchJob = scope.launch {
             try {
-                runLaunch(versionId, username)
+                runLaunch(versionId, username, windowWidth, windowHeight)
             } finally {
                 finishAndStop(startId)
             }
@@ -81,7 +84,12 @@ class GameLaunchService : Service() {
         return START_NOT_STICKY
     }
 
-    private suspend fun runLaunch(versionId: String, username: String) {
+    private suspend fun runLaunch(
+        versionId: String,
+        username: String,
+        windowWidth: Int,
+        windowHeight: Int
+    ) {
         appendLog("准备 Java 与游戏文件…")
         val prepare = AppContainer.gameRuntime.prepare(versionId)
         if (prepare.isFailure) {
@@ -97,12 +105,17 @@ class GameLaunchService : Service() {
 
         AndroidGameRuntime.ensure(this)
 
-        appendLog("构建启动命令…")
+        val width = if (windowWidth > 0) windowWidth else resources.displayMetrics.widthPixels
+        val height = if (windowHeight > 0) windowHeight else resources.displayMetrics.heightPixels
+        GameSurfaceBridge.onSurfaceSizeChanged(width, height)
+        appendLog("构建启动命令…（窗口 ${width}x${height}）")
         val command = runCatching {
             LaunchCommandBuilder(this).build(
                 versionId = versionId,
                 username = username,
-                java = java
+                java = java,
+                windowWidth = width,
+                windowHeight = height
             )
         }.getOrElse {
             appendLog("命令构建失败: ${it.message}")
@@ -128,6 +141,12 @@ class GameLaunchService : Service() {
             appendLog("pojavexec 初始化失败: ${err.message}")
             return
         }
+        // FCL: nativeSetUseInputStackQueue before JVM so ART touch reaches GLFW safely.
+        val inputOk = CallbackBridge.enableAndroidInput()
+        appendLog(
+            if (inputOk) "输入桥已就绪（stack queue=ON）"
+            else "输入桥警告：stack queue 未确认，触控可能卡死"
+        )
 
         appendLog("绑定 GLFW 窗口…")
         runCatching { GameSurfaceBridge.attachToGlfw(surface) }.onFailure { err ->
@@ -136,6 +155,17 @@ class GameLaunchService : Service() {
             return
         }
         appendLog("GLFW 窗口已绑定")
+
+        // Re-arm after bridge + while HotSpot/GLFW come up (FCL glfwPollEvents also sets ready).
+        val again = CallbackBridge.enableAndroidInput()
+        appendLog("输入桥绑定后确认: stackQueue=$again")
+        val inputHandler = android.os.Handler(mainLooper)
+        listOf(2_000L, 5_000L, 10_000L, 20_000L).forEach { delay ->
+            inputHandler.postDelayed({
+                val ok = CallbackBridge.enableAndroidInput()
+                appendLog("输入桥保活(${delay / 1000}s): stackQueue=$ok")
+            }, delay)
+        }
 
         appendLog("探测 Java 运行时…")
         val probe = runner.probeJava(java, command.env)
@@ -262,14 +292,24 @@ class GameLaunchService : Service() {
     companion object {
         const val EXTRA_VERSION_ID = "version_id"
         const val EXTRA_USERNAME = "username"
+        const val EXTRA_WINDOW_WIDTH = "window_width"
+        const val EXTRA_WINDOW_HEIGHT = "window_height"
         const val ACTION_STOP = "com.booxin.launcher.STOP_GAME"
         private const val CHANNEL_ID = "booxin_game"
         private const val NOTIFICATION_ID = 2107
 
-        fun start(context: Context, versionId: String, username: String) {
+        fun start(
+            context: Context,
+            versionId: String,
+            username: String,
+            windowWidth: Int,
+            windowHeight: Int
+        ) {
             val intent = Intent(context, GameLaunchService::class.java).apply {
                 putExtra(EXTRA_VERSION_ID, versionId)
                 putExtra(EXTRA_USERNAME, username)
+                putExtra(EXTRA_WINDOW_WIDTH, windowWidth.coerceAtLeast(64))
+                putExtra(EXTRA_WINDOW_HEIGHT, windowHeight.coerceAtLeast(64))
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
