@@ -16,6 +16,8 @@ data class ControlButtonSpec(
         KEY_HOLD,
         KEY_TAP,
         MOUSE_HOLD,
-        SCROLL
+        SCROLL,
+        /** Toggle Android soft keyboard (chat / commands). */
+        SOFT_KEYBOARD
     }
 }

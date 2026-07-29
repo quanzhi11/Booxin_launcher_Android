@@ -33,6 +33,11 @@
         android:label="@string/nav_accounts" />
 
     <fragment
+        android:id="@+id/nav_multiplayer"
+        android:name="com.booxin.launcher.ui.multiplayer.MultiplayerFragment"
+        android:label="@string/nav_multiplayer" />
+
+    <fragment
         android:id="@+id/nav_settings"
         android:name="com.booxin.launcher.ui.settings.SettingsFragment"
         android:label="@string/nav_settings" />

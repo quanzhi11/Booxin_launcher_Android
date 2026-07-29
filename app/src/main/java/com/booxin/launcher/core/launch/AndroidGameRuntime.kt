@@ -27,8 +27,8 @@ object AndroidGameRuntime {
         "liblwjgl_tinyfd.so",
         "liblwjgl_vma.so",
         "liblwjgl_nanovg.so",
-        // Prefer MobileGlues for 1.21+; keep gl4es staged only as optional fallback name
-        // but LaunchCommandBuilder points POJAV_RENDERER at libmobileglues.so.
+        // MobileGlues (1.17+) and holy gl4es (≤1.16) — keep both as distinct files.
+        // libgl4es_holy.so is created at runtime as a pristine backup (not in APK).
         "libmobileglues.so",
         "libmobileglues_info_getter.so",
         "libgl4es_114.so",
@@ -140,16 +140,17 @@ object AndroidGameRuntime {
     fun ensureNatives(context: Context) {
         val dest = nativesDir().also { it.mkdirs() }
         val marker = File(dest, ".ready")
-        val expected = "v6:${NATIVE_NAMES.size}:${preferredAbiFolder()}"
-        val markerOk = marker.isFile && marker.readText().trim().startsWith("v6:")
+        val expected = "v7:${NATIVE_NAMES.size}:${preferredAbiFolder()}"
+        val markerOk = marker.isFile && marker.readText().trim().startsWith("v7:")
         val missingRequired = !File(dest, "liblwjgl.so").isFile ||
             !File(dest, "libpojavexec.so").isFile ||
             !File(dest, "libdriver_helper.so").isFile ||
-            !File(dest, "libmobileglues.so").isFile
+            !File(dest, "libmobileglues.so").isFile ||
+            !File(dest, "libgl4es_114.so").isFile
         if (markerOk && !missingRequired) {
             // Still fill any newly-added names without wiping existing files.
             syncMissingNatives(context, dest)
-            hideGl4esIfMobileGluesPresent(dest)
+            ensureHolyGl4esBackup(context, dest)
             return
         }
 
@@ -182,17 +183,78 @@ object AndroidGameRuntime {
             }
         }
         linkNativeAlias(dest, "libspirv-cross-c-shared.so", "libspirv-cross.so")
-        hideGl4esIfMobileGluesPresent(dest)
+        ensureHolyGl4esBackup(context, dest)
         marker.writeText("$expected:$copied")
     }
 
-    private fun hideGl4esIfMobileGluesPresent(dest: File) {
-        val mg = File(dest, "libmobileglues.so")
-        if (!mg.isFile) return
-        // pojavexec LWJGL hook loads "libgl4es_114.so" for POJAV_RENDERER=opengles3.
-        // Replace that filename with MobileGlues so the game does not get holy-gl4es.
+    /**
+     * Keeps a pristine holy-gl4es copy. [libgl4es_114.so] may be swapped to
+     * MobileGlues for the 1.17+ pojavexec opengles3 path.
+     */
+    private fun ensureHolyGl4esBackup(context: Context, dest: File) {
+        val holy = File(dest, "libgl4es_holy.so")
         val gl4 = File(dest, "libgl4es_114.so")
-        mg.copyTo(gl4, overwrite = true)
+        val mg = File(dest, "libmobileglues.so")
+        val gl4IsMgDisguise = gl4.isFile && mg.isFile && gl4.length() == mg.length()
+        if (gl4IsMgDisguise || !gl4.isFile) {
+            extractNamedFromApk(context, dest, preferredAbiFolder(), "libgl4es_114.so")
+        }
+        if (gl4.isFile && (!mg.isFile || gl4.length() != mg.length())) {
+            if (!holy.isFile || holy.length() != gl4.length()) {
+                gl4.copyTo(holy, overwrite = true)
+            }
+        } else if (!holy.isFile || (mg.isFile && holy.length() == mg.length())) {
+            // Pull holy directly from APK into the backup name.
+            val apk = File(context.applicationInfo.sourceDir)
+            if (apk.isFile) {
+                ZipFile(apk).use { zip ->
+                    val entry = zip.getEntry("lib/${preferredAbiFolder()}/libgl4es_114.so") ?: return@use
+                    zip.getInputStream(entry).use { input ->
+                        holy.outputStream().use { output -> input.copyTo(output) }
+                    }
+                }
+            }
+        }
+        holy.takeIf { it.isFile }?.apply {
+            setReadable(true, false)
+            setExecutable(true, false)
+        }
+        gl4.takeIf { it.isFile }?.apply {
+            setReadable(true, false)
+            setExecutable(true, false)
+        }
+    }
+
+    /**
+     * Stages the active translator filename expected by pojavexec / LWJGL.
+     * - [GlRendererKind.GL4ES]: restore holy → libgl4es_114.so
+     * - [GlRendererKind.MOBILE_GLUES]: disguise MobileGlues as libgl4es_114.so
+     */
+    fun applyRenderer(kind: GlRendererKind) {
+        val dest = nativesDir()
+        val gl4 = File(dest, "libgl4es_114.so")
+        val holy = File(dest, "libgl4es_holy.so")
+        val mg = File(dest, "libmobileglues.so")
+        when (kind) {
+            GlRendererKind.GL4ES -> {
+                require(holy.isFile || gl4.isFile) {
+                    "缺少 holy gl4es: ${holy.absolutePath}"
+                }
+                val source = when {
+                    holy.isFile && (!mg.isFile || holy.length() != mg.length()) -> holy
+                    gl4.isFile && (!mg.isFile || gl4.length() != mg.length()) -> gl4
+                    else -> holy
+                }
+                source.copyTo(gl4, overwrite = true)
+            }
+            GlRendererKind.MOBILE_GLUES -> {
+                require(mg.isFile) { "缺少 MobileGlues: ${mg.absolutePath}" }
+                if (!holy.isFile && gl4.isFile && gl4.length() != mg.length()) {
+                    gl4.copyTo(holy, overwrite = true)
+                }
+                mg.copyTo(gl4, overwrite = true)
+            }
+        }
         gl4.setReadable(true, false)
         gl4.setExecutable(true, false)
     }
@@ -245,6 +307,27 @@ object AndroidGameRuntime {
             }
         }
         return copied
+    }
+
+    private fun extractNamedFromApk(
+        context: Context,
+        dest: File,
+        abiFolder: String,
+        name: String
+    ): Boolean {
+        val apk = File(context.applicationInfo.sourceDir)
+        if (!apk.isFile) return false
+        val entryName = "lib/$abiFolder/$name"
+        return ZipFile(apk).use { zip ->
+            val entry = zip.getEntry(entryName) ?: return@use false
+            val out = File(dest, name)
+            zip.getInputStream(entry).use { input ->
+                out.outputStream().use { output -> input.copyTo(output) }
+            }
+            out.setReadable(true, false)
+            out.setExecutable(true, false)
+            true
+        }
     }
 
     private fun preferredAbiFolder(): String {

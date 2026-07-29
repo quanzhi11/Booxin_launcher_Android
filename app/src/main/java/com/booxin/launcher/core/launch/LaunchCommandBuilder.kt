@@ -2,6 +2,7 @@ package com.booxin.launcher.core.launch
 
 import android.content.Context
 import android.os.Build
+import com.booxin.launcher.BuildConfig
 import com.booxin.launcher.core.LauncherPaths
 import com.booxin.launcher.core.download.game.GameJsonParser
 import com.booxin.launcher.core.download.game.LibraryFilter
@@ -59,7 +60,10 @@ class LaunchCommandBuilder(
         java: InstalledJavaRuntime,
         maxMemoryMb: Int = 1024,
         windowWidth: Int = 854,
-        windowHeight: Int = 480
+        windowHeight: Int = 480,
+        uuid: String? = null,
+        accessToken: String? = null,
+        userType: String? = null
     ): LaunchCommand {
         val versionRoot = File(LauncherPaths.versionsDir, versionId)
         val jsonFile = File(versionRoot, "$versionId.json")
@@ -75,6 +79,8 @@ class LaunchCommandBuilder(
             ?: root.optString("assets").ifBlank { "legacy" }
 
         AndroidGameRuntime.ensure(context)
+        val renderer = GlRendererProfile.forVersion(versionId)
+        AndroidGameRuntime.applyRenderer(renderer)
         val bridgePatch = AndroidGameRuntime.lwjglBridgePatchJar()
         val androidLwjgl = AndroidGameRuntime.lwjglJar()
         require(bridgePatch.isFile) {
@@ -110,9 +116,11 @@ class LaunchCommandBuilder(
 
         val gameDir = versionRoot
         val assetsDir = LauncherPaths.assetsDir
-        val uuidNoDash = OfflineAuth.uuidNoDash(username)
-        val accessToken = "0"
-        val userType = "legacy"
+        val resolvedUuid = uuid?.replace("-", "")?.ifBlank { null }
+            ?: OfflineAuth.uuidNoDash(username)
+        val resolvedToken = accessToken?.ifBlank { null } ?: "0"
+        val resolvedUserType = userType?.ifBlank { null }
+            ?: if (resolvedToken != "0") "msa" else "legacy"
         val userProperties = "{}"
 
         val tokens = mapOf(
@@ -121,16 +129,16 @@ class LaunchCommandBuilder(
             "game_directory" to gameDir.absolutePath,
             "assets_root" to assetsDir.absolutePath,
             "assets_index_name" to assetIndexId,
-            "auth_uuid" to uuidNoDash,
-            "auth_access_token" to accessToken,
-            "user_type" to userType,
+            "auth_uuid" to resolvedUuid,
+            "auth_access_token" to resolvedToken,
+            "user_type" to resolvedUserType,
             "version_type" to root.optString("type", "release"),
             "user_properties" to userProperties,
-            "auth_session" to accessToken,
+            "auth_session" to resolvedToken,
             "game_assets" to File(assetsDir, "virtual/$assetIndexId").absolutePath,
             "natives_directory" to AndroidGameRuntime.nativesDir().absolutePath,
             "launcher_name" to "BooxinLauncher",
-            "launcher_version" to "0.1.0",
+            "launcher_version" to BuildConfig.VERSION_NAME,
             "classpath" to existingClasspath.joinToString(File.pathSeparator) { it.absolutePath },
             "resolution_width" to windowWidth.toString(),
             "resolution_height" to windowHeight.toString(),
@@ -148,46 +156,73 @@ class LaunchCommandBuilder(
             windowWidth = windowWidth,
             windowHeight = windowHeight,
             javaHome = java.homeDir,
-            classpath = classpathString
+            javaMajor = java.majorVersion,
+            classpath = classpathString,
+            renderer = renderer
         )
 
         val gameArgs = buildGameArgs(root, tokens)
 
         val stagedNatives = AndroidGameRuntime.nativesDir().absolutePath
-        val mobileGlues = File(stagedNatives, "libmobileglues.so")
-        require(mobileGlues.isFile) {
-            "缺少 MobileGlues: ${mobileGlues.absolutePath}"
+        val glLib = when (renderer) {
+            GlRendererKind.GL4ES -> File(stagedNatives, "libgl4es_114.so")
+            GlRendererKind.MOBILE_GLUES -> File(stagedNatives, "libmobileglues.so")
         }
+        require(glLib.isFile) { "缺少渲染库: ${glLib.absolutePath}" }
         val libraryPath = buildLibraryPath(java.homeDir, stagedNatives)
-        // Zalith/FCL plugin style: POJAV_RENDERER must stay opengles* or br_init stays NULL.
-        // POJAVEXEC_EGL / LIBGL_EGL use MobileGlues basename (not absolute gl4es disguise).
-        val env = linkedMapOf(
-            "JAVA_HOME" to java.homeDir.absolutePath,
-            "HOME" to gameDir.absolutePath,
-            "TMPDIR" to context.cacheDir.absolutePath,
-            "PATH" to "${File(java.homeDir, "bin").absolutePath}:${System.getenv("PATH").orEmpty()}",
-            "LD_LIBRARY_PATH" to libraryPath,
-            "POJAV_NATIVEDIR" to stagedNatives,
-            "FCL_NATIVEDIR" to stagedNatives,
-            "POJAV_RENDERER" to "opengles3",
-            "LIBGL_ES" to "3",
-            "LIBGL_NAME" to mobileGlues.absolutePath,
-            "LIBGL_STRING" to "MobileGlues",
-            "LIBGL_EGL" to "libmobileglues.so",
-            "POJAVEXEC_EGL" to "libmobileglues.so",
-            "LIBGL_NOERROR" to "1",
-            "LIBGL_MIPMAP" to "3",
-            "LIBGL_NOINTOVLHACK" to "1",
-            "LIBGL_NORMALIZE" to "1",
-            "FORCE_VSYNC" to "false",
-            "AWTSTUB_WIDTH" to windowWidth.toString(),
-            "AWTSTUB_HEIGHT" to windowHeight.toString(),
-            "MESA_GLSL_CACHE_DIR" to context.cacheDir.absolutePath,
-            "MG_DIR_PATH" to File(context.filesDir, "MG").absolutePath,
-            "allow_higher_compat_version" to "true",
-            "allow_glsl_extension_directive_midshader" to "true",
-            "force_glsl_extensions_warn" to "true"
-        )
+        // Zalith/FCL: POJAV_RENDERER must stay opengles* or br_init stays NULL.
+        val env = when (renderer) {
+            GlRendererKind.GL4ES -> linkedMapOf(
+                "JAVA_HOME" to java.homeDir.absolutePath,
+                "HOME" to gameDir.absolutePath,
+                "TMPDIR" to context.cacheDir.absolutePath,
+                "PATH" to "${File(java.homeDir, "bin").absolutePath}:${System.getenv("PATH").orEmpty()}",
+                "LD_LIBRARY_PATH" to libraryPath,
+                "POJAV_NATIVEDIR" to stagedNatives,
+                "FCL_NATIVEDIR" to stagedNatives,
+                "POJAV_RENDERER" to "opengles2",
+                "LIBGL_ES" to "2",
+                "LIBGL_NAME" to glLib.absolutePath,
+                "LIBGL_STRING" to "GL4ES",
+                "LIBGL_EGL" to "libEGL.so",
+                "POJAVEXEC_EGL" to "libEGL.so",
+                "LIBGL_NOERROR" to "1",
+                "LIBGL_MIPMAP" to "3",
+                "LIBGL_NOINTOVLHACK" to "1",
+                "LIBGL_NORMALIZE" to "1",
+                "FORCE_VSYNC" to "false",
+                "AWTSTUB_WIDTH" to windowWidth.toString(),
+                "AWTSTUB_HEIGHT" to windowHeight.toString(),
+                "MESA_GLSL_CACHE_DIR" to context.cacheDir.absolutePath
+            )
+            GlRendererKind.MOBILE_GLUES -> linkedMapOf(
+                "JAVA_HOME" to java.homeDir.absolutePath,
+                "HOME" to gameDir.absolutePath,
+                "TMPDIR" to context.cacheDir.absolutePath,
+                "PATH" to "${File(java.homeDir, "bin").absolutePath}:${System.getenv("PATH").orEmpty()}",
+                "LD_LIBRARY_PATH" to libraryPath,
+                "POJAV_NATIVEDIR" to stagedNatives,
+                "FCL_NATIVEDIR" to stagedNatives,
+                "POJAV_RENDERER" to "opengles3",
+                "LIBGL_ES" to "3",
+                "LIBGL_NAME" to glLib.absolutePath,
+                "LIBGL_STRING" to "MobileGlues",
+                "LIBGL_EGL" to "libmobileglues.so",
+                "POJAVEXEC_EGL" to "libmobileglues.so",
+                "LIBGL_NOERROR" to "1",
+                "LIBGL_MIPMAP" to "3",
+                "LIBGL_NOINTOVLHACK" to "1",
+                "LIBGL_NORMALIZE" to "1",
+                "FORCE_VSYNC" to "false",
+                "AWTSTUB_WIDTH" to windowWidth.toString(),
+                "AWTSTUB_HEIGHT" to windowHeight.toString(),
+                "MESA_GLSL_CACHE_DIR" to context.cacheDir.absolutePath,
+                "MG_DIR_PATH" to File(context.filesDir, "MG").absolutePath,
+                "allow_higher_compat_version" to "true",
+                "allow_glsl_extension_directive_midshader" to "true",
+                "force_glsl_extensions_warn" to "true"
+            )
+        }
 
         return LaunchCommand(
             javaBinary = java.javaBinary,
@@ -208,15 +243,24 @@ class LaunchCommandBuilder(
         windowWidth: Int,
         windowHeight: Int,
         javaHome: File,
-        classpath: String
+        javaMajor: Int,
+        classpath: String,
+        renderer: GlRendererKind
     ): List<String> {
         val nativeDir = AndroidGameRuntime.nativesDir().absolutePath
         val jnaPath = buildJnaBootLibraryPath()
+        val glLibName = when (renderer) {
+            GlRendererKind.GL4ES -> "$nativeDir/libgl4es_114.so"
+            GlRendererKind.MOBILE_GLUES -> "$nativeDir/libmobileglues.so"
+        }
         return buildList {
             add("-Xmx${maxMemoryMb}m")
             add("-Xms64m")
             add("-XX:ActiveProcessorCount=${Runtime.getRuntime().availableProcessors()}")
-            add("--enable-native-access=ALL-UNNAMED")
+            // JDK 17+ only — Java 8 (MC ≤1.16.5) rejects unrecognized options.
+            if (javaMajor >= 17) {
+                add("--enable-native-access=ALL-UNNAMED")
+            }
             add("-Djava.home=${javaHome.absolutePath}")
             add("-Djava.class.path=$classpath")
             add("-Djava.rmi.server.useCodebaseOnly=true")
@@ -241,7 +285,7 @@ class LaunchCommandBuilder(
             // Staged filesDir natives — system nativeLibraryDir is empty when not extracted.
             add("-Djava.library.path=$nativeDir")
             add("-Dorg.lwjgl.librarypath=$nativeDir")
-            add("-Dorg.lwjgl.opengl.libname=$nativeDir/libmobileglues.so")
+            add("-Dorg.lwjgl.opengl.libname=$glLibName")
             add("-Dorg.lwjgl.freetype.libname=$nativeDir/libfreetype.so")
             add("-Dorg.lwjgl.openal.libname=$nativeDir/libopenal.so")
             add("-Dorg.lwjgl.vulkan.libname=libvulkan.so")

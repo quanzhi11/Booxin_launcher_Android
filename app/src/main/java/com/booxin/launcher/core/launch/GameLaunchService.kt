@@ -70,6 +70,9 @@ class GameLaunchService : Service() {
 
         val versionId = intent?.getStringExtra(EXTRA_VERSION_ID).orEmpty()
         val username = intent?.getStringExtra(EXTRA_USERNAME).orEmpty().ifBlank { "Player" }
+        val uuid = intent?.getStringExtra(EXTRA_UUID)
+        val accessToken = intent?.getStringExtra(EXTRA_ACCESS_TOKEN)
+        val userType = intent?.getStringExtra(EXTRA_USER_TYPE)
         val windowWidth = intent?.getIntExtra(EXTRA_WINDOW_WIDTH, 0) ?: 0
         val windowHeight = intent?.getIntExtra(EXTRA_WINDOW_HEIGHT, 0) ?: 0
         if (versionId.isBlank()) {
@@ -90,7 +93,15 @@ class GameLaunchService : Service() {
 
         launchJob = scope.launch {
             try {
-                runLaunch(versionId, username, windowWidth, windowHeight)
+                runLaunch(
+                    versionId = versionId,
+                    username = username,
+                    windowWidth = windowWidth,
+                    windowHeight = windowHeight,
+                    uuid = uuid,
+                    accessToken = accessToken,
+                    userType = userType
+                )
             } finally {
                 finishAndStop(startId)
             }
@@ -103,10 +114,14 @@ class GameLaunchService : Service() {
         versionId: String,
         username: String,
         windowWidth: Int,
-        windowHeight: Int
+        windowHeight: Int,
+        uuid: String? = null,
+        accessToken: String? = null,
+        userType: String? = null
     ) {
         appendLog("准备 Java 与游戏文件…")
         GameLaunchLogBus.muteUi.set(false)
+        GameLaunchLogBus.beginSession(versionId)
         val prepare = AppContainer.gameRuntime.prepare(versionId)
         if (prepare.isFailure) {
             appendLog("准备失败: ${prepare.exceptionOrNull()?.message}")
@@ -118,6 +133,15 @@ class GameLaunchService : Service() {
             return
         }
         appendLog("Java 就绪: ${java.homeDir.absolutePath}")
+
+        runCatching {
+            appendLog("检查联机模组（关闭正版验证）…")
+            val lan = com.booxin.launcher.core.multiplayer.LanServerPropertiesInstaller
+                .ensureInstalled(versionId)
+            appendLog(lan.message)
+        }.onFailure {
+            appendLog("联机模组检查失败（可继续启动）: ${it.message}")
+        }
 
         AndroidGameRuntime.ensure(this)
 
@@ -156,7 +180,10 @@ class GameLaunchService : Service() {
                 username = username,
                 java = java,
                 windowWidth = width,
-                windowHeight = height
+                windowHeight = height,
+                uuid = uuid,
+                accessToken = accessToken,
+                userType = userType
             )
         }.getOrElse {
             appendLog("命令构建失败: ${it.message}")
@@ -167,9 +194,10 @@ class GameLaunchService : Service() {
         JvmEnvironment.apply(this, java, command.env)
         appendLog(
             "渲染环境: POJAV_RENDERER=${command.env["POJAV_RENDERER"]} " +
+                "LIBGL_STRING=${command.env["LIBGL_STRING"]} " +
                 "POJAVEXEC_EGL=${command.env["POJAVEXEC_EGL"]} " +
                 "libname=${command.jvmArgs.firstOrNull { it.startsWith("-Dorg.lwjgl.opengl.libname=") }}"
-        )
+            )
 
         appendLog("初始化 pojavexec（ART hooks）…")
         runCatching { PojavExecLoader.ensureLoaded() }.onFailure { err ->
@@ -324,6 +352,9 @@ class GameLaunchService : Service() {
         const val EXTRA_USERNAME = "username"
         const val EXTRA_WINDOW_WIDTH = "window_width"
         const val EXTRA_WINDOW_HEIGHT = "window_height"
+        const val EXTRA_UUID = "uuid"
+        const val EXTRA_ACCESS_TOKEN = "access_token"
+        const val EXTRA_USER_TYPE = "user_type"
         const val ACTION_STOP = "com.booxin.launcher.STOP_GAME"
         private const val CHANNEL_ID = "booxin_game"
         private const val NOTIFICATION_ID = 2107
@@ -333,13 +364,19 @@ class GameLaunchService : Service() {
             versionId: String,
             username: String,
             windowWidth: Int,
-            windowHeight: Int
+            windowHeight: Int,
+            uuid: String? = null,
+            accessToken: String? = null,
+            userType: String? = null
         ) {
             val intent = Intent(context, GameLaunchService::class.java).apply {
                 putExtra(EXTRA_VERSION_ID, versionId)
                 putExtra(EXTRA_USERNAME, username)
                 putExtra(EXTRA_WINDOW_WIDTH, windowWidth.coerceAtLeast(64))
                 putExtra(EXTRA_WINDOW_HEIGHT, windowHeight.coerceAtLeast(64))
+                uuid?.let { putExtra(EXTRA_UUID, it) }
+                accessToken?.let { putExtra(EXTRA_ACCESS_TOKEN, it) }
+                userType?.let { putExtra(EXTRA_USER_TYPE, it) }
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)

@@ -48,6 +48,23 @@
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:windowSoftInputMode="adjustResize" />
 
+        <activity
+            android:name=".ui.multiplayer.ChatActivity"
+            android:exported="false"
+            android:label="@string/multiplayer_chat"
+            android:parentActivityName=".ui.MainActivity"
+            android:windowSoftInputMode="adjustResize" />
+
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
         <!-- JVM only — no UI/HWUI; foreground so LMK won't kill it -->
         <service
             android:name=".core.launch.GameLaunchService"

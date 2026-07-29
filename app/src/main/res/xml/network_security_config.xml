@@ -1,4 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
     <base-config cleartextTrafficPermitted="false" />
+    <!-- Room directory has no HTTPS reverse proxy yet. -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">175.178.174.103</domain>
+    </domain-config>
 </network-security-config>

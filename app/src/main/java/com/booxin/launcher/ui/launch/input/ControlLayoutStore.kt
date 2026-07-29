@@ -12,7 +12,7 @@ import java.util.UUID
 object ControlLayoutStore {
 
     private const val FILE_NAME = "control_layout.json"
-    private const val LAYOUT_VERSION = 3
+    private const val LAYOUT_VERSION = 4
 
     fun load(context: Context): ControlLayoutData {
         val file = file(context)
@@ -21,7 +21,7 @@ object ControlLayoutStore {
             val root = JSONObject(file.readText())
             val savedVersion = root.optInt("version", 0)
             if (savedVersion < LAYOUT_VERSION) return default()
-            val buttons = parseButtons(root.optJSONArray("buttons"))
+            val buttons = ensureSoftKeyboard(parseButtons(root.optJSONArray("buttons")))
             val joy = root.optJSONObject("joystick")
             val ball = root.optJSONObject("floatingBall")
             ControlLayoutData(
@@ -105,5 +105,11 @@ object ControlLayoutStore {
             y = o.optDouble("y", 0.5).toFloat().coerceIn(0.05f, 0.95f),
             sizeDp = o.optInt("sizeDp", 52).coerceIn(36, 96)
         )
+    }
+
+    private fun ensureSoftKeyboard(buttons: List<ControlButtonSpec>): List<ControlButtonSpec> {
+        if (buttons.isEmpty()) return buttons
+        if (buttons.any { it.kind == ControlButtonSpec.Kind.SOFT_KEYBOARD }) return buttons
+        return buttons + ControlCatalog.softKeyboardButton()
     }
 }

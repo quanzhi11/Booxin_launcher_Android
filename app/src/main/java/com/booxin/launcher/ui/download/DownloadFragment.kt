@@ -15,6 +15,7 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import com.booxin.launcher.AppContainer
 import com.booxin.launcher.R
 import com.booxin.launcher.core.download.game.GameInstallPhase
+import com.booxin.launcher.core.java.JavaInstallState
 import com.booxin.launcher.data.model.GameVersion
 import com.booxin.launcher.data.model.VersionType
 import com.booxin.launcher.databinding.FragmentDownloadBinding
@@ -70,7 +71,7 @@ class DownloadFragment : Fragment() {
                     AppContainer.repository.installProgress.collect { progress ->
                         val b = _binding ?: return@collect
                         if (progress == null) {
-                            b.progressPanel.isVisible = false
+                            if (!installing) b.progressPanel.isVisible = false
                             return@collect
                         }
                         b.progressPanel.isVisible =
@@ -79,6 +80,29 @@ class DownloadFragment : Fragment() {
                                 progress.phase != GameInstallPhase.IDLE
                         b.textProgress.text = progress.message
                         val fraction = progress.fraction
+                        if (fraction >= 0f) {
+                            b.progressDownload.isIndeterminate = false
+                            b.progressDownload.progress = (fraction * 100).toInt()
+                        } else {
+                            b.progressDownload.isIndeterminate = true
+                        }
+                    }
+                }
+                launch {
+                    // prepare() may download Java before game installProgress updates.
+                    AppContainer.javaEnvironment.progress.collect { progress ->
+                        val b = _binding ?: return@collect
+                        if (!installing || progress == null) return@collect
+                        if (progress.state == JavaInstallState.INSTALLED ||
+                            progress.state == JavaInstallState.FAILED
+                        ) {
+                            return@collect
+                        }
+                        b.progressPanel.isVisible = true
+                        b.textProgress.text = progress.message.ifBlank {
+                            getString(R.string.download_installing)
+                        }
+                        val fraction = progress.progressFraction
                         if (fraction >= 0f) {
                             b.progressDownload.isIndeterminate = false
                             b.progressDownload.progress = (fraction * 100).toInt()

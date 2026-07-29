@@ -127,7 +127,8 @@ class ControlButtonView(
                     ControlButtonSpec.Kind.KEY_TAP -> {
                         // fire on up to avoid accidental taps while scrolling UI
                     }
-                    ControlButtonSpec.Kind.SCROLL -> Unit
+                    ControlButtonSpec.Kind.SCROLL,
+                    ControlButtonSpec.Kind.SOFT_KEYBOARD -> Unit
                 }
                 return true
             }
@@ -140,6 +141,7 @@ class ControlButtonView(
                         val scroll = if (spec.code >= 0) GameInput.MOUSE_SCROLL_UP else GameInput.MOUSE_SCROLL_DOWN
                         GameInput.sendKeyEvent(scroll, true)
                     }
+                    ControlButtonSpec.Kind.SOFT_KEYBOARD -> GameInput.toggleSoftKeyboard()
                 }
                 return true
             }

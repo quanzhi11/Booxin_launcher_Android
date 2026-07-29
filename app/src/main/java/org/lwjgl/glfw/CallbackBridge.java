@@ -141,6 +141,17 @@ public class CallbackBridge {
         sendKey(key, false);
     }
 
+    /** FCL / GLFW char event for soft-keyboard text. */
+    public static void sendChar(char codepoint) {
+        try {
+            nativeSendChar(codepoint);
+            nativeSendCharMods(codepoint, 0);
+            nativesLinked = true;
+        } catch (UnsatisfiedLinkError | Exception e) {
+            logLinkOnce("nativeSendChar", e);
+        }
+    }
+
     public static void sendScroll(double xoffset, double yoffset) {
         try {
             nativeSendScroll(xoffset, yoffset);

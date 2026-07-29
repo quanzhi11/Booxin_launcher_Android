@@ -8,7 +8,10 @@ import com.booxin.launcher.data.model.AccountType
 import com.booxin.launcher.data.model.LauncherAccount
 import com.booxin.launcher.databinding.ItemAccountBinding
 
-class AccountsAdapter : RecyclerView.Adapter<AccountsAdapter.Holder>() {
+class AccountsAdapter(
+    private val onSelect: (LauncherAccount) -> Unit = {},
+    private val onDelete: (LauncherAccount) -> Unit = {}
+) : RecyclerView.Adapter<AccountsAdapter.Holder>() {
 
     private val items = mutableListOf<LauncherAccount>()
 
@@ -29,17 +32,25 @@ class AccountsAdapter : RecyclerView.Adapter<AccountsAdapter.Holder>() {
 
     override fun getItemCount(): Int = items.size
 
-    class Holder(
+    inner class Holder(
         private val binding: ItemAccountBinding
     ) : RecyclerView.ViewHolder(binding.root) {
         fun bind(item: LauncherAccount) {
-            binding.textAccountName.text = item.name
+            binding.textAccountName.text = buildString {
+                append(item.name)
+                if (item.selected) append(" ✓")
+            }
             binding.textAccountType.setText(
                 when (item.type) {
                     AccountType.MICROSOFT -> R.string.accounts_microsoft
                     AccountType.OFFLINE -> R.string.accounts_offline
                 }
             )
+            binding.root.setOnClickListener { onSelect(item) }
+            binding.root.setOnLongClickListener {
+                onDelete(item)
+                true
+            }
         }
     }
 }

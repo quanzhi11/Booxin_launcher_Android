@@ -13,6 +13,7 @@ object ControlCatalog {
     )
 
     val entries: List<Entry> = listOf(
+        Entry("键盘", ControlButtonSpec.Kind.SOFT_KEYBOARD, 0, 48),
         Entry("跳", ControlButtonSpec.Kind.KEY_HOLD, GlfwKeys.KEY_SPACE, 64),
         Entry("潜", ControlButtonSpec.Kind.KEY_HOLD, GlfwKeys.KEY_LEFT_SHIFT),
         Entry("跑", ControlButtonSpec.Kind.KEY_HOLD, GlfwKeys.KEY_LEFT_CONTROL),
@@ -38,11 +39,26 @@ object ControlCatalog {
         Entry("9", ControlButtonSpec.Kind.KEY_TAP, GlfwKeys.KEY_9, 44),
     )
 
+    fun softKeyboardButton(
+        x: Float = 0.94f,
+        y: Float = 0.30f,
+        sizeDp: Int = 48
+    ): ControlButtonSpec = ControlButtonSpec(
+        id = "kbd",
+        label = "键盘",
+        kind = ControlButtonSpec.Kind.SOFT_KEYBOARD,
+        code = 0,
+        x = x,
+        y = y,
+        sizeDp = sizeDp
+    )
+
     fun defaultLayout(): List<ControlButtonSpec> = listOf(
         // Top-right utility
         ControlButtonSpec("esc", "ESC", ControlButtonSpec.Kind.KEY_TAP, GlfwKeys.KEY_ESCAPE, 0.94f, 0.06f, 44),
         ControlButtonSpec("chat", "T", ControlButtonSpec.Kind.KEY_TAP, GlfwKeys.KEY_T, 0.94f, 0.14f, 48),
         ControlButtonSpec("inv", "E", ControlButtonSpec.Kind.KEY_TAP, GlfwKeys.KEY_E, 0.94f, 0.22f, 48),
+        softKeyboardButton(0.94f, 0.30f, 48),
         // Right combat / interact column
         ControlButtonSpec("lmb", "攻击", ControlButtonSpec.Kind.MOUSE_HOLD, GlfwKeys.MOUSE_LEFT, 0.90f, 0.58f, 58),
         ControlButtonSpec("rmb", "使用", ControlButtonSpec.Kind.MOUSE_HOLD, GlfwKeys.MOUSE_RIGHT, 0.78f, 0.58f, 54),

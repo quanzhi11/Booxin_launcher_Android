@@ -1,5 +1,6 @@
 package com.booxin.launcher.data.repository
 
+import android.content.Context
 import com.booxin.launcher.core.LauncherPaths
 import com.booxin.launcher.core.download.game.VanillaGameInstaller
 import com.booxin.launcher.core.download.game.VersionManifestClient
@@ -12,16 +13,22 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 
 /**
- * Launcher repository: local installs + Mojang/BMCL remote version list.
+ * Launcher repository: local installs + Mojang/BMCL remote version list + accounts.
  */
 class LauncherRepository(
+    private val appContext: Context,
     private val manifestClient: VersionManifestClient = VersionManifestClient(),
     private val gameInstaller: VanillaGameInstaller = VanillaGameInstaller()
 ) {
+
+    private val prefs by lazy {
+        appContext.getSharedPreferences(PREFS_ACCOUNTS, Context.MODE_PRIVATE)
+    }
 
     private val _remoteVersions = MutableStateFlow<List<GameVersion>>(emptyList())
     val remoteVersions: StateFlow<List<GameVersion>> = _remoteVersions.asStateFlow()
@@ -39,6 +46,10 @@ class LauncherRepository(
     val session: StateFlow<LauncherSession> = _session.asStateFlow()
 
     val installProgress = gameInstaller.progress
+
+    init {
+        loadAccounts()
+    }
 
     fun refreshInstalledVersions() {
         val dirs = LauncherPaths.versionsDir.listFiles()
@@ -126,19 +137,116 @@ class LauncherRepository(
             id = "offline-${System.currentTimeMillis()}",
             name = name.ifBlank { "Player" },
             type = AccountType.OFFLINE,
-            selected = _accounts.value.isEmpty()
+            selected = true
         )
+        upsertAccount(account)
+    }
+
+    fun upsertMicrosoftAccount(account: LauncherAccount) {
+        upsertAccount(account.copy(type = AccountType.MICROSOFT, selected = true))
+    }
+
+    fun selectAccount(accountId: String) {
+        _accounts.update { list ->
+            list.map { it.copy(selected = it.id == accountId) }
+        }
+        _session.update { it.copy(selectedAccountId = accountId) }
+        persistAccounts()
+    }
+
+    fun selectedAccount(): LauncherAccount? =
+        _accounts.value.firstOrNull { it.selected }
+            ?: _accounts.value.firstOrNull()
+
+    fun removeAccount(accountId: String) {
+        _accounts.update { list ->
+            val next = list.filterNot { it.id == accountId }
+            if (next.none { it.selected } && next.isNotEmpty()) {
+                listOf(next.first().copy(selected = true)) + next.drop(1)
+            } else next
+        }
+        _session.update { it.copy(selectedAccountId = selectedAccount()?.id) }
+        persistAccounts()
+    }
+
+    private fun upsertAccount(account: LauncherAccount) {
         _accounts.update { current ->
-            val cleared = current.map { it.copy(selected = false) }
-            cleared + account
+            val without = current.filterNot { it.id == account.id }.map { it.copy(selected = false) }
+            without + account.copy(selected = true)
         }
         _session.update { it.copy(selectedAccountId = account.id) }
+        persistAccounts()
     }
 
     fun selectedVersion(): GameVersion? {
         val id = _session.value.selectedVersionId ?: return null
         return _installedVersions.value.firstOrNull { it.id == id }
             ?: _remoteVersions.value.firstOrNull { it.id == id }
+    }
+
+    private fun loadAccounts() {
+        val raw = prefs.getString(KEY_ACCOUNTS, null) ?: return
+        runCatching {
+            val arr = JSONArray(raw)
+            val list = buildList {
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    val type = runCatching {
+                        AccountType.valueOf(o.optString("type", "OFFLINE"))
+                    }.getOrDefault(AccountType.OFFLINE)
+                    add(
+                        LauncherAccount(
+                            id = o.getString("id"),
+                            name = o.optString("name", "Player"),
+                            type = type,
+                            selected = o.optBoolean("selected", false),
+                            uuid = o.optString("uuid").ifBlank { null },
+                            accessToken = o.optString("accessToken").ifBlank { null },
+                            refreshToken = o.optString("refreshToken").ifBlank { null },
+                            accessTokenExpiresAtMs = o.optLong("accessTokenExpiresAtMs", 0L)
+                                .takeIf { it > 0 },
+                            xuid = o.optString("xuid").ifBlank { null },
+                            userType = o.optString(
+                                "userType",
+                                if (type == AccountType.MICROSOFT) "msa" else "legacy"
+                            ),
+                            hasMinecraft = o.optBoolean(
+                                "hasMinecraft",
+                                type != AccountType.MICROSOFT
+                            )
+                        )
+                    )
+                }
+            }
+            if (list.isNotEmpty()) {
+                val hasSelected = list.any { it.selected }
+                _accounts.value = if (hasSelected) list else {
+                    list.mapIndexed { i, a -> a.copy(selected = i == 0) }
+                }
+                _session.update { it.copy(selectedAccountId = selectedAccount()?.id) }
+            }
+        }
+    }
+
+    private fun persistAccounts() {
+        val arr = JSONArray()
+        _accounts.value.forEach { a ->
+            arr.put(
+                JSONObject()
+                    .put("id", a.id)
+                    .put("name", a.name)
+                    .put("type", a.type.name)
+                    .put("selected", a.selected)
+                    .put("uuid", a.uuid)
+                    .put("accessToken", a.accessToken)
+                    .put("refreshToken", a.refreshToken)
+                    .put("accessTokenExpiresAtMs", a.accessTokenExpiresAtMs)
+                    .put("xuid", a.xuid)
+                    .put("userType", a.userType)
+                    .put("hasMinecraft", a.hasMinecraft)
+            )
+        }
+        prefs.edit().putString(KEY_ACCOUNTS, arr.toString()).apply()
     }
 
     private fun readLocalType(dir: File): VersionType {
@@ -153,5 +261,10 @@ class LauncherRepository(
                 else -> VersionType.RELEASE
             }
         }.getOrDefault(VersionType.RELEASE)
+    }
+
+    companion object {
+        private const val PREFS_ACCOUNTS = "booxin_accounts"
+        private const val KEY_ACCOUNTS = "accounts_json"
     }
 }

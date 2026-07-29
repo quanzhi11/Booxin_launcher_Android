@@ -5,11 +5,19 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import androidx.core.content.ContextCompat
+import com.booxin.launcher.core.LauncherPaths
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Cross-process log bridge: [GameLaunchService] (:game) broadcasts lines,
- * [LaunchActivity] (main process) receives them.
+ * [LaunchActivity] (main / :game UI) receives them.
+ *
+ * Always appends to [latestLogFile] so diagnostics exported from the main
+ * process can include :game launch failures.
  *
  * After the loading overlay hides, [muteUi] stops Binder spam — mirroring every
  * Minecraft log line onto the UI thread was the main cause of touch lag / heat.
@@ -23,7 +31,24 @@ object GameLaunchLogBus {
     /** Process-local (:game). Cleared on each new launch. */
     val muteUi: AtomicBoolean = AtomicBoolean(false)
 
+    private val writeLock = Any()
+
+    fun latestLogFile(): File? {
+        if (!LauncherPaths.isInitialized) return null
+        return File(LauncherPaths.rootDir, "logs/latest-launch.log")
+    }
+
+    fun beginSession(versionId: String) {
+        val file = latestLogFile() ?: return
+        runCatching {
+            file.parentFile?.mkdirs()
+            val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z", Locale.US).format(Date())
+            file.writeText("=== Booxin launch $stamp version=$versionId ===\n")
+        }
+    }
+
     fun emit(context: Context, line: String) {
+        appendToFile(line)
         if (muteUi.get()) return
         context.sendBroadcast(
             Intent(ACTION_LOG).apply {
@@ -34,6 +59,7 @@ object GameLaunchLogBus {
     }
 
     fun finished(context: Context) {
+        appendToFile("=== launch finished ===")
         context.sendBroadcast(
             Intent(ACTION_FINISHED).apply {
                 setPackage(context.packageName)
@@ -48,6 +74,25 @@ object GameLaunchLogBus {
                 setPackage(context.packageName)
             }
         )
+    }
+
+    fun readPersistedLog(maxChars: Int = 120_000): String {
+        val file = latestLogFile() ?: return "(launch log path unavailable)"
+        if (!file.isFile) return "(no launch log yet)"
+        return runCatching {
+            val text = file.readText()
+            if (text.length <= maxChars) text else text.takeLast(maxChars)
+        }.getOrElse { "read launch log failed: ${it.message}" }
+    }
+
+    private fun appendToFile(line: String) {
+        val file = latestLogFile() ?: return
+        synchronized(writeLock) {
+            runCatching {
+                file.parentFile?.mkdirs()
+                file.appendText(line + "\n")
+            }
+        }
     }
 
     fun register(

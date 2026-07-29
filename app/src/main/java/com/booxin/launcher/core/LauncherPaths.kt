@@ -25,6 +25,9 @@ object LauncherPaths {
 
     fun javaRuntimeDir(componentId: String): File = File(javaDir, componentId)
 
+    val isInitialized: Boolean
+        get() = ::rootDir.isInitialized
+
     fun init(context: Context) {
         rootDir = File(context.filesDir, "minecraft").also { it.mkdirs() }
         versionsDir.mkdirs()

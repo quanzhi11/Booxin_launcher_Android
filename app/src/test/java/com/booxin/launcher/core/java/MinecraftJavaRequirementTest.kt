@@ -8,6 +8,7 @@ class MinecraftJavaRequirementTest {
     @Test
     fun mapsLegacyVersionsToJava8() {
         assertEquals(8, MinecraftJavaRequirement.requiredMajor("1.12.2"))
+        assertEquals(8, MinecraftJavaRequirement.requiredMajor("1.16.1"))
         assertEquals(8, MinecraftJavaRequirement.requiredMajor("1.16.5"))
     }
 

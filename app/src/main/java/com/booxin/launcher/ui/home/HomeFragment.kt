@@ -11,7 +11,12 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.booxin.launcher.AppContainer
 import com.booxin.launcher.R
+import com.booxin.launcher.core.auth.MicrosoftAuthLogger
+import com.booxin.launcher.core.auth.MicrosoftAuthService
+import com.booxin.launcher.data.model.AccountType
+import com.booxin.launcher.data.model.LauncherAccount
 import com.booxin.launcher.databinding.FragmentHomeBinding
+import com.booxin.launcher.ui.auth.MicrosoftAuthErrorDialog
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import kotlinx.coroutines.launch
 
@@ -53,10 +58,9 @@ class HomeFragment : Fragment() {
                 return@setOnClickListener
             }
             viewLifecycleOwner.lifecycleScope.launch {
-                val account = AppContainer.repository.accounts.value.firstOrNull { it.selected }
-                val username = account?.name ?: "Player"
                 val ctx = context ?: return@launch
-                val result = AppContainer.gameRuntime.launch(ctx, version.id, username)
+                val account = prepareLaunchAccount() ?: return@launch
+                val result = AppContainer.gameRuntime.launch(ctx, version.id, account)
                 if (result.isFailure) {
                     Toast.makeText(
                         ctx,
@@ -69,6 +73,47 @@ class HomeFragment : Fragment() {
                 }
             }
         }
+    }
+
+    private suspend fun prepareLaunchAccount(): LauncherAccount? {
+        var account = AppContainer.repository.selectedAccount()
+            ?: LauncherAccount(
+                id = "offline-default",
+                name = "Player",
+                type = AccountType.OFFLINE,
+                selected = true
+            )
+        val joiningRoom = AppContainer.multiplayerAuth.activeLobby.value != null
+        // Offline guests are supported (same as PC). Host LAN must allow offline
+        // (online-mode=false / 关闭正版验证); otherwise Minecraft shows「无效会话」.
+        if (joiningRoom && account.type == AccountType.OFFLINE) {
+            Toast.makeText(
+                requireContext(),
+                R.string.multiplayer_offline_join_hint,
+                Toast.LENGTH_LONG
+            ).show()
+        }
+        if (account.type == AccountType.MICROSOFT) {
+            // Refresh MSA before launch when in a Booxin room — stale tokens cause「无效会话」.
+            val refreshed = MicrosoftAuthService.ensureSession(
+                account,
+                forceRefresh = joiningRoom
+            )
+            if (refreshed.isFailure) {
+                val err = refreshed.exceptionOrNull()
+                val summary = getString(
+                    R.string.accounts_ms_refresh_failed,
+                    err?.message ?: "请重新登录"
+                )
+                val log = MicrosoftAuthLogger.lastReport
+                    ?: "（无详细日志）\n${err?.message}"
+                MicrosoftAuthErrorDialog.show(requireContext(), summary, log)
+                return null
+            }
+            account = refreshed.getOrThrow()
+            AppContainer.repository.upsertMicrosoftAccount(account)
+        }
+        return account
     }
 
     private fun showSwitchVersionDialog() {

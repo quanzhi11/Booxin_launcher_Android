@@ -25,7 +25,16 @@ data class LauncherAccount(
     val id: String,
     val name: String,
     val type: AccountType,
-    val selected: Boolean = false
+    val selected: Boolean = false,
+    /** Undashed UUID for microsoft; offline may be null until launch. */
+    val uuid: String? = null,
+    val accessToken: String? = null,
+    val refreshToken: String? = null,
+    val accessTokenExpiresAtMs: Long? = null,
+    val xuid: String? = null,
+    /** Minecraft --userType: msa / legacy */
+    val userType: String = if (type == AccountType.MICROSOFT) "msa" else "legacy",
+    val hasMinecraft: Boolean = type != AccountType.MICROSOFT
 )
 
 data class LauncherSession(

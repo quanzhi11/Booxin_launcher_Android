@@ -26,6 +26,7 @@ object GlfwKeys {
     const val KEY_ESCAPE = 256
     const val KEY_ENTER = 257
     const val KEY_TAB = 258
+    const val KEY_BACKSPACE = 259
     const val KEY_F5 = 294
     const val KEY_LEFT_SHIFT = 340
     const val KEY_LEFT_CONTROL = 341

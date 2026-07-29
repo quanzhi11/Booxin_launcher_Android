@@ -66,8 +66,13 @@ class JavaEnvironmentManager(
 
     suspend fun ensureMajor(majorVersion: Int): Result<InstalledJavaRuntime> {
         findInstalled(majorVersion)?.let { runtime ->
-            markJavaExecutable(runtime.homeDir)
-            return Result.success(runtime)
+            return runCatching {
+                withContext(Dispatchers.IO) {
+                    finalizeRuntimeHome(runtime.homeDir)
+                }
+                findInstalled(majorVersion)
+                    ?: error("运行时修复后未找到可用 java")
+            }
         }
         val pkg = JavaRuntimeCatalog.find(majorVersion)
             ?: return Result.failure(
@@ -108,7 +113,8 @@ class JavaEnvironmentManager(
                 else -> ArchiveExtractor.extract(archive, targetDir)
             }
 
-            markJavaExecutable(targetDir)
+            emit(pkg.componentId, JavaInstallState.EXTRACTING, message = "正在解压 Pack200…")
+            finalizeRuntimeHome(targetDir)
 
             val installed = locateInstalled(pkg.componentId, pkg.majorVersion)
                 ?: throw IllegalStateException("解压后未找到 bin/java")
@@ -204,11 +210,23 @@ class JavaEnvironmentManager(
         return binJava.takeIf { it.exists() } ?: File(home, "bin/java").takeIf { it.exists() }
     }
 
+    /**
+     * chmod + unpack pack200 jars so HotSpot can load `rt.jar` / bootstrap classes.
+     */
+    private fun finalizeRuntimeHome(home: File) {
+        markJavaExecutable(home)
+        if (Pack200Unpacker.needsUnpack(home)) {
+            Pack200Unpacker.unpackAll(home)
+            markJavaExecutable(home)
+        }
+    }
+
     private fun markJavaExecutable(home: File) {
         // Directories need +x to traverse; .so / bin tools need +rx for dlopen/linker.
         home.walkTopDown().forEach { file ->
             val needsExec = file.isDirectory ||
                 file.name == "java" ||
+                file.name == "unpack200" ||
                 file.name.endsWith(".so") ||
                 file.parentFile?.name == "bin"
             if (!needsExec) return@forEach

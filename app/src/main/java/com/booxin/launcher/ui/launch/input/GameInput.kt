@@ -54,6 +54,9 @@ object GameInput {
     @Volatile
     private var cursorHotspot = 3f
 
+    @Volatile
+    private var softKeyboard: TouchCharInput? = null
+
     fun initScreenSize(widthPx: Int, heightPx: Int) {
         screenWidth = widthPx.coerceAtLeast(1)
         screenHeight = heightPx.coerceAtLeast(1)
@@ -157,6 +160,23 @@ object GameInput {
     fun sendKeyTap(keycode: Int) {
         sendKeyEvent(keycode, true)
         sendKeyEvent(keycode, false)
+    }
+
+    fun sendChar(ch: Char) {
+        if (ch.code == 0) return
+        CallbackBridge.sendChar(ch)
+    }
+
+    fun sendBackspace() {
+        sendKeyTap(GlfwKeys.KEY_BACKSPACE)
+    }
+
+    fun toggleSoftKeyboard() {
+        softKeyboard?.switchKeyboardState()
+    }
+
+    fun bindSoftKeyboard(view: TouchCharInput?) {
+        softKeyboard = view
     }
 
     fun releaseAllMouseButtons() {

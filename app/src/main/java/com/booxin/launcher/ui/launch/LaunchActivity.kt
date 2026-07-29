@@ -3,6 +3,7 @@ package com.booxin.launcher.ui.launch
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.BroadcastReceiver
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -47,6 +48,9 @@ class LaunchActivity : AppCompatActivity() {
     private var logReceiver: BroadcastReceiver? = null
     private var pendingVersionId: String = ""
     private var pendingUsername: String = "Player"
+    private var pendingUuid: String? = null
+    private var pendingAccessToken: String? = null
+    private var pendingUserType: String? = null
     private var serviceStarted = false
     private var surfaceWidth = 0
     private var surfaceHeight = 0
@@ -145,6 +149,9 @@ class LaunchActivity : AppCompatActivity() {
 
         pendingVersionId = intent.getStringExtra(EXTRA_VERSION_ID).orEmpty()
         pendingUsername = intent.getStringExtra(EXTRA_USERNAME).orEmpty().ifBlank { "Player" }
+        pendingUuid = intent.getStringExtra(EXTRA_UUID)
+        pendingAccessToken = intent.getStringExtra(EXTRA_ACCESS_TOKEN)
+        pendingUserType = intent.getStringExtra(EXTRA_USER_TYPE)
         if (pendingVersionId.isBlank()) {
             appendLog("缺少版本 ID")
             updateLoadingUi(0, "缺少版本 ID")
@@ -153,13 +160,10 @@ class LaunchActivity : AppCompatActivity() {
 
         binding.textLaunchMeta.text = getString(R.string.launch_meta, pendingVersionId, pendingUsername)
         updateLoadingUi(0, getString(R.string.launch_loading_status_init))
-        binding.buttonClose.setOnClickListener {
-            GameLaunchService.stop(this)
-            finish()
-        }
+        binding.buttonClose.setOnClickListener { returnToLauncher() }
         binding.buttonStop.setOnClickListener {
             appendLog("用户请求停止…")
-            GameLaunchService.stop(this)
+            returnToLauncher()
         }
 
         // Manual dismiss only after game is far enough that Surface isn't pure black.
@@ -172,6 +176,7 @@ class LaunchActivity : AppCompatActivity() {
         }
 
         setupControls()
+        GameInput.bindSoftKeyboard(binding.touchCharInput)
         // FCL: screen size is fixed at TouchPad/FCLInput construction — never 0.
         GameInput.initScreenSize(
             resources.displayMetrics.widthPixels,
@@ -188,11 +193,7 @@ class LaunchActivity : AppCompatActivity() {
                 }
             },
             onFinished = {
-                runOnUiThread {
-                    if (!overlayHidden) {
-                        updateLoadingUi(loadingPercent, "进程已结束")
-                    }
-                }
+                runOnUiThread { returnToLauncher() }
             }
         )
 
@@ -438,7 +439,8 @@ class LaunchActivity : AppCompatActivity() {
         }
         val items = arrayOf(
             getString(R.string.control_menu_edit),
-            hideLabel
+            hideLabel,
+            getString(R.string.control_menu_exit)
         )
         AlertDialog.Builder(this)
             .setTitle(R.string.control_menu_title)
@@ -449,9 +451,34 @@ class LaunchActivity : AppCompatActivity() {
                         controlLayout.enterEditMode()
                     }
                     1 -> setControlsVisible(!controlsVisible)
+                    2 -> returnToLauncher()
                 }
             }
             .show()
+    }
+
+    /** Stop game, bring MainActivity to front, kill :game process (HotSpot cannot be stopped cleanly). */
+    private fun returnToLauncher() {
+        if (isFinishing || isDestroyed) return
+        runCatching { GameLaunchService.stop(this) }
+        val intent = Intent(this, com.booxin.launcher.ui.MainActivity::class.java).apply {
+            addFlags(
+                Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                    Intent.FLAG_ACTIVITY_NEW_TASK
+            )
+        }
+        startActivity(intent)
+        finish()
+        // Embedded JVM keeps the process alive after Activity finish — force exit.
+        mainHandler.postDelayed({
+            android.os.Process.killProcess(android.os.Process.myPid())
+        }, 200L)
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        returnToLauncher()
     }
 
     private fun setControlsVisible(visible: Boolean) {
@@ -581,7 +608,10 @@ class LaunchActivity : AppCompatActivity() {
             pendingVersionId,
             pendingUsername,
             surfaceWidth,
-            surfaceHeight
+            surfaceHeight,
+            uuid = pendingUuid,
+            accessToken = pendingAccessToken,
+            userType = pendingUserType
         )
     }
 
@@ -639,6 +669,9 @@ class LaunchActivity : AppCompatActivity() {
     companion object {
         const val EXTRA_VERSION_ID = "version_id"
         const val EXTRA_USERNAME = "username"
+        const val EXTRA_UUID = "uuid"
+        const val EXTRA_ACCESS_TOKEN = "access_token"
+        const val EXTRA_USER_TYPE = "user_type"
         private const val TAG = "LaunchActivity"
 
         private val PERCENT_IN_LOG = Regex("""(?<![\d.])(\d{1,3})\s*%""")

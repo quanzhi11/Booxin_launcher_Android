@@ -14,10 +14,12 @@ import com.booxin.launcher.AppContainer
 import com.booxin.launcher.BuildConfig
 import com.booxin.launcher.R
 import com.booxin.launcher.core.LauncherPaths
+import com.booxin.launcher.core.diag.DiagnosticLogExporter
 import com.booxin.launcher.core.download.DownloadProviders
 import com.booxin.launcher.core.download.DownloadSource
 import com.booxin.launcher.core.java.JavaInstallState
 import com.booxin.launcher.databinding.FragmentSettingsBinding
+import com.booxin.launcher.ui.update.LauncherUpdateUi
 import com.google.android.material.button.MaterialButton
 import kotlinx.coroutines.launch
 
@@ -53,6 +55,36 @@ class SettingsFragment : Fragment() {
         bindJavaButton(binding.buttonDownloadJava17, 17)
         bindJavaButton(binding.buttonDownloadJava21, 21)
         bindJavaButton(binding.buttonDownloadJava25, 25)
+
+        binding.buttonCheckUpdate.setOnClickListener {
+            val act = activity ?: return@setOnClickListener
+            LauncherUpdateUi.check(
+                activity = act,
+                lifecycleOwner = viewLifecycleOwner,
+                silentWhenLatest = false
+            )
+        }
+
+        binding.buttonExportLogs.setOnClickListener {
+            viewLifecycleOwner.lifecycleScope.launch {
+                binding.buttonExportLogs.isEnabled = false
+                val result = DiagnosticLogExporter.exportAndShare(requireContext())
+                binding.buttonExportLogs.isEnabled = true
+                if (result.isSuccess) {
+                    Toast.makeText(requireContext(), R.string.settings_export_logs_ok, Toast.LENGTH_SHORT)
+                        .show()
+                } else {
+                    Toast.makeText(
+                        requireContext(),
+                        getString(
+                            R.string.settings_export_logs_failed,
+                            result.exceptionOrNull()?.message ?: "unknown"
+                        ),
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+        }
 
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {

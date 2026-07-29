@@ -10,6 +10,7 @@ import androidx.navigation.fragment.NavHostFragment
 import androidx.navigation.ui.setupWithNavController
 import com.booxin.launcher.R
 import com.booxin.launcher.databinding.ActivityMainBinding
+import com.booxin.launcher.ui.update.LauncherUpdateUi
 
 class MainActivity : AppCompatActivity() {
 
@@ -36,6 +37,14 @@ class MainActivity : AppCompatActivity() {
         navController.addOnDestinationChangedListener { _, destination, _ ->
             val hideBottom = destination.id == R.id.nav_download
             binding.bottomNav.visibility = if (hideBottom) View.GONE else View.VISIBLE
+        }
+
+        if (savedInstanceState == null) {
+            LauncherUpdateUi.check(
+                activity = this,
+                lifecycleOwner = this,
+                silentWhenLatest = true
+            )
         }
     }
 }

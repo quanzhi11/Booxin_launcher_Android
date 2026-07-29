@@ -19,6 +19,12 @@ object MinecraftJavaRequirement {
     }
 
     fun readFromVersionJson(mcVersionId: String): Int? {
+        return readFromVersionJson(mcVersionId, visited = mutableSetOf())
+    }
+
+    private fun readFromVersionJson(mcVersionId: String, visited: MutableSet<String>): Int? {
+        if (!visited.add(mcVersionId)) return null
+        if (!LauncherPaths.isInitialized) return null
         val jsonFile = File(LauncherPaths.versionsDir, "$mcVersionId/$mcVersionId.json")
         if (!jsonFile.isFile) return null
         return runCatching {
@@ -26,6 +32,10 @@ object MinecraftJavaRequirement {
             root.optJSONObject("javaVersion")
                 ?.optInt("majorVersion", -1)
                 ?.takeIf { it > 0 }
+                ?: root.optString("inheritsFrom").ifBlank { null }?.let { parentId ->
+                    // Fabric/Forge wrappers often omit javaVersion; use parent id / json.
+                    readFromVersionJson(parentId, visited) ?: heuristicMajor(parentId).takeIf { it > 0 }
+                }
         }.getOrNull()
     }
 
@@ -41,10 +51,36 @@ object MinecraftJavaRequirement {
     }
 
     /**
-     * Parses ids like "1.20.4", "26.2", "1.16.5-forge-...".
+     * Parses ids like "1.20.4", "26.2", "1.16.5-forge-...", "fabric-loader-0.14-1.16.5".
      */
     fun parseVersion(id: String): Triple<Int, Int, Int>? {
         val core = id.substringBefore('-').substringBefore('_')
+        parseDotted(core)?.let { return it }
+        // Non-leading ids: fabric-loader-0.14.22-1.16.5 → take last X.Y(.Z)
+        val match = Regex("""(?<!\d)(\d+)\.(\d+)(?:\.(\d+))?""")
+            .findAll(id)
+            .lastOrNull()
+            ?: return null
+        val major = match.groupValues[1].toIntOrNull() ?: return null
+        val minor = match.groupValues[2].toIntOrNull() ?: return null
+        val patch = match.groupValues[3].takeIf { it.isNotBlank() }?.toIntOrNull() ?: 0
+        // Prefer Minecraft-like 1.x over loader 0.x when both appear.
+        if (major == 0) {
+            val minecraftish = Regex("""(?<!\d)(1)\.(\d+)(?:\.(\d+))?""")
+                .findAll(id)
+                .lastOrNull()
+            if (minecraftish != null) {
+                return Triple(
+                    1,
+                    minecraftish.groupValues[2].toIntOrNull() ?: return null,
+                    minecraftish.groupValues[3].takeIf { it.isNotBlank() }?.toIntOrNull() ?: 0
+                )
+            }
+        }
+        return Triple(major, minor, patch)
+    }
+
+    private fun parseDotted(core: String): Triple<Int, Int, Int>? {
         val parts = core.split('.')
         if (parts.size < 2) return null
         val major = parts[0].toIntOrNull() ?: return null

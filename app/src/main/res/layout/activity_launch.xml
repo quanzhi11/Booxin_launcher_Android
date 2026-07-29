@@ -54,6 +54,17 @@
             android:layout_gravity="top|start"
             android:elevation="4dp" />
 
+        <!-- FCL TouchCharInput: 1px focus target for system IME -->
+        <com.booxin.launcher.ui.launch.input.TouchCharInput
+            android:id="@+id/touchCharInput"
+            android:layout_width="1px"
+            android:layout_height="1px"
+            android:background="@android:color/transparent"
+            android:ems="10"
+            android:imeOptions="flagNoFullscreen|flagNoExtractUi|actionDone"
+            android:inputType="text|textMultiLine|textAutoCorrect"
+            android:visibility="gone" />
+
         <HorizontalScrollView
             android:id="@+id/panelEditBar"
             android:layout_width="match_parent"

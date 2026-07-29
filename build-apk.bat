@@ -84,9 +84,9 @@ if not exist "!SRC_APK!" (
   exit /b 1
 )
 
-set "VERSION=0.1.0"
+set "VERSION=0.0.1"
 for /f "usebackq delims=" %%A in (`powershell -NoProfile -Command "(Get-Content 'app\build.gradle.kts' -Raw) -match 'versionName\s*=\s*\"([^\"]+)\"' | Out-Null; $Matches[1]"`) do set "VERSION=%%A"
-if "!VERSION!"=="" set "VERSION=0.1.0"
+if "!VERSION!"=="" set "VERSION=0.0.1"
 
 for /f %%I in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd-HHmmss"') do set "STAMP=%%I"
 
