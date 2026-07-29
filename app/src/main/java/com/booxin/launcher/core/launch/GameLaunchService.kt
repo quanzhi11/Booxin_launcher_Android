@@ -35,12 +35,26 @@ class GameLaunchService : Service() {
     private val runner by lazy { GameProcessRunner(this) }
     private var launchJob: Job? = null
     private var wakeLock: PowerManager.WakeLock? = null
+    private var muteReceiver: android.content.BroadcastReceiver? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
         ensureChannel()
+        muteReceiver = object : android.content.BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                if (intent?.action == GameLaunchLogBus.ACTION_MUTE_UI) {
+                    GameLaunchLogBus.muteUi.set(true)
+                }
+            }
+        }
+        androidx.core.content.ContextCompat.registerReceiver(
+            this,
+            muteReceiver,
+            android.content.IntentFilter(GameLaunchLogBus.ACTION_MUTE_UI),
+            androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED
+        )
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -92,6 +106,7 @@ class GameLaunchService : Service() {
         windowHeight: Int
     ) {
         appendLog("准备 Java 与游戏文件…")
+        GameLaunchLogBus.muteUi.set(false)
         val prepare = AppContainer.gameRuntime.prepare(versionId)
         if (prepare.isFailure) {
             appendLog("准备失败: ${prepare.exceptionOrNull()?.message}")
@@ -176,16 +191,9 @@ class GameLaunchService : Service() {
         }
         appendLog("GLFW 窗口已绑定")
 
-        // Re-arm after bridge + while HotSpot/GLFW come up (FCL glfwPollEvents also sets ready).
+        // Re-arm after bridge (FCL also sets ready on first glfwPollEvents).
         val again = CallbackBridge.enableAndroidInput()
         appendLog("输入桥绑定后确认: stackQueue=$again")
-        val inputHandler = android.os.Handler(mainLooper)
-        listOf(2_000L, 5_000L, 10_000L, 20_000L).forEach { delay ->
-            inputHandler.postDelayed({
-                val ok = CallbackBridge.enableAndroidInput()
-                appendLog("输入桥保活(${delay / 1000}s): stackQueue=$ok")
-            }, delay)
-        }
 
         appendLog("探测 Java 运行时…")
         val probe = runner.probeJava(java, command.env)
@@ -302,6 +310,8 @@ class GameLaunchService : Service() {
     }
 
     override fun onDestroy() {
+        muteReceiver?.let { runCatching { unregisterReceiver(it) } }
+        muteReceiver = null
         runner.stop()
         launchJob?.cancel()
         releaseWakeLock()

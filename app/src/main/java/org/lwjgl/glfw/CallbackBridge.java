@@ -55,8 +55,6 @@ public class CallbackBridge {
     private static volatile boolean nativesLinked;
     private static volatile GrabListener grabListener;
     private static volatile boolean linkErrorLogged;
-    private static volatile long lastBridgeDumpMs;
-    private static volatile long lastCursorPosLogMs;
     private static volatile boolean directMouseFallbackTried;
     private static volatile long lastReadyPumpMs;
 
@@ -105,24 +103,10 @@ public class CallbackBridge {
         mouseX = x;
         mouseY = y;
         try {
-            maybeSwitchToDirectMousePath();
+            // FCL: only CriticalNative queue write. pojavStartPumping detects
+            // cursorX/Y changes and sets shouldUpdateMouse — no extra JNI.
             nativeSendCursorPos(x, y);
-            // pojavPumpEvents only invokes CursorPos when shouldUpdateMouse=1
-            // (set in pojavStartPumping). Mark dirty so the next pump delivers hover.
-            com.booxin.launcher.core.launch.NativeJvmLauncher.INSTANCE.markMousePositionDirty();
-            // Do NOT invoke GLFW callbacks from ART UI thread — that SIGSEGVs HotSpot.
-            maybePumpReadyBridge(false);
             nativesLinked = true;
-            // CursorPos is very high-frequency; log rate-limited to help verify native wiring.
-            long now = System.currentTimeMillis();
-            if (now - lastCursorPosLogMs > 250L) {
-                lastCursorPosLogMs = now;
-                Log.i(
-                    TAG,
-                    "cursorPos x=" + (int) x + ",y=" + (int) y + " grab=" + isGrabbing + " stackQueue="
-                        + stackQueueEnabled
-                );
-            }
         } catch (UnsatisfiedLinkError | Exception e) {
             logLinkOnce("nativeSendCursorPos", e);
         }
@@ -131,34 +115,8 @@ public class CallbackBridge {
     /** FCL CallbackBridge.sendMouseButton */
     public static void sendMouseButton(int button, boolean pressed) {
         try {
-            maybeSwitchToDirectMousePath();
             nativeSendMouseButton(button, pressed ? 1 : 0, 0);
-            // Do NOT invoke GLFW callbacks from ART UI thread — that SIGSEGVs HotSpot.
-            maybePumpReadyBridge(true);
             nativesLinked = true;
-            Log.i(
-                TAG,
-                "mouseBtn button=" + button + " pressed=" + pressed
-                    + " grab=" + isGrabbing + " stackQueue=" + stackQueueEnabled
-                    + " cursor=" + (int) mouseX + "," + (int) mouseY
-                    + " win=" + windowWidth + "x" + windowHeight
-            );
-            // Rate-limited bridge dump to see if native drops events (ready/callback).
-            long now = System.currentTimeMillis();
-            if (now - lastBridgeDumpMs > 2000L) {
-                lastBridgeDumpMs = now;
-                try {
-                    String dump = com.booxin.launcher.core.launch.NativeJvmLauncher.INSTANCE.dumpInputBridge();
-                    Log.i(TAG, "bridgeDump " + dump);
-                    if (dump != null && (dump.contains("mouseCb=0x0") || dump.contains("mouseCb=0 ")
-                        || dump.contains("mouseBuf=0x0") || dump.contains("mouseBuf=0 ")
-                        || dump.contains("ready=0") || dump.contains("showing=0"))) {
-                        Log.e(TAG, "input bridge NOT ready for game — clicks will be ignored: " + dump);
-                    }
-                } catch (Throwable t) {
-                    Log.w(TAG, "bridgeDump failed: " + t.getMessage());
-                }
-            }
         } catch (UnsatisfiedLinkError | Exception e) {
             logLinkOnce("nativeSendMouseButton", e);
         }
@@ -222,9 +180,12 @@ public class CallbackBridge {
         try {
             nativeSetUseInputStackQueue(true);
             boolean ready = nativeSetInputReady(true);
+            boolean first = !stackQueueEnabled;
             stackQueueEnabled = true;
             nativesLinked = true;
-            Log.i(TAG, "enableAndroidInput stackQueue=true ready=" + ready);
+            if (first) {
+                Log.i(TAG, "enableAndroidInput stackQueue=true ready=" + ready);
+            }
             return true;
         } catch (UnsatisfiedLinkError | Exception e) {
             stackQueueEnabled = false;

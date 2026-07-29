@@ -55,14 +55,17 @@ class LaunchActivity : AppCompatActivity() {
     private var overlayHidden = false
     private var loadingPercent = 0
     private val mainHandler = Handler(Looper.getMainLooper())
-    private var lastTouchDispatchLogMs = 0L
     private var overlayHideTimeout: Runnable? = null
     private var inputArmRetries = 0
     private val inputArmRunnable = object : Runnable {
         override fun run() {
             CallbackBridge.enableAndroidInput()
+            // Dump only while arming — dumpInputBridge walks native state and logs.
+            if (inputReady || inputArmRetries >= 6) {
+                return
+            }
             val dump = getInputBridgeDump()
-            if (isInputBridgeReady(dump) || inputArmRetries >= 12) {
+            if (isInputBridgeReady(dump)) {
                 return
             }
             inputArmRetries++
@@ -342,6 +345,8 @@ class LaunchActivity : AppCompatActivity() {
         overlayHidden = true
         overlayHideTimeout?.let { mainHandler.removeCallbacks(it) }
         overlayHideTimeout = null
+        // Stop mirroring Minecraft logs onto the UI thread (Binder + TextView).
+        GameLaunchLogBus.muteUiLogs(this)
         Log.i(TAG, "hideOverlay percent=$loadingPercent")
         updateLoadingUi(100, "进入游戏")
         hideOverlay()
@@ -466,16 +471,16 @@ class LaunchActivity : AppCompatActivity() {
     }
 
     private fun enableGameInput() {
+        if (inputReady) {
+            // Already armed — do not re-dump / re-schedule (was waking UI every call).
+            CallbackBridge.enableAndroidInput()
+            return
+        }
         val dump = getInputBridgeDump()
         if (!isInputBridgeReady(dump) && !CallbackBridge.isGrabbing()) {
             CallbackBridge.enableAndroidInput()
             appendLog("等待输入桥完全就绪（window/callback）…")
             Log.i(TAG, "delay enableGameInput; bridge not ready: $dump")
-            scheduleInputArmRetries()
-            return
-        }
-        if (inputReady) {
-            CallbackBridge.enableAndroidInput()
             scheduleInputArmRetries()
             return
         }
@@ -603,32 +608,18 @@ class LaunchActivity : AppCompatActivity() {
 
     private fun appendLog(line: String) {
         if (line.isBlank()) return
+        // After play starts: never touch TextView — that was starving touch input.
+        if (overlayHidden) return
+        if (logBuffer.length > 48_000) {
+            logBuffer.delete(0, logBuffer.length - 24_000)
+        }
         if (logBuffer.isNotEmpty()) logBuffer.append('\n')
         logBuffer.append(line)
         binding.textLog.text = logBuffer.toString()
         binding.scrollLog.post {
             binding.scrollLog.fullScroll(View.FOCUS_DOWN)
         }
-        if (!overlayHidden) {
-            updateLoadingFromLog(line)
-        }
-    }
-
-    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
-        val now = System.currentTimeMillis()
-        if (ev.actionMasked == MotionEvent.ACTION_DOWN ||
-            ev.actionMasked == MotionEvent.ACTION_UP ||
-            (ev.actionMasked == MotionEvent.ACTION_MOVE && now - lastTouchDispatchLogMs > 250L)
-        ) {
-            lastTouchDispatchLogMs = now
-            Log.i(
-                TAG,
-                "dispatchTouch action=${ev.actionMasked} x=${ev.x.toInt()} y=${ev.y.toInt()} " +
-                    "overlayVis=${binding.panelOverlay.visibility} overlayAlpha=${binding.panelOverlay.alpha} " +
-                    "touchPadVis=${binding.touchPad.visibility} touchPadEnabled=${binding.touchPad.isEnabled}"
-            )
-        }
-        return super.dispatchTouchEvent(ev)
+        updateLoadingFromLog(line)
     }
 
     override fun onDestroy() {

@@ -1,12 +1,10 @@
 package com.booxin.launcher.ui.launch.input
 
 import android.content.res.Resources
-import android.view.Choreographer
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
-import android.util.Log
 import android.widget.ImageView
 import org.lwjgl.glfw.CallbackBridge
 import kotlin.math.abs
@@ -52,14 +50,9 @@ object GameInput {
     var pointerY: Int = 0
         private set
 
-    private var pendingCursorViewX = 0
-    private var pendingCursorViewY = 0
-    private var cursorFrameScheduled = false
-
-    private val cursorFrameCallback = Choreographer.FrameCallback {
-        cursorFrameScheduled = false
-        applyCursorView(pendingCursorViewX, pendingCursorViewY)
-    }
+    /** Cached density for cursor hotspot — avoid displayMetrics lookup every MOVE. */
+    @Volatile
+    private var cursorHotspot = 3f
 
     fun initScreenSize(widthPx: Int, heightPx: Int) {
         screenWidth = widthPx.coerceAtLeast(1)
@@ -86,17 +79,18 @@ object GameInput {
         val gw = CallbackBridge.windowWidth
         if (gw <= 1) return 1.0
         val scale = gw.toDouble() / sw.toDouble()
-        // Sanity: real scales are usually 0.25–2.0; anything wild means bad sizes.
         if (scale < 0.05 || scale > 4.0) return 1.0
         return scale
     }
 
     fun bindCursor(view: ImageView?, padWidth: Int, padHeight: Int) {
         cursorView = view
+        if (view != null) {
+            cursorHotspot = view.resources.displayMetrics.density * 3f
+        }
         if (padWidth > 1 && padHeight > 1) {
             touchPadWidth = padWidth
             touchPadHeight = padHeight
-            // Prefer measured pad as screen space when fullscreen (matches FCL TouchPad).
             screenWidth = padWidth
             screenHeight = padHeight
         }
@@ -124,13 +118,9 @@ object GameInput {
         pointerX = vx
         pointerY = vy
 
+        // FCL updates overlay cursor immediately (no Choreographer defer / bringToFront).
         if (!CallbackBridge.isGrabbing()) {
-            pendingCursorViewX = vx
-            pendingCursorViewY = vy
-            if (!cursorFrameScheduled) {
-                cursorFrameScheduled = true
-                Choreographer.getInstance().postFrameCallback(cursorFrameCallback)
-            }
+            applyCursorView(vx, vy)
         }
 
         val scale = scaleFactor()
@@ -147,14 +137,11 @@ object GameInput {
             cursor.visibility = View.GONE
             return
         }
-        cursor.visibility = View.VISIBLE
-        // Hotspot ≈ tip of the arrow (near top-left of the 24dp icon), not geometric center.
-        val density = cursor.resources.displayMetrics.density
-        val ox = density * 3f
-        val oy = density * 3f
-        cursor.translationX = viewX - ox
-        cursor.translationY = viewY - oy
-        cursor.bringToFront()
+        if (cursor.visibility != View.VISIBLE) {
+            cursor.visibility = View.VISIBLE
+        }
+        cursor.translationX = viewX - cursorHotspot
+        cursor.translationY = viewY - cursorHotspot
     }
 
     fun sendKeyEvent(keycode: Int, press: Boolean) {
@@ -208,24 +195,9 @@ object GameInput {
         ) {
             return false
         }
-        if (event.actionMasked == MotionEvent.ACTION_HOVER_MOVE ||
-            event.actionMasked == MotionEvent.ACTION_HOVER_ENTER ||
-            event.actionMasked == MotionEvent.ACTION_BUTTON_PRESS ||
-            event.actionMasked == MotionEvent.ACTION_BUTTON_RELEASE ||
-            event.actionMasked == MotionEvent.ACTION_SCROLL
-        ) {
-            Log.i(
-                "BooxinInput",
-                "genericMouse actionMasked=${event.actionMasked} action=${event.action} " +
-                    "btn=${event.buttonState} btnAct=${event.actionButton} " +
-                    "x=${event.x.toInt()} y=${event.y.toInt()} rawX=${event.rawX.toInt()} rawY=${event.rawY.toInt()} " +
-                    "grabbing=${CallbackBridge.isGrabbing()} inputWin=${CallbackBridge.windowWidth}x${CallbackBridge.windowHeight}"
-            )
-        }
         when (event.actionMasked) {
             MotionEvent.ACTION_HOVER_MOVE, MotionEvent.ACTION_HOVER_ENTER -> {
                 if (!CallbackBridge.isGrabbing()) {
-                    // FCL uses raw screen coords for physical mouse hover.
                     setPointer(event.rawX.toInt(), event.rawY.toInt())
                 }
                 return true
@@ -237,7 +209,6 @@ object GameInput {
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
-                // Relative / captured pointer look while grabbing.
                 if (CallbackBridge.isGrabbing()) {
                     setPointer(pointerX + event.x.toInt(), pointerY + event.y.toInt())
                 } else {

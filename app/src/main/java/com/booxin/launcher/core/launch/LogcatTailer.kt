@@ -4,23 +4,36 @@ import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.util.concurrent.atomic.AtomicBoolean
 
+/**
+ * Tails **this process only**. Never mirror the whole-device logcat — that floods
+ * Binder + the LaunchActivity TextView and stalls touch (~1s lag / heat).
+ */
 class LogcatTailer(
     private val onLine: (String) -> Unit
 ) {
-    private var process: Process? = null
+    private var proc: java.lang.Process? = null
     private var thread: Thread? = null
     private val running = AtomicBoolean(false)
 
     fun start() {
         if (!running.compareAndSet(false, true)) return
         runCatching {
-            ProcessBuilder("logcat", "-c").redirectErrorStream(true).start()?.waitFor()
-            val proc = ProcessBuilder("logcat", "-v", "brief", "-T", "1")
-                .redirectErrorStream(true)
-                .start()
-            process = proc
+            val pid = android.os.Process.myPid()
+            // Own PID + our tags only. Minecraft INFO still arrives via BooxinJvm.
+            val started = ProcessBuilder(
+                "logcat",
+                "--pid=$pid",
+                "-v", "brief",
+                "-T", "1",
+                "BooxinJvm:I",
+                "BooxinInput:I",
+                "LaunchActivity:I",
+                "GameLaunchService:I",
+                "*:S"
+            ).redirectErrorStream(true).start()
+            proc = started
             thread = Thread {
-                BufferedReader(InputStreamReader(proc.inputStream)).use { reader ->
+                BufferedReader(InputStreamReader(started.inputStream)).use { reader ->
                     while (running.get()) {
                         val line = reader.readLine() ?: break
                         onLine(line)
@@ -39,9 +52,9 @@ class LogcatTailer(
 
     fun stop() {
         if (!running.compareAndSet(true, false)) return
-        runCatching { process?.destroy() }
+        runCatching { proc?.destroy() }
         thread?.interrupt()
-        process = null
+        proc = null
         thread = null
     }
 }

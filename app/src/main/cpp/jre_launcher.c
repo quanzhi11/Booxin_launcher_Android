@@ -846,42 +846,49 @@ static void booxin_hook_input_callbacks(void) {
     /* intentionally empty — see comment above */
 }
 
-static void booxin_start_pumping(void) {
-    booxin_bind_hotspot_jnienv();
+static void (*g_pojav_start_pumping)(void) = NULL;
+static void (*g_pojav_pump_events)(void *) = NULL;
+static void (*g_pojav_stop_pumping)(void) = NULL;
+static struct booxin_pojav_environ_s **g_pojav_environ_pp = NULL;
+
+static void resolve_pojav_pump_syms(void) {
+    if (g_pojav_pump_events && g_pojav_environ_pp) return;
     void *lib = open_pojavexec();
     if (!lib) return;
-    void (*fn)(void) = (void (*)(void))dlsym(lib, "pojavStartPumping");
-    if (fn) fn();
+    if (!g_pojav_start_pumping)
+        g_pojav_start_pumping = (void (*)(void))dlsym(lib, "pojavStartPumping");
+    if (!g_pojav_pump_events)
+        g_pojav_pump_events = (void (*)(void *))dlsym(lib, "pojavPumpEvents");
+    if (!g_pojav_stop_pumping)
+        g_pojav_stop_pumping = (void (*)(void))dlsym(lib, "pojavStopPumping");
+    if (!g_pojav_environ_pp)
+        g_pojav_environ_pp =
+            (struct booxin_pojav_environ_s **)dlsym(lib, "pojav_environ");
+}
+
+/*
+ * Thin wrappers: cache dlsym once. Previous code dlopen/dlsym every frame and
+ * stalled the HotSpot render thread (~1s input lag, no smooth look).
+ */
+static void booxin_start_pumping(void) {
+    resolve_pojav_pump_syms();
+    if (g_pojav_start_pumping) g_pojav_start_pumping();
 }
 
 static void booxin_stop_pumping(void) {
-    void *lib = open_pojavexec();
-    if (!lib) return;
-    void (*fn)(void) = (void (*)(void))dlsym(lib, "pojavStopPumping");
-    if (fn) fn();
+    resolve_pojav_pump_syms();
+    if (g_pojav_stop_pumping) g_pojav_stop_pumping();
 }
 
 /*
  * FCL path: ART CriticalNative → stack queue → stock pojavPumpEvents only.
- * Do NOT re-invoke GLFW trampolines / BooxinInputHooks here — that double-delivers
- * and can feed MouseHandler a window handle MC rejects while logs still look "ok".
+ * Do NOT force shouldUpdateMouse every frame — that fires CursorPos on every
+ * glfwPollEvents and cooks the CPU (~80% on title screen). Dirty bit is set
+ * from ART via nativeMarkMousePositionDirty when the finger actually moves.
  */
 static void booxin_pump_events(void *window) {
-    booxin_bind_hotspot_jnienv();
-    void *lib = open_pojavexec();
-    if (!lib) return;
-    struct booxin_pojav_environ_s **pp =
-        (struct booxin_pojav_environ_s **)dlsym(lib, "pojav_environ");
-    struct booxin_pojav_environ_s *e = (pp && *pp) ? *pp : NULL;
-
-    if (e) {
-        /* shouldUpdateMouse at binary +0x1d3 only — NEVER e->shouldUpdateMouse
-         * (C struct after events[] drifts and can corrupt cursor/callbacks). */
-        ((uint8_t *)e + 0x27000)[0x1d3] = 1;
-    }
-
-    void (*fn)(void *) = (void (*)(void *))dlsym(lib, "pojavPumpEvents");
-    if (fn) fn(window);
+    if (!g_pojav_pump_events) resolve_pojav_pump_syms();
+    if (g_pojav_pump_events) g_pojav_pump_events(window);
 }
 
 static bool patch_hotspot_pump_function_pointers(JNIEnv *env) {
@@ -1321,13 +1328,11 @@ Java_com_booxin_launcher_core_launch_NativeJvmLauncher_nativeMarkMousePositionDi
 {
     (void)env;
     (void)clazz;
-    void *lib = open_pojavexec();
-    if (!lib) return;
-    struct booxin_pojav_environ_s **pp =
-        (struct booxin_pojav_environ_s **)dlsym(lib, "pojav_environ");
-    if (!pp || !*pp) return;
-    uint8_t *tail = (uint8_t *)(*pp) + 0x27000;
-    tail[0x1d3] = 1;
+    /* Cached pointer — never dlopen/dlsym on the touch hot path. */
+    if (!g_pojav_environ_pp) resolve_pojav_pump_syms();
+    if (!g_pojav_environ_pp || !*g_pojav_environ_pp) return;
+    /* shouldUpdateMouse at +0x1d3 — never e->shouldUpdateMouse (struct drifts). */
+    ((uint8_t *)(*g_pojav_environ_pp) + 0x27000)[0x1d3] = 1;
 }
 
 JNIEXPORT jboolean JNICALL
