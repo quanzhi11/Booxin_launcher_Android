@@ -5,7 +5,6 @@ import android.os.Handler
 import android.os.Looper
 import android.util.AttributeSet
 import android.util.Log
-import android.view.Choreographer
 import android.view.InputDevice
 import android.view.MotionEvent
 import android.view.View
@@ -60,6 +59,54 @@ class GameTouchPad @JvmOverloads constructor(
         }
     }
 
+    private var clickDownFired = false
+    private var clickUpPending = false
+
+    private val clickDownRunnable = Runnable {
+        Log.i(
+            "BooxinInput",
+            "touchPad CLICK_DOWN fire ptr=${GameInput.pointerX},${GameInput.pointerY} grab=${CallbackBridge.isGrabbing()}"
+        )
+        GameInput.sendKeyEvent(GameInput.MOUSE_LEFT, true)
+        clickDownFired = true
+        if (clickUpPending) {
+            clickUpPending = false
+            // FCL-style: keep ≥1 frame between down and up so MC title buttons register.
+            CallbackBridge.sChoreographer.postFrameCallbackDelayed(clickUpFrame, CLICK_FRAME_DELAY_MS)
+        }
+    }
+
+    private val clickUpRunnable = Runnable {
+        Log.i(
+            "BooxinInput",
+            "touchPad CLICK_UP fire ptr=${GameInput.pointerX},${GameInput.pointerY} grab=${CallbackBridge.isGrabbing()}"
+        )
+        GameInput.sendKeyEvent(GameInput.MOUSE_LEFT, false)
+        clickDownFired = false
+    }
+
+    /** FCL uses Choreographer — Handler can stall for seconds on a busy main looper. */
+    private fun scheduleClickDown() {
+        CallbackBridge.sChoreographer.removeFrameCallback(clickDownFrame)
+        CallbackBridge.sChoreographer.removeFrameCallback(clickUpFrame)
+        clickDownFired = false
+        clickUpPending = false
+        CallbackBridge.sChoreographer.postFrameCallbackDelayed(clickDownFrame, CLICK_FRAME_DELAY_MS)
+    }
+
+    private fun scheduleClickUp() {
+        CallbackBridge.sChoreographer.removeFrameCallback(clickUpFrame)
+        if (clickDownFired) {
+            CallbackBridge.sChoreographer.postFrameCallbackDelayed(clickUpFrame, CLICK_FRAME_DELAY_MS)
+        } else {
+            // DOWN not fired yet — release after DOWN completes (+ another frame).
+            clickUpPending = true
+        }
+    }
+
+    private val clickDownFrame = android.view.Choreographer.FrameCallback { clickDownRunnable.run() }
+    private val clickUpFrame = android.view.Choreographer.FrameCallback { clickUpRunnable.run() }
+
     init {
         isClickable = true
         isFocusable = false
@@ -71,6 +118,10 @@ class GameTouchPad @JvmOverloads constructor(
 
     fun resetTouchState() {
         handler.removeCallbacks(longPress)
+        CallbackBridge.sChoreographer.removeFrameCallback(clickDownFrame)
+        CallbackBridge.sChoreographer.removeFrameCallback(clickUpFrame)
+        clickDownFired = false
+        clickUpPending = false
         if (holdingLeft || holdingRight) {
             GameInput.releaseAllMouseButtons()
         }
@@ -102,12 +153,12 @@ class GameTouchPad @JvmOverloads constructor(
     }
 
     private fun handleGui(event: MotionEvent): Boolean {
-        // FCL: external mouse moves cursor via raw/view coords; skip finger path.
+        // FCL TouchPad: external mouse only updates pointer on MOVE here;
+        // clicks/hover come from OnGenericMotionListener (LaunchActivity).
         if (event.isFromSource(InputDevice.SOURCE_MOUSE)) {
             if (event.action == MotionEvent.ACTION_MOVE) {
                 GameInput.setPointer(event.x.toInt(), event.y.toInt())
             }
-            GameInput.handleExternalMouseEvent(event)
             return true
         }
 
@@ -115,23 +166,27 @@ class GameTouchPad @JvmOverloads constructor(
             return handleGuiSlide(event)
         }
 
-        // FCL MouseMoveMode.CLICK: setPointer(viewX, viewY) every event, then delayed LMB.
+        // FCL CLICK mode: set cursor every event; delay LMB down/up ~33ms.
+        // Do NOT cancel pending clickDown on UP — short taps would only send UP.
         GameInput.setPointer(event.x.toInt(), event.y.toInt())
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 pointerId = event.getPointerId(0)
-                Choreographer.getInstance().postFrameCallbackDelayed({
-                    GameInput.sendKeyEvent(GameInput.MOUSE_LEFT, true)
-                }, CLICK_FRAME_DELAY_MS)
+                CallbackBridge.sChoreographer.removeFrameCallback(clickUpFrame)
+                clickUpPending = false
+                Log.i(
+                    "BooxinInput",
+                    "touchPad CLICK_DOWN schedule ptr=${GameInput.pointerX},${GameInput.pointerY} grab=${CallbackBridge.isGrabbing()}"
+                )
+                scheduleClickDown()
             }
             MotionEvent.ACTION_MOVE -> {
                 val idx = event.findPointerIndex(pointerId).takeIf { it >= 0 } ?: 0
                 GameInput.setPointer(event.getX(idx).toInt(), event.getY(idx).toInt())
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                Choreographer.getInstance().postFrameCallbackDelayed({
-                    GameInput.sendKeyEvent(GameInput.MOUSE_LEFT, false)
-                }, CLICK_FRAME_DELAY_MS)
+                // Match FCL: leave clickDown scheduled; only schedule UP.
+                scheduleClickUp()
                 pointerId = -1
             }
         }
@@ -176,8 +231,9 @@ class GameTouchPad @JvmOverloads constructor(
     }
 
     private fun handleGrabbed(event: MotionEvent): Boolean {
+        // FCL: ignore finger-path for external mouse while grabbing;
+        // relative look / buttons handled via generic motion + key events.
         if (event.isFromSource(InputDevice.SOURCE_MOUSE)) {
-            GameInput.handleExternalMouseEvent(event)
             return true
         }
         val screenW = width.coerceAtLeast(1)

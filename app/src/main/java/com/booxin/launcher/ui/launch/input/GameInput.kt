@@ -6,6 +6,7 @@ import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
+import android.util.Log
 import android.widget.ImageView
 import org.lwjgl.glfw.CallbackBridge
 import kotlin.math.abs
@@ -147,8 +148,13 @@ object GameInput {
             return
         }
         cursor.visibility = View.VISIBLE
-        cursor.translationX = viewX.toFloat()
-        cursor.translationY = viewY.toFloat()
+        // Hotspot ≈ tip of the arrow (near top-left of the 24dp icon), not geometric center.
+        val density = cursor.resources.displayMetrics.density
+        val ox = density * 3f
+        val oy = density * 3f
+        cursor.translationX = viewX - ox
+        cursor.translationY = viewY - oy
+        cursor.bringToFront()
     }
 
     fun sendKeyEvent(keycode: Int, press: Boolean) {
@@ -192,15 +198,53 @@ object GameInput {
         return true
     }
 
+    /**
+     * FCL GameMenu TouchPad OnGenericMotionListener path:
+     * HOVER_MOVE → setPointer; BUTTON_PRESS/SCROLL → handleExternalMouseEvent.
+     */
     fun handleGenericMotion(event: MotionEvent): Boolean {
-        if (event.source == InputDevice.SOURCE_MOUSE &&
+        if (!event.isFromSource(InputDevice.SOURCE_MOUSE) &&
+            !event.isFromSource(InputDevice.SOURCE_MOUSE_RELATIVE)
+        ) {
+            return false
+        }
+        if (event.actionMasked == MotionEvent.ACTION_HOVER_MOVE ||
+            event.actionMasked == MotionEvent.ACTION_HOVER_ENTER ||
+            event.actionMasked == MotionEvent.ACTION_BUTTON_PRESS ||
+            event.actionMasked == MotionEvent.ACTION_BUTTON_RELEASE ||
             event.actionMasked == MotionEvent.ACTION_SCROLL
         ) {
-            val v = event.getAxisValue(MotionEvent.AXIS_VSCROLL)
-            val steps = abs(v.toInt()).coerceAtLeast(if (v != 0f) 1 else 0)
-            val code = if (v > 0f) MOUSE_SCROLL_UP else MOUSE_SCROLL_DOWN
-            repeat(steps) { sendKeyEvent(code, true) }
-            return true
+            Log.i(
+                "BooxinInput",
+                "genericMouse actionMasked=${event.actionMasked} action=${event.action} " +
+                    "btn=${event.buttonState} btnAct=${event.actionButton} " +
+                    "x=${event.x.toInt()} y=${event.y.toInt()} rawX=${event.rawX.toInt()} rawY=${event.rawY.toInt()} " +
+                    "grabbing=${CallbackBridge.isGrabbing()} inputWin=${CallbackBridge.windowWidth}x${CallbackBridge.windowHeight}"
+            )
+        }
+        when (event.actionMasked) {
+            MotionEvent.ACTION_HOVER_MOVE, MotionEvent.ACTION_HOVER_ENTER -> {
+                if (!CallbackBridge.isGrabbing()) {
+                    // FCL uses raw screen coords for physical mouse hover.
+                    setPointer(event.rawX.toInt(), event.rawY.toInt())
+                }
+                return true
+            }
+            MotionEvent.ACTION_BUTTON_PRESS,
+            MotionEvent.ACTION_BUTTON_RELEASE,
+            MotionEvent.ACTION_SCROLL -> {
+                handleExternalMouseEvent(event)
+                return true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                // Relative / captured pointer look while grabbing.
+                if (CallbackBridge.isGrabbing()) {
+                    setPointer(pointerX + event.x.toInt(), pointerY + event.y.toInt())
+                } else {
+                    setPointer(event.x.toInt(), event.y.toInt())
+                }
+                return true
+            }
         }
         return false
     }

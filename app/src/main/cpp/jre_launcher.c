@@ -15,6 +15,7 @@
 #include <signal.h>
 #include <stdatomic.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -217,6 +218,9 @@ static void reset_signals(void) {
     memset(&sa, 0, sizeof(sa));
     for (int s = SIGHUP; s < NSIG; s++) {
         if (s == SIGKILL || s == SIGSTOP) continue;
+        /* Boardwalk/FCL: ignore SIGSEGV so stray native faults in GLES/hooks
+         * do not kill the whole :game process. Do NOT pump GLFW callbacks
+         * from the ART UI thread — that crashes even with this in place. */
         sa.sa_handler = (s == SIGSEGV) ? SIG_IGN : SIG_DFL;
         sigaction(s, &sa, NULL);
     }
@@ -291,6 +295,73 @@ static SetupBridgeWindow_fn resolve_setup_bridge_window(void *pojav_lib) {
         pojav_lib, "Java_org_lwjgl_glfw_CallbackBridge_setupBridgeWindow");
 }
 
+static void *open_pojavexec(void);
+
+static void register_callbackbridge_send_natives(JNIEnv *env) {
+    if (!env) return;
+    void *lib = open_pojavexec();
+    if (!lib) return;
+
+    jclass cbCls = (*env)->FindClass(env, "org/lwjgl/glfw/CallbackBridge");
+    if (!cbCls || (*env)->ExceptionCheck(env)) {
+        if ((*env)->ExceptionCheck(env)) log_exception(env, "FindClass CallbackBridge register");
+        LOGW("RegisterNatives skipped: CallbackBridge class missing");
+        return;
+    }
+
+    void *set_stack = dlsym(lib, "critical_set_stackqueue");
+    if (!set_stack) set_stack = dlsym(lib, "noncritical_set_stackqueue");
+    void *send_char = dlsym(lib, "critical_send_char");
+    if (!send_char) send_char = dlsym(lib, "noncritical_send_char");
+    void *send_char_mods = dlsym(lib, "critical_send_char_mods");
+    if (!send_char_mods) send_char_mods = dlsym(lib, "noncritical_send_char_mods");
+    void *send_key = dlsym(lib, "critical_send_key");
+    if (!send_key) send_key = dlsym(lib, "noncritical_send_key");
+    void *send_cursor = dlsym(lib, "critical_send_cursor_pos");
+    if (!send_cursor) send_cursor = dlsym(lib, "noncritical_send_cursor_pos");
+    void *send_mouse = dlsym(lib, "critical_send_mouse_button");
+    if (!send_mouse) send_mouse = dlsym(lib, "noncritical_send_mouse_button");
+    void *send_scroll = dlsym(lib, "critical_send_scroll");
+    if (!send_scroll) send_scroll = dlsym(lib, "noncritical_send_scroll");
+    void *send_size = dlsym(lib, "critical_send_screen_size");
+    if (!send_size) send_size = dlsym(lib, "noncritical_send_screen_size");
+
+    JNINativeMethod methods[] = {
+        { "nativeSetUseInputStackQueue", "(Z)V", set_stack },
+        { "nativeSendChar", "(C)Z", send_char },
+        { "nativeSendCharMods", "(CI)Z", send_char_mods },
+        { "nativeSendKey", "(IIII)V", send_key },
+        { "nativeSendCursorPos", "(FF)V", send_cursor },
+        { "nativeSendMouseButton", "(III)V", send_mouse },
+        { "nativeSendScroll", "(DD)V", send_scroll },
+        { "nativeSendScreenSize", "(II)V", send_size },
+    };
+
+    int count = 0;
+    for (size_t i = 0; i < sizeof(methods) / sizeof(methods[0]); i++) {
+        if (methods[i].fnPtr) count++;
+    }
+    if (count == 0) {
+        LOGW("RegisterNatives skipped: no send_* symbols resolved");
+        (*env)->DeleteLocalRef(env, cbCls);
+        return;
+    }
+
+    JNINativeMethod resolved[8];
+    int idx = 0;
+    for (size_t i = 0; i < sizeof(methods) / sizeof(methods[0]); i++) {
+        if (methods[i].fnPtr) resolved[idx++] = methods[i];
+    }
+
+    jint rc = (*env)->RegisterNatives(env, cbCls, resolved, idx);
+    if ((*env)->ExceptionCheck(env)) {
+        log_exception(env, "RegisterNatives CallbackBridge send_*");
+    }
+    LOGI("RegisterNatives CallbackBridge send_* rc=%d count=%d cursor=%p mouse=%p key=%p",
+         (int)rc, idx, send_cursor, send_mouse, send_key);
+    (*env)->DeleteLocalRef(env, cbCls);
+}
+
 typedef jint (*JNI_OnLoad_func)(JavaVM *, void *);
 
 static void *open_pojavexec(void) {
@@ -343,8 +414,9 @@ static bool pojavexec_staged_path(char *out, size_t outLen) {
 }
 
 /**
- * HotSpot System.load(absolutePath) so JNI native lookup for
- * GLFW.nglfwSet*Callback / CallbackBridge works inside the embedded JVM.
+ * HotSpot System.load(absolutePath) via bridge-patch helper so @CallerSensitive
+ * sees AppClassLoader (same as GLFW.System.loadLibrary). Direct JNI System.load
+ * uses another classloader → "already loaded in another classloader".
  */
 static bool hotspot_system_load_pojavexec(JNIEnv *env) {
     char path[PATH_MAX];
@@ -352,41 +424,584 @@ static bool hotspot_system_load_pojavexec(JNIEnv *env) {
         LOGE("hotspot System.load: staged libpojavexec.so missing");
         return false;
     }
-    jclass systemCls = (*env)->FindClass(env, "java/lang/System");
-    if (!systemCls || (*env)->ExceptionCheck(env)) {
-        log_exception(env, "FindClass System");
-        return false;
+    jclass loaderCls = (*env)->FindClass(env, "org/lwjgl/glfw/BooxinPojavLoader");
+    if (!loaderCls || (*env)->ExceptionCheck(env)) {
+        log_exception(env, "FindClass BooxinPojavLoader");
+        /* Fallback: raw System.load (may hit classloader mismatch). */
+        jclass systemCls = (*env)->FindClass(env, "java/lang/System");
+        if (!systemCls || (*env)->ExceptionCheck(env)) {
+            log_exception(env, "FindClass System");
+            return false;
+        }
+        jmethodID loadMid = (*env)->GetStaticMethodID(env, systemCls, "load", "(Ljava/lang/String;)V");
+        if (!loadMid || (*env)->ExceptionCheck(env)) {
+            log_exception(env, "System.load mid");
+            return false;
+        }
+        jstring jpath = (*env)->NewStringUTF(env, path);
+        (*env)->CallStaticVoidMethod(env, systemCls, loadMid, jpath);
+        (*env)->DeleteLocalRef(env, jpath);
+        if ((*env)->ExceptionCheck(env)) {
+            log_exception(env, "System.load(pojavexec)");
+            return false;
+        }
+        LOGI("HotSpot System.load(%s) ok (fallback)", path);
+        return true;
     }
-    jmethodID loadMid = (*env)->GetStaticMethodID(env, systemCls, "load", "(Ljava/lang/String;)V");
+    jmethodID loadMid =
+        (*env)->GetStaticMethodID(env, loaderCls, "loadAbsolute", "(Ljava/lang/String;)V");
     if (!loadMid || (*env)->ExceptionCheck(env)) {
-        log_exception(env, "System.load mid");
+        log_exception(env, "BooxinPojavLoader.loadAbsolute mid");
         return false;
     }
     jstring jpath = (*env)->NewStringUTF(env, path);
-    (*env)->CallStaticVoidMethod(env, systemCls, loadMid, jpath);
+    (*env)->CallStaticVoidMethod(env, loaderCls, loadMid, jpath);
     (*env)->DeleteLocalRef(env, jpath);
     if ((*env)->ExceptionCheck(env)) {
-        log_exception(env, "System.load(pojavexec)");
+        log_exception(env, "BooxinPojavLoader.loadAbsolute");
         return false;
     }
-    LOGI("HotSpot System.load(%s) ok", path);
+    LOGI("HotSpot BooxinPojavLoader.loadAbsolute(%s) ok", path);
     return true;
 }
 
-/** Force stack-queue + input-ready so ART touch is not silently dropped. */
+static void log_hotspot_pump_diag(JNIEnv *env) {
+    if (!env) return;
+    jclass loaderCls = (*env)->FindClass(env, "org/lwjgl/glfw/BooxinPojavLoader");
+    if (!loaderCls || (*env)->ExceptionCheck(env)) {
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+        return;
+    }
+    jmethodID diagMid =
+        (*env)->GetStaticMethodID(env, loaderCls, "pumpDiag", "()Ljava/lang/String;");
+    if (!diagMid || (*env)->ExceptionCheck(env)) {
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+        return;
+    }
+    jstring jdiag = (jstring)(*env)->CallStaticObjectMethod(env, loaderCls, diagMid);
+    if ((*env)->ExceptionCheck(env) || !jdiag) {
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+        return;
+    }
+    const char *utf = (*env)->GetStringUTFChars(env, jdiag, NULL);
+    void *lib = open_pojavexec();
+    void *sym = lib ? dlsym(lib, "pojavPumpEvents") : NULL;
+    LOGI("HotSpot %s | dlsym pojavPumpEvents=%p", utf ? utf : "?", sym);
+    if (utf) (*env)->ReleaseStringUTFChars(env, jdiag, utf);
+    (*env)->DeleteLocalRef(env, jdiag);
+}
+
+/*
+ * Redirect GLFW.Functions.{StartPumping,PumpEvents,StopPumping} to the
+ * already-mapped libpojavexec (RTLD_NOLOAD). LWJGL SharedLibrary can resolve
+ * symbols from a second copy of the .so; ART CriticalNative then fills queue A
+ * while HotSpot pumps empty queue B — mouseBtn logs, game never clicks.
+ * Replacing the function pointers forces both sides onto the same environ.
+ */
+
+/*
+ * Dump / pump helpers need FCL environ.h layout (must stay in sync with
+ * libpojavexec). Defined early so pump wrappers can refresh JNIEnv.
+ */
+typedef struct {
+    int type;
+    int i1;
+    int i2;
+    int i3;
+    int i4;
+} BooxinGlfwInputEvent;
+
+#define BOOXIN_EVENT_WINDOW_SIZE 8000
+
+struct booxin_pojav_environ_s {
+    void *pojavWindow;
+    void *mainWindowBundle;
+    int config_renderer;
+    bool force_vsync;
+    atomic_size_t eventCounter;
+    BooxinGlfwInputEvent events[BOOXIN_EVENT_WINDOW_SIZE];
+    size_t outEventIndex;
+    size_t outTargetIndex;
+    size_t inEventIndex;
+    size_t inEventCount;
+    double cursorX, cursorY, cLastX, cLastY;
+    jmethodID method_accessAndroidClipboard;
+    jmethodID method_onGrabStateChanged;
+    jmethodID method_glftSetWindowAttrib;
+    jmethodID method_internalWindowSizeChanged;
+    jclass bridgeClazz;
+    jclass vmGlfwClass;
+    jboolean isGrabbing;
+    jbyte *keyDownBuffer;
+    jbyte *mouseDownBuffer;
+    JavaVM *runtimeJavaVMPtr;
+    JNIEnv *runtimeJNIEnvPtr_JRE;
+    JavaVM *dalvikJavaVMPtr;
+    JNIEnv *dalvikJNIEnvPtr_ANDROID;
+    long showingWindow;
+    bool isInputReady, isCursorEntered, isUseStackQueueCall, shouldUpdateMouse;
+    int savedWidth, savedHeight;
+    void *GLFW_invoke_Char;
+    void *GLFW_invoke_CharMods;
+    void *GLFW_invoke_CursorEnter;
+    void *GLFW_invoke_CursorPos;
+    void *GLFW_invoke_FramebufferSize;
+    void *GLFW_invoke_Key;
+    void *GLFW_invoke_MouseButton;
+    void *GLFW_invoke_Scroll;
+    void *GLFW_invoke_WindowSize;
+};
+
+/*
+ * Mouse/cursor GLFW callbacks are plain C function pointers
+ * (window, button, action, mods) — they do NOT use runtimeJNIEnvPtr_JRE.
+ * LWJGL trampolines then CallVoidMethod on the current thread's HotSpot JNIEnv.
+ * We still refresh jreEnv for framebuffer/window-size JNI paths inside pump.
+ */
+static void booxin_bind_hotspot_jnienv(void) {
+    void *lib = open_pojavexec();
+    if (!lib) return;
+    struct booxin_pojav_environ_s **pp =
+        (struct booxin_pojav_environ_s **)dlsym(lib, "pojav_environ");
+    if (!pp || !*pp || !(*pp)->runtimeJavaVMPtr) return;
+    JavaVM *hs = (*pp)->runtimeJavaVMPtr;
+    JNIEnv *hsEnv = NULL;
+    if ((*hs)->GetEnv(hs, (void **)&hsEnv, JNI_VERSION_1_4) == JNI_OK && hsEnv) {
+        (*pp)->runtimeJNIEnvPtr_JRE = hsEnv;
+    }
+}
+
+static JNIEnv *booxin_get_hotspot_env(struct booxin_pojav_environ_s *e, int *attached) {
+    *attached = 0;
+    if (!e || !e->runtimeJavaVMPtr) return NULL;
+    JavaVM *hs = e->runtimeJavaVMPtr;
+    JNIEnv *env = NULL;
+    jint st = (*hs)->GetEnv(hs, (void **)&env, JNI_VERSION_1_4);
+    if (st == JNI_OK) return env;
+    if (st == JNI_EDETACHED) {
+        if ((*hs)->AttachCurrentThread(hs, &env, NULL) != 0) return NULL;
+        *attached = 1;
+        return env;
+    }
+    return NULL;
+}
+
+static jclass g_hooks_cls = NULL;
+static jmethodID g_hooks_deliver = NULL;
+
+typedef void (*booxin_mouse_btn_fn)(void *window, int button, int action, int mods);
+typedef void (*booxin_cursor_pos_fn)(void *window, double x, double y);
+typedef void (*booxin_cursor_enter_fn)(void *window, int entered);
+
+static double g_fwd_last_x = -1.0;
+static double g_fwd_last_y = -1.0;
+static int g_fwd_last_btn[3] = {-1, -1, -1};
+static bool g_fwd_cursor_entered = false;
+static atomic_int g_fwd_native_log = 0;
+
+static jclass load_class_via_loader(JNIEnv *env, jobject loader, const char *binary_name) {
+    if (!env || !loader || !binary_name) return NULL;
+    jclass clCls = (*env)->FindClass(env, "java/lang/ClassLoader");
+    if (!clCls || (*env)->ExceptionCheck(env)) {
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+        return NULL;
+    }
+    jmethodID loadClass = (*env)->GetMethodID(
+        env, clCls, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
+    if (!loadClass || (*env)->ExceptionCheck(env)) {
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+        (*env)->DeleteLocalRef(env, clCls);
+        return NULL;
+    }
+    jstring jname = (*env)->NewStringUTF(env, binary_name);
+    jclass cls = (jclass)(*env)->CallObjectMethod(env, loader, loadClass, jname);
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionClear(env);
+        cls = NULL;
+    }
+    (*env)->DeleteLocalRef(env, jname);
+    (*env)->DeleteLocalRef(env, clCls);
+    return cls;
+}
+
+/** Prefer GLFW's ClassLoader (same CP as bridge-patch) over bare SystemClassLoader. */
+static jclass load_booxin_input_hooks(JNIEnv *env) {
+    jclass hooks = NULL;
+
+    jclass glfw = (*env)->FindClass(env, "org/lwjgl/glfw/GLFW");
+    if (glfw && !(*env)->ExceptionCheck(env)) {
+        jclass classCls = (*env)->FindClass(env, "java/lang/Class");
+        jmethodID getCl = classCls
+            ? (*env)->GetMethodID(env, classCls, "getClassLoader", "()Ljava/lang/ClassLoader;")
+            : NULL;
+        jobject loader = (getCl) ? (*env)->CallObjectMethod(env, glfw, getCl) : NULL;
+        if ((*env)->ExceptionCheck(env)) {
+            (*env)->ExceptionClear(env);
+            loader = NULL;
+        }
+        if (loader) {
+            hooks = load_class_via_loader(env, loader, "org.lwjgl.glfw.BooxinInputHooks");
+            (*env)->DeleteLocalRef(env, loader);
+        }
+        if (classCls) (*env)->DeleteLocalRef(env, classCls);
+        (*env)->DeleteLocalRef(env, glfw);
+    } else if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionClear(env);
+    }
+    if (hooks) return hooks;
+
+    jclass clCls = (*env)->FindClass(env, "java/lang/ClassLoader");
+    if (clCls && !(*env)->ExceptionCheck(env)) {
+        jmethodID getSys = (*env)->GetStaticMethodID(
+            env, clCls, "getSystemClassLoader", "()Ljava/lang/ClassLoader;");
+        jobject sysLoader = getSys
+            ? (*env)->CallStaticObjectMethod(env, clCls, getSys) : NULL;
+        if ((*env)->ExceptionCheck(env)) {
+            (*env)->ExceptionClear(env);
+            sysLoader = NULL;
+        }
+        if (sysLoader) {
+            hooks = load_class_via_loader(env, sysLoader, "org.lwjgl.glfw.BooxinInputHooks");
+            (*env)->DeleteLocalRef(env, sysLoader);
+        }
+        (*env)->DeleteLocalRef(env, clCls);
+    } else if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionClear(env);
+    }
+    if (hooks) return hooks;
+
+    hooks = (*env)->FindClass(env, "org/lwjgl/glfw/BooxinInputHooks");
+    if (!hooks || (*env)->ExceptionCheck(env)) {
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+        return NULL;
+    }
+    return hooks;
+}
+
+static bool cache_input_hooks_deliver(JNIEnv *env) {
+    if (g_hooks_cls && g_hooks_deliver) return true;
+    jclass local = load_booxin_input_hooks(env);
+    if (!local) {
+        static int warned;
+        if (!warned++) LOGW("BooxinInputHooks class not found on HotSpot classpath");
+        return false;
+    }
+    jmethodID mid = (*env)->GetStaticMethodID(env, local, "deliverInput", "(JDDIII)V");
+    if (!mid || (*env)->ExceptionCheck(env)) {
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+        static int warned;
+        if (!warned++) LOGW("BooxinInputHooks.deliverInput not found — rebuild lwjgl-bridge-patch.jar");
+        (*env)->DeleteLocalRef(env, local);
+        return false;
+    }
+    if (!g_hooks_cls) {
+        g_hooks_cls = (jclass)(*env)->NewGlobalRef(env, local);
+    }
+    g_hooks_deliver = mid;
+    (*env)->DeleteLocalRef(env, local);
+    LOGI("cached BooxinInputHooks.deliverInput cls=%p", (void *)g_hooks_cls);
+    return true;
+}
+
+static struct booxin_pojav_environ_s *booxin_get_environ(void) {
+    void *lib = open_pojavexec();
+    if (!lib) return NULL;
+    struct booxin_pojav_environ_s **pp =
+        (struct booxin_pojav_environ_s **)dlsym(lib, "pojav_environ");
+    return (pp && *pp) ? *pp : NULL;
+}
+
+static jlong booxin_glfw_window_jlong(struct booxin_pojav_environ_s *e, void *window) {
+    if (e && e->showingWindow) return (jlong)e->showingWindow;
+    if (window) return (jlong)(intptr_t)window;
+    if (e && e->mainWindowBundle) return (jlong)(intptr_t)e->mainWindowBundle;
+    if (e && e->pojavWindow) return (jlong)(intptr_t)e->pojavWindow;
+    return 0;
+}
+
+static void booxin_read_pojav_cursor(struct booxin_pojav_environ_s *e, double *cx, double *cy) {
+    const uint8_t *tail = (const uint8_t *)e + 0x27000;
+    memcpy(cx, tail + 0x140, sizeof(double));
+    memcpy(cy, tail + 0x148, sizeof(double));
+}
+
+static void *booxin_resolve_window(struct booxin_pojav_environ_s *e, void *window) {
+    if (e && e->showingWindow) return (void *)(long)e->showingWindow;
+    if (window) return window;
+    if (e && e->mainWindowBundle) return e->mainWindowBundle;
+    if (e && e->pojavWindow) return e->pojavWindow;
+    return NULL;
+}
+
+static void *booxin_tail_ptr(struct booxin_pojav_environ_s *e, size_t off) {
+    void *p = NULL;
+    memcpy(&p, (const uint8_t *)e + 0x27000 + off, sizeof(p));
+    return p;
+}
+
+static void booxin_read_mouse_buttons(struct booxin_pojav_environ_s *e,
+                                      int *b0, int *b1, int *b2) {
+    *b0 = *b1 = *b2 = 0;
+    /* libpojavexec: mouseDownBuffer pointer lives at environ+0x27000+0x1a0 */
+    jbyte *buf = (jbyte *)booxin_tail_ptr(e, 0x1a0);
+    if (!buf) buf = e->mouseDownBuffer;
+    if (!buf) return;
+    *b0 = buf[0];
+    *b1 = buf[1];
+    *b2 = buf[2];
+}
+
+/** MC GLFW window — showingWindow, NOT pojavWindow (internal stub). */
+static void *booxin_mc_glfw_window(struct booxin_pojav_environ_s *e, void *window) {
+    long showing = 0;
+    memcpy(&showing, (const uint8_t *)e + 0x27000 + 0x1c8, sizeof(showing));
+    if (showing) return (void *)showing;
+    if (e && e->showingWindow) return (void *)(long)e->showingWindow;
+    if (e && e->mainWindowBundle) return e->mainWindowBundle;
+    if (window) return window;
+    if (e && e->pojavWindow) return e->pojavWindow;
+    return NULL;
+}
+
+/**
+ * Invoke MC-registered GLFW trampolines on the HotSpot render thread.
+ * Callbacks must be read from binary offsets (C struct layout drifts).
+ * Button snapshot must be taken BEFORE pojavPumpEvents.
+ */
+static void booxin_deliver_glfw_native(struct booxin_pojav_environ_s *e, void *winPtr,
+                                       double cx, double cy, int b0, int b1, int b2) {
+    if (!e || !winPtr) return;
+    /* isInputReady at +0x1d0 */
+    if (!((const uint8_t *)e + 0x27000)[0x1d0]) return;
+    booxin_bind_hotspot_jnienv();
+
+    void *enterCb = booxin_tail_ptr(e, 0x1f0);
+    void *posCb = booxin_tail_ptr(e, 0x1f8);
+    void *mouseCb = booxin_tail_ptr(e, 0x210);
+
+    if (!g_fwd_cursor_entered && enterCb) {
+        ((booxin_cursor_enter_fn)enterCb)(winPtr, 1);
+        g_fwd_cursor_entered = true;
+    }
+
+    if (cx != g_fwd_last_x || cy != g_fwd_last_y) {
+        if (posCb) {
+            ((booxin_cursor_pos_fn)posCb)(winPtr, cx, cy);
+            int n = atomic_fetch_add(&g_fwd_native_log, 1) + 1;
+            if (n <= 12 || (n % 600) == 0) {
+                LOGI("fwdNative pos=%.0f,%.0f win=%p", cx, cy, winPtr);
+            }
+        }
+        g_fwd_last_x = cx;
+        g_fwd_last_y = cy;
+    }
+
+    int states[3] = {b0, b1, b2};
+    for (int btn = 0; btn < 3; btn++) {
+        if (g_fwd_last_btn[btn] == states[btn]) continue;
+        if (mouseCb) {
+            ((booxin_mouse_btn_fn)mouseCb)(winPtr, btn, states[btn], 0);
+            LOGI("fwdNative btn=%d act=%d at %.0f,%.0f win=%p", btn, states[btn], cx, cy, winPtr);
+        }
+        g_fwd_last_btn[btn] = states[btn];
+    }
+}
+
+/** Always try Java MC-ClassLoader delivery as well (native trampoline may be stale). */
+static void booxin_forward_input_callbacks(void *window, double cx, double cy,
+                                           int b0, int b1, int b2) {
+    struct booxin_pojav_environ_s *e = booxin_get_environ();
+    if (!e) return;
+    if (!((const uint8_t *)e + 0x27000)[0x1d0]) return;
+
+    int attached = 0;
+    JNIEnv *env = booxin_get_hotspot_env(e, &attached);
+    if (!env) {
+        static int noEnv;
+        if (!noEnv++) LOGW("deliverInput: no HotSpot JNIEnv on pump thread");
+        return;
+    }
+    e->runtimeJNIEnvPtr_JRE = env;
+    if (!cache_input_hooks_deliver(env)) {
+        if (attached) (*e->runtimeJavaVMPtr)->DetachCurrentThread(e->runtimeJavaVMPtr);
+        return;
+    }
+
+    jlong win = (jlong)(intptr_t)window;
+    if (!win) win = (jlong)(intptr_t)booxin_mc_glfw_window(e, NULL);
+    (*env)->CallStaticVoidMethod(env, g_hooks_cls, g_hooks_deliver, win, cx, cy, b0, b1, b2);
+    if ((*env)->ExceptionCheck(env)) {
+        log_exception(env, "BooxinInputHooks.deliverInput");
+    }
+
+    if (attached) (*e->runtimeJavaVMPtr)->DetachCurrentThread(e->runtimeJavaVMPtr);
+}
+
+/*
+ * Do NOT replace GLFW_invoke_* with logging wrappers: early hooks lock stale
+ * pre-MC stubs. Stock pojavPumpEvents must call trampolines installed by
+ * glfwSet*Callback. Extra fwdNative/Java deliver was removed (FCL does not).
+ */
+static void booxin_hook_input_callbacks(void) {
+    /* intentionally empty — see comment above */
+}
+
+static void booxin_start_pumping(void) {
+    booxin_bind_hotspot_jnienv();
+    void *lib = open_pojavexec();
+    if (!lib) return;
+    void (*fn)(void) = (void (*)(void))dlsym(lib, "pojavStartPumping");
+    if (fn) fn();
+}
+
+static void booxin_stop_pumping(void) {
+    void *lib = open_pojavexec();
+    if (!lib) return;
+    void (*fn)(void) = (void (*)(void))dlsym(lib, "pojavStopPumping");
+    if (fn) fn();
+}
+
+/*
+ * FCL path: ART CriticalNative → stack queue → stock pojavPumpEvents only.
+ * Do NOT re-invoke GLFW trampolines / BooxinInputHooks here — that double-delivers
+ * and can feed MouseHandler a window handle MC rejects while logs still look "ok".
+ */
+static void booxin_pump_events(void *window) {
+    booxin_bind_hotspot_jnienv();
+    void *lib = open_pojavexec();
+    if (!lib) return;
+    struct booxin_pojav_environ_s **pp =
+        (struct booxin_pojav_environ_s **)dlsym(lib, "pojav_environ");
+    struct booxin_pojav_environ_s *e = (pp && *pp) ? *pp : NULL;
+
+    if (e) {
+        /* shouldUpdateMouse at binary +0x1d3 only — NEVER e->shouldUpdateMouse
+         * (C struct after events[] drifts and can corrupt cursor/callbacks). */
+        ((uint8_t *)e + 0x27000)[0x1d3] = 1;
+    }
+
+    void (*fn)(void *) = (void (*)(void *))dlsym(lib, "pojavPumpEvents");
+    if (fn) fn(window);
+}
+
+static bool patch_hotspot_pump_function_pointers(JNIEnv *env) {
+    if (!env) return false;
+    jclass fnCls = (*env)->FindClass(env, "org/lwjgl/glfw/GLFW$Functions");
+    if (!fnCls || (*env)->ExceptionCheck(env)) {
+        log_exception(env, "FindClass GLFW$Functions");
+        return false;
+    }
+    jfieldID startFid = (*env)->GetStaticFieldID(env, fnCls, "StartPumping", "J");
+    jfieldID pumpFid = (*env)->GetStaticFieldID(env, fnCls, "PumpEvents", "J");
+    jfieldID stopFid = (*env)->GetStaticFieldID(env, fnCls, "StopPumping", "J");
+    if (!startFid || !pumpFid || !stopFid || (*env)->ExceptionCheck(env)) {
+        log_exception(env, "GLFW$Functions pump fields");
+        return false;
+    }
+    jlong oldPump = (*env)->GetStaticLongField(env, fnCls, pumpFid);
+    jlong newStart = (jlong)(uintptr_t)booxin_start_pumping;
+    jlong newPump = (jlong)(uintptr_t)booxin_pump_events;
+    jlong newStop = (jlong)(uintptr_t)booxin_stop_pumping;
+    (*env)->SetStaticLongField(env, fnCls, startFid, newStart);
+    (*env)->SetStaticLongField(env, fnCls, pumpFid, newPump);
+    (*env)->SetStaticLongField(env, fnCls, stopFid, newStop);
+    jlong checkPump = (*env)->GetStaticLongField(env, fnCls, pumpFid);
+    LOGI("patched GLFW pump fns oldPump=%p newPump=%p checkPump=%p start=%p stop=%p",
+         (void *)(uintptr_t)oldPump, (void *)(uintptr_t)newPump,
+         (void *)(uintptr_t)checkPump,
+         (void *)(uintptr_t)newStart, (void *)(uintptr_t)newStop);
+    if (checkPump != newPump) {
+        LOGW("JNI could not overwrite final PumpEvents — trying Unsafe via Java");
+        jclass loaderCls = (*env)->FindClass(env, "org/lwjgl/glfw/BooxinPojavLoader");
+        if (loaderCls && !(*env)->ExceptionCheck(env)) {
+            jmethodID mid = (*env)->GetStaticMethodID(
+                env, loaderCls, "forcePumpFunctionPointers", "(JJJ)Z");
+            if (mid && !(*env)->ExceptionCheck(env)) {
+                jboolean ok = (*env)->CallStaticBooleanMethod(
+                    env, loaderCls, mid, newStart, newPump, newStop);
+                LOGI("Unsafe pump patch ok=%d", (int)ok);
+            } else if ((*env)->ExceptionCheck(env)) {
+                log_exception(env, "forcePumpFunctionPointers mid");
+            }
+        } else if ((*env)->ExceptionCheck(env)) {
+            log_exception(env, "FindClass BooxinPojavLoader for Unsafe patch");
+        }
+    }
+    (*env)->DeleteLocalRef(env, fnCls);
+    cache_input_hooks_deliver(env);
+    return true;
+}
+
+/**
+ * Force stack-queue + input-ready so ART touch is not silently dropped.
+ *
+ * FCL libpojavexec exports RegisterNatives helpers as critical_set_stackqueue /
+ * critical_send_* (NOT JavaCritical_…nativeSetUseInputStackQueue). nativeSetInputReady
+ * is the exception: it also has a JavaCritical_ export for direct CriticalNative link.
+ */
 static void force_input_bridge_ready(const char *where) {
     void *lib = open_pojavexec();
     if (!lib) return;
     typedef void (*set_stack_fn)(jboolean);
     typedef jboolean (*set_ready_fn)(jboolean);
+    /* Prefer FCL critical_* symbols; fall back if a different pojav build is used. */
     set_stack_fn setStack = (set_stack_fn)dlsym(lib, "critical_set_stackqueue");
+    const char *stackSym = "critical_set_stackqueue";
+    if (!setStack) {
+        setStack = (set_stack_fn)dlsym(lib, "noncritical_set_stackqueue");
+        stackSym = "noncritical_set_stackqueue";
+    }
+    if (!setStack) {
+        setStack = (set_stack_fn)dlsym(
+            lib, "JavaCritical_org_lwjgl_glfw_CallbackBridge_nativeSetUseInputStackQueue");
+        stackSym = "JavaCritical_…nativeSetUseInputStackQueue";
+    }
     set_ready_fn setReady =
         (set_ready_fn)dlsym(lib, "JavaCritical_org_lwjgl_glfw_CallbackBridge_nativeSetInputReady");
+    const char *readySym = "JavaCritical_…nativeSetInputReady";
+    if (!setReady) {
+        setReady = (set_ready_fn)dlsym(lib, "Java_org_lwjgl_glfw_CallbackBridge_nativeSetInputReady");
+        readySym = "Java_…nativeSetInputReady";
+    }
+    /* MUST enable stack-queue: critical_send_cursor_pos only writes cursorX/Y
+     * (offset 0x27140) when isUseStackQueueCall=1. Direct path invokes the
+     * CursorPos callback but leaves glfwGetCursorPos stuck at 0,0 — no GUI hover. */
     if (setStack) setStack(JNI_TRUE);
     jboolean stack = JNI_FALSE;
     if (setReady) stack = setReady(JNI_TRUE);
-    LOGI("%s: force ready stackQ_ret=%d setStack=%p setReady=%p",
-         where, (int)stack, (void *)setStack, (void *)setReady);
+    LOGI("%s: force ready stackQ_ret=%d setStack=%p(%s) setReady=%p(%s)",
+         where, (int)stack, (void *)setStack, stackSym, (void *)setReady, readySym);
+    if (!setStack || !setReady) {
+        LOGW("%s: incomplete force ready — touch/mouse may be dropped", where);
+    }
+}
+
+/**
+ * Ensure HotSpot GLFW is initialized BEFORE pojavexec JNI_OnLoad "Saving JVM".
+ * FCL binds mouseDownBuffer from GLFW static fields during that path; if
+ * System.load runs first, FindClass(GLFW) re-enters loadLibrary while the .so
+ * is still loading and buffers can stay NULL — clicks then hit a null write
+ * (SIGSEGV is ignored in this process → silent no-op).
+ */
+static bool preinit_hotspot_glfw(JNIEnv *env) {
+    if (!env) return false;
+    jclass glfwCls = (*env)->FindClass(env, "org/lwjgl/glfw/GLFW");
+    if (!glfwCls || (*env)->ExceptionCheck(env)) {
+        log_exception(env, "preinit FindClass GLFW");
+        LOGE("preinit HotSpot GLFW failed");
+        return false;
+    }
+    /* Touch a static field so <clinit> finishes (buffers + loadLibrary). */
+    jfieldID widthFid =
+        (*env)->GetStaticFieldID(env, glfwCls, "mGLFWWindowWidth", "I");
+    if (widthFid && !(*env)->ExceptionCheck(env)) {
+        jint w = (*env)->GetStaticIntField(env, glfwCls, widthFid);
+        LOGI("preinit HotSpot GLFW ok mGLFWWindowWidth=%d", (int)w);
+    } else {
+        log_exception(env, "preinit GLFW field");
+    }
+    (*env)->DeleteLocalRef(env, glfwCls);
+    return !(*env)->ExceptionCheck(env);
 }
 
 static void log_pojav_environ(const char *where) {
@@ -515,7 +1130,15 @@ static jint launch_embedded(LaunchCtx *ctx) {
      * Plain dlopen+JNI_OnLoad does NOT put the .so on HotSpot's JNI native-library
      * list, so GLFW.nglfwSetMouseButtonCallback later fails to link and mouseCb
      * stays NULL — ART then queues events that the game never receives.
+     *
+     * Order matters (FCL): initialize GLFW first so keyDownBuffer/mouseDownBuffer
+     * exist, THEN System.load → JNI_OnLoad "Saving JVM" binds those buffers.
+     * Early System.load before GLFW <clinit> can leave mouseDownBuffer NULL;
+     * with SIGSEGV ignored here, every click becomes a silent no-op.
      */
+    if (!preinit_hotspot_glfw(jenv)) {
+        LOGW("GLFW preinit failed — continuing with System.load anyway");
+    }
     if (!hotspot_system_load_pojavexec(jenv)) {
         LOGW("HotSpot System.load(pojavexec) failed — trying manual JNI_OnLoad");
         if (!call_pojav_jni_onload(jvm, jenv, "HotSpot")) {
@@ -525,6 +1148,11 @@ static jint launch_embedded(LaunchCtx *ctx) {
         log_pojav_environ("after HotSpot System.load(pojavexec)");
     }
     force_input_bridge_ready("after HotSpot pojavexec load");
+    log_hotspot_pump_diag(jenv);
+    if (!patch_hotspot_pump_function_pointers(jenv)) {
+        LOGW("GLFW pump pointer patch failed — touch may not reach Minecraft");
+    }
+    log_hotspot_pump_diag(jenv);
 
     /* pojavexec hookExec/installLwjglDlopenHook crash in embedded HotSpot; rely on
      * JNI_OnLoad + POJAV_RENDERER env + ART setupBridgeWindow instead. */
@@ -648,6 +1276,8 @@ static void init_pojav_hooks(JNIEnv *env) {
     } else {
         LOGW("installLwjglDlopenHook not found: %s", dlerror());
     }
+
+    register_callbackbridge_send_natives(env);
 }
 
 static jint launch_via_pojavexec(JNIEnv *env, jobjectArray argsArray) {
@@ -681,57 +1311,148 @@ Java_com_booxin_launcher_core_launch_NativeJvmLauncher_nativeInitializeHooks(
 }
 
 /*
- * Dump pojav_environ input gates. Layout must match FCL environ.h.
+ * Dump pojav_environ input gates. Layout: struct booxin_pojav_environ_s above.
  * Used to diagnose "Java logs mouseBtn but game ignores clicks".
  */
-typedef struct {
-    int type;
-    int i1;
-    int i2;
-    int i3;
-    int i4;
-} BooxinGlfwInputEvent;
 
-#define BOOXIN_EVENT_WINDOW_SIZE 8000
+JNIEXPORT void JNICALL
+Java_com_booxin_launcher_core_launch_NativeJvmLauncher_nativeMarkMousePositionDirty(
+    JNIEnv *env, jclass clazz)
+{
+    (void)env;
+    (void)clazz;
+    void *lib = open_pojavexec();
+    if (!lib) return;
+    struct booxin_pojav_environ_s **pp =
+        (struct booxin_pojav_environ_s **)dlsym(lib, "pojav_environ");
+    if (!pp || !*pp) return;
+    uint8_t *tail = (uint8_t *)(*pp) + 0x27000;
+    tail[0x1d3] = 1;
+}
 
-struct booxin_pojav_environ_s {
-    void *pojavWindow;
-    void *mainWindowBundle;
-    int config_renderer;
-    bool force_vsync;
-    atomic_size_t eventCounter;
-    BooxinGlfwInputEvent events[BOOXIN_EVENT_WINDOW_SIZE];
-    size_t outEventIndex;
-    size_t outTargetIndex;
-    size_t inEventIndex;
-    size_t inEventCount;
-    double cursorX, cursorY, cLastX, cLastY;
-    jmethodID method_accessAndroidClipboard;
-    jmethodID method_onGrabStateChanged;
-    jmethodID method_glftSetWindowAttrib;
-    jmethodID method_internalWindowSizeChanged;
-    jclass bridgeClazz;
-    jclass vmGlfwClass;
-    jboolean isGrabbing;
-    jbyte *keyDownBuffer;
-    jbyte *mouseDownBuffer;
-    JavaVM *runtimeJavaVMPtr;
-    JNIEnv *runtimeJNIEnvPtr_JRE;
-    JavaVM *dalvikJavaVMPtr;
-    JNIEnv *dalvikJNIEnvPtr_ANDROID;
-    long showingWindow;
-    bool isInputReady, isCursorEntered, isUseStackQueueCall, shouldUpdateMouse;
-    int savedWidth, savedHeight;
-    void *GLFW_invoke_Char;
-    void *GLFW_invoke_CharMods;
-    void *GLFW_invoke_CursorEnter;
-    void *GLFW_invoke_CursorPos;
-    void *GLFW_invoke_FramebufferSize;
-    void *GLFW_invoke_Key;
-    void *GLFW_invoke_MouseButton;
-    void *GLFW_invoke_Scroll;
-    void *GLFW_invoke_WindowSize;
-};
+JNIEXPORT jboolean JNICALL
+Java_com_booxin_launcher_core_launch_NativeJvmLauncher_nativeForcePumpInput(
+    JNIEnv *env, jclass clazz)
+{
+    (void)env;
+    (void)clazz;
+    void *lib = open_pojavexec();
+    if (!lib) return JNI_FALSE;
+    struct booxin_pojav_environ_s **pp =
+        (struct booxin_pojav_environ_s **)dlsym(lib, "pojav_environ");
+    if (!pp || !*pp) return JNI_FALSE;
+    struct booxin_pojav_environ_s *e = *pp;
+    if (!e->runtimeJavaVMPtr || !e->showingWindow) return JNI_FALSE;
+    if (!e->isInputReady) return JNI_FALSE;
+
+    typedef void (*start_fn)(void);
+    typedef void (*pump_fn)(void *);
+    typedef void (*stop_fn)(void);
+    /* Prefer our wrappers so mouseCb hooks + HotSpot JNIEnv bind apply. */
+    start_fn start = booxin_start_pumping;
+    pump_fn pump = booxin_pump_events;
+    stop_fn stop = booxin_stop_pumping;
+    if (!start || !pump || !stop) return JNI_FALSE;
+
+    JavaVM *hs = e->runtimeJavaVMPtr;
+    JNIEnv *hsEnv = NULL;
+    int attached = 0;
+    jint st = (*hs)->GetEnv(hs, (void **)&hsEnv, JNI_VERSION_1_4);
+    if (st == JNI_EDETACHED) {
+        if ((*hs)->AttachCurrentThread(hs, &hsEnv, NULL) != 0) return JNI_FALSE;
+        attached = 1;
+    } else if (st != JNI_OK) {
+        return JNI_FALSE;
+    }
+    /* Callbacks / framebuffer hooks expect a HotSpot JNIEnv here. */
+    e->runtimeJNIEnvPtr_JRE = hsEnv;
+
+    start();
+    pump((void *)(long)e->showingWindow);
+    stop();
+
+    if (attached) {
+        (*hs)->DetachCurrentThread(hs);
+    }
+    return JNI_TRUE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_booxin_launcher_core_launch_NativeJvmLauncher_nativeInvokeCursorPosCallback(
+    JNIEnv *env, jclass clazz, jfloat x, jfloat y)
+{
+    (void)env;
+    (void)clazz;
+    void *lib = open_pojavexec();
+    if (!lib) return JNI_FALSE;
+    struct booxin_pojav_environ_s **pp =
+        (struct booxin_pojav_environ_s **)dlsym(lib, "pojav_environ");
+    if (!pp || !*pp) return JNI_FALSE;
+    struct booxin_pojav_environ_s *e = *pp;
+    void *targetWindow = booxin_mc_glfw_window(e, NULL);
+    if (!e->GLFW_invoke_CursorPos || !targetWindow) return JNI_FALSE;
+
+    // Callback trampolines need a valid HotSpot JNIEnv for the *current thread*.
+    JavaVM *hs = e->runtimeJavaVMPtr;
+    if (!hs) return JNI_FALSE;
+    JNIEnv *hsEnv = NULL;
+    int attached = 0;
+    jint st = (*hs)->GetEnv(hs, (void **)&hsEnv, JNI_VERSION_1_4);
+    if (st == JNI_EDETACHED) {
+        if ((*hs)->AttachCurrentThread(hs, &hsEnv, NULL) != 0) return JNI_FALSE;
+        attached = 1;
+    } else if (st != JNI_OK) {
+        return JNI_FALSE;
+    }
+    e->runtimeJNIEnvPtr_JRE = hsEnv;
+
+    e->cursorX = x;
+    e->cursorY = y;
+    e->cLastX = x;
+    e->cLastY = y;
+    ((booxin_cursor_pos_fn)e->GLFW_invoke_CursorPos)(targetWindow, x, y);
+    if (attached) {
+        (*hs)->DetachCurrentThread(hs);
+    }
+    return JNI_TRUE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_booxin_launcher_core_launch_NativeJvmLauncher_nativeInvokeMouseButtonCallback(
+    JNIEnv *env, jclass clazz, jint button, jint action, jint mods)
+{
+    (void)env;
+    (void)clazz;
+    void *lib = open_pojavexec();
+    if (!lib) return JNI_FALSE;
+    struct booxin_pojav_environ_s **pp =
+        (struct booxin_pojav_environ_s **)dlsym(lib, "pojav_environ");
+    if (!pp || !*pp) return JNI_FALSE;
+    struct booxin_pojav_environ_s *e = *pp;
+    void *targetWindow = booxin_mc_glfw_window(e, NULL);
+    if (!e->GLFW_invoke_MouseButton || !targetWindow) return JNI_FALSE;
+
+    // Callback trampolines need a valid HotSpot JNIEnv for the *current thread*.
+    JavaVM *hs = e->runtimeJavaVMPtr;
+    if (!hs) return JNI_FALSE;
+    JNIEnv *hsEnv = NULL;
+    int attached = 0;
+    jint st = (*hs)->GetEnv(hs, (void **)&hsEnv, JNI_VERSION_1_4);
+    if (st == JNI_EDETACHED) {
+        if ((*hs)->AttachCurrentThread(hs, &hsEnv, NULL) != 0) return JNI_FALSE;
+        attached = 1;
+    } else if (st != JNI_OK) {
+        return JNI_FALSE;
+    }
+    e->runtimeJNIEnvPtr_JRE = hsEnv;
+
+    ((booxin_mouse_btn_fn)e->GLFW_invoke_MouseButton)(
+        targetWindow, button, action, mods);
+    if (attached) {
+        (*hs)->DetachCurrentThread(hs);
+    }
+    return JNI_TRUE;
+}
 
 JNIEXPORT jstring JNICALL
 Java_com_booxin_launcher_core_launch_NativeJvmLauncher_nativeDumpInputBridge(
@@ -748,28 +1469,60 @@ Java_com_booxin_launcher_core_launch_NativeJvmLauncher_nativeDumpInputBridge(
         return (*env)->NewStringUTF(env, "pojav_environ=null");
     }
     struct booxin_pojav_environ_s *e = *pp;
-    char buf[512];
+    /* libpojavexec (arm64) lays out the post-events fields at a fixed base
+     * offset 0x27000 from pojav_environ — verified via critical_send_cursor_pos /
+     * nglfwGetCursorPos disassembly. Our C struct mirror can drift; dump the
+     * binary offsets so diagnostics match what Minecraft actually reads. */
+    const uint8_t *base = (const uint8_t *)e;
+    const uint8_t *tail = base + 0x27000;
+    double cursorX = 0, cursorY = 0;
+    memcpy(&cursorX, tail + 0x140, sizeof(cursorX));
+    memcpy(&cursorY, tail + 0x148, sizeof(cursorY));
+    int ready = tail[0x1d0];
+    int cursorEnter = tail[0x1d1];
+    int stackQ = tail[0x1d2];
+    int shouldUpdateMouse = tail[0x1d3];
+    long showing = 0;
+    memcpy(&showing, tail + 0x1c8, sizeof(showing));
+    void *mouseCb = NULL, *cursorCb = NULL, *keyCb = NULL;
+    memcpy(&cursorCb, tail + 0x1f8, sizeof(cursorCb));
+    memcpy(&keyCb, tail + 0x208, sizeof(keyCb));
+    memcpy(&mouseCb, tail + 0x210, sizeof(mouseCb));
+    size_t inIdx = 0, outIdx = 0;
+    memcpy(&inIdx, tail + 0x130, sizeof(inIdx));
+    memcpy(&outIdx, tail + 0x120, sizeof(outIdx));
+    int mouseBtn0 = 0;
+    if (e->mouseDownBuffer) mouseBtn0 = e->mouseDownBuffer[0];
+    char buf[768];
     snprintf(buf, sizeof(buf),
-             "env=%p ready=%d stackQ=%d grab=%d cursorEnter=%d "
+             "env=%p ready=%d stackQ=%d shouldUpd=%d grab=%d cursorEnter=%d "
              "mouseCb=%p cursorCb=%p keyCb=%p "
+             "mouseBuf=%p keyBuf=%p mouseBtn0=%d "
              "events=%zu inIdx=%zu outIdx=%zu "
-             "cursor=%.1f,%.1f win=%dx%d showing=%ld dvm=%p jvm=%p",
+             "cursor=%.1f,%.1f win=%dx%d showing=%ld pojavWindow=%p mainBundle=%p dvm=%p jvm=%p jreEnv=%p",
              (void *)e,
-             e->isInputReady ? 1 : 0,
-             e->isUseStackQueueCall ? 1 : 0,
+             ready,
+             stackQ,
+             shouldUpdateMouse,
              e->isGrabbing ? 1 : 0,
-             e->isCursorEntered ? 1 : 0,
-             e->GLFW_invoke_MouseButton,
-             e->GLFW_invoke_CursorPos,
-             e->GLFW_invoke_Key,
+             cursorEnter,
+             mouseCb,
+             cursorCb,
+             keyCb,
+             (void *)e->mouseDownBuffer,
+             (void *)e->keyDownBuffer,
+             mouseBtn0,
              (size_t)atomic_load(&e->eventCounter),
-             e->inEventIndex,
-             e->outEventIndex,
-             e->cursorX, e->cursorY,
+             inIdx,
+             outIdx,
+             cursorX, cursorY,
              e->savedWidth, e->savedHeight,
-             e->showingWindow,
+             showing,
+             e->pojavWindow,
+             e->mainWindowBundle,
              (void *)e->dalvikJavaVMPtr,
-             (void *)e->runtimeJavaVMPtr);
+             (void *)e->runtimeJavaVMPtr,
+             (void *)e->runtimeJNIEnvPtr_JRE);
     LOGI("inputBridge: %s", buf);
     return (*env)->NewStringUTF(env, buf);
 }

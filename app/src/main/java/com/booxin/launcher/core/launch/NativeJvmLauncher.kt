@@ -28,6 +28,25 @@ object NativeJvmLauncher {
     /** Snapshot pojav_environ input gates (ready / callbacks / queue). */
     fun dumpInputBridge(): String = nativeDumpInputBridge() ?: "null"
 
+    /** Tell libpojavexec the cursor moved; next pump will invoke CursorPos. */
+    fun markMousePositionDirty() = nativeMarkMousePositionDirty()
+
+    /**
+     * Attach to HotSpot and drain pojavexec's input stack queue.
+     * Used when ART has queued mouse/key events but the render-thread pump
+     * is not delivering them to Minecraft.
+     */
+    fun forcePumpInput(): Boolean = nativeForcePumpInput()
+
+    /**
+     * Bypass critical_send_* and invoke the current GLFW callbacks directly.
+     * Diagnostic fallback for builds where libpojavexec send_* updates nothing.
+     */
+    fun invokeCursorPosCallback(x: Float, y: Float): Boolean = nativeInvokeCursorPosCallback(x, y)
+
+    fun invokeMouseButtonCallback(button: Int, action: Int, mods: Int): Boolean =
+        nativeInvokeMouseButtonCallback(button, action, mods)
+
     private external fun nativeChdir(path: String): Boolean
 
     private external fun nativeProbeJvm(): Boolean
@@ -39,6 +58,14 @@ object NativeJvmLauncher {
     private external fun nativeInitializeHooks(): Boolean
 
     private external fun nativeDumpInputBridge(): String?
+
+    private external fun nativeMarkMousePositionDirty()
+
+    private external fun nativeForcePumpInput(): Boolean
+
+    private external fun nativeInvokeCursorPosCallback(x: Float, y: Float): Boolean
+
+    private external fun nativeInvokeMouseButtonCallback(button: Int, action: Int, mods: Int): Boolean
 
     private external fun nativeLaunchJvm(
         args: Array<String>,

@@ -1,8 +1,14 @@
 package org.lwjgl.glfw;
 
 /**
- * JNI surface for FCL libpojavexec.so RegisterNatives.
- * Merges lwjgl.jar stubs (GLFW.java) with pojavexec input natives.
+ * JNI surface for FCL libpojavexec.so RegisterNatives (HotSpot side).
+ *
+ * Lives first on the Minecraft classpath so HotSpot resolves this stub instead of
+ * desktop LWJGL's CallbackBridge. Intentionally NOT {@code @CriticalNative}:
+ * HotSpot uses normal JNI → {@code noncritical_send_*} after RegisterNatives.
+ *
+ * ART UI-thread input uses the APK dex CallbackBridge (private + @CriticalNative)
+ * → {@code critical_send_*}. Both share one libpojavexec / pojav_environ.
  */
 public class CallbackBridge {
     public static final int CLIPBOARD_COPY = 2000;

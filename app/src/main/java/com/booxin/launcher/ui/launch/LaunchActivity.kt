@@ -55,15 +55,14 @@ class LaunchActivity : AppCompatActivity() {
     private var overlayHidden = false
     private var loadingPercent = 0
     private val mainHandler = Handler(Looper.getMainLooper())
+    private var lastTouchDispatchLogMs = 0L
     private var overlayHideTimeout: Runnable? = null
     private var inputArmRetries = 0
     private val inputArmRunnable = object : Runnable {
         override fun run() {
-            val ok = CallbackBridge.enableAndroidInput()
-            if (ok || inputArmRetries >= 12) {
-                if (ok && !CallbackBridge.isStackQueueEnabled()) {
-                    appendLog("输入桥: stack queue 状态异常")
-                }
+            CallbackBridge.enableAndroidInput()
+            val dump = getInputBridgeDump()
+            if (isInputBridgeReady(dump) || inputArmRetries >= 12) {
                 return
             }
             inputArmRetries++
@@ -218,7 +217,7 @@ class LaunchActivity : AppCompatActivity() {
             }
         )
 
-        // Screen touch = mouse (FCL): GUI click-to-point; in-world BUILD gestures
+        // Screen touch = mouse (FCL): GUI click-to-point; in-world BUILD gestures.
         binding.touchPad.mouseMoveMode = MouseMoveMode.CLICK
         binding.touchPad.gestureMode = GestureMode.BUILD
         binding.touchPad.lookSensitivity = 1.2f
@@ -228,9 +227,19 @@ class LaunchActivity : AppCompatActivity() {
             gravity = Gravity.TOP or Gravity.START
             leftMargin = 0
             topMargin = 0
+            width = (24 * resources.displayMetrics.density).toInt().coerceAtLeast(24)
+            height = (24 * resources.displayMetrics.density).toInt().coerceAtLeast(24)
         }
+        binding.cursorView.visibility = View.VISIBLE
         binding.touchPad.addOnLayoutChangeListener { v, _, _, _, _, _, _, _, _ ->
             GameInput.bindCursor(binding.cursorView, v.width, v.height)
+            if (!CallbackBridge.isGrabbing() && GameInput.pointerX == 0 && GameInput.pointerY == 0) {
+                binding.touchPad.syncCursorToCenter()
+            }
+        }
+        // FCL: physical mouse HOVER / BUTTON arrive via generic motion on TouchPad.
+        binding.touchPad.setOnGenericMotionListener { _, event ->
+            inputReady && GameInput.handleGenericMotion(event)
         }
 
         binding.btnEditAdd.setOnClickListener { controlLayout.addButton() }
@@ -323,6 +332,13 @@ class LaunchActivity : AppCompatActivity() {
     private fun hideOverlayIfNeeded(force: Boolean = false) {
         if (overlayHidden) return
         if (!force) return
+        val dump = getInputBridgeDump()
+        if (!isInputBridgeReady(dump) && !CallbackBridge.isGrabbing()) {
+            appendLog("输入桥尚未完全就绪，继续等待游戏窗口/回调…")
+            Log.i(TAG, "skip hideOverlay; bridge not ready: $dump")
+            scheduleInputArmRetries()
+            return
+        }
         overlayHidden = true
         overlayHideTimeout?.let { mainHandler.removeCallbacks(it) }
         overlayHideTimeout = null
@@ -450,8 +466,15 @@ class LaunchActivity : AppCompatActivity() {
     }
 
     private fun enableGameInput() {
+        val dump = getInputBridgeDump()
+        if (!isInputBridgeReady(dump) && !CallbackBridge.isGrabbing()) {
+            CallbackBridge.enableAndroidInput()
+            appendLog("等待输入桥完全就绪（window/callback）…")
+            Log.i(TAG, "delay enableGameInput; bridge not ready: $dump")
+            scheduleInputArmRetries()
+            return
+        }
         if (inputReady) {
-            // Overlay may have hidden before pojavexec loaded; re-arm native bridge.
             CallbackBridge.enableAndroidInput()
             scheduleInputArmRetries()
             return
@@ -463,9 +486,14 @@ class LaunchActivity : AppCompatActivity() {
         binding.touchPad.isEnabled = true
         GameInput.bindCursor(binding.cursorView, binding.touchPad.width, binding.touchPad.height)
         GameInput.refreshCursorVisibility()
-        // FCL starts cursor near screen center for GUI.
-        if (CallbackBridge.windowWidth > 0 && CallbackBridge.windowHeight > 0) {
+        binding.cursorView.visibility = View.VISIBLE
+        binding.cursorView.bringToFront()
+        // Always place overlay cursor at screen center when enabling input.
+        binding.touchPad.post {
             binding.touchPad.syncCursorToCenter()
+            GameInput.refreshCursorVisibility()
+            binding.cursorView.visibility =
+                if (CallbackBridge.isGrabbing()) View.GONE else View.VISIBLE
         }
         setControlsVisible(true)
         refreshMoveVisibility()
@@ -474,7 +502,32 @@ class LaunchActivity : AppCompatActivity() {
             if (ok) "触控已启用：屏幕触摸 = 鼠标（FCL 模式）"
             else "触控 UI 已显示，等待 pojavexec 输入桥…"
         )
+        logInputBridgeStatus("enableGameInput")
         scheduleInputArmRetries()
+    }
+
+    private fun getInputBridgeDump(): String = runCatching {
+        com.booxin.launcher.core.launch.NativeJvmLauncher.dumpInputBridge()
+    }.getOrElse { "error:${it.message}" }
+
+    private fun isInputBridgeReady(dump: String): Boolean {
+        return dump.contains("ready=1") &&
+            !dump.contains("showing=0") &&
+            !dump.contains("mouseCb=0x0") && !dump.contains("mouseCb=0 ") &&
+            !dump.contains("cursorCb=0x0") && !dump.contains("cursorCb=0 ")
+    }
+
+    /** Surface bridge dump in UI so diagnosis works without adb. */
+    private fun logInputBridgeStatus(where: String) {
+        val dump = getInputBridgeDump()
+        appendLog("输入桥[$where]: $dump")
+        Log.i(TAG, "inputBridge[$where] $dump")
+        if (dump.contains("mouseCb=0x0") || dump.contains("mouseCb=0 ") ||
+            dump.contains("mouseBuf=0x0") || dump.contains("mouseBuf=0 ") ||
+            dump.contains("ready=0") || dump.contains("showing=0")
+        ) {
+            appendLog("警告：输入桥未就绪，点击会被忽略（mouseCb/mouseBuf/ready/showing）")
+        }
     }
 
     /** Keep re-arming stack queue until GLFW callbacks exist (FCL timing). */
@@ -488,6 +541,7 @@ class LaunchActivity : AppCompatActivity() {
     }
 
     override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
+        // FCL: physical mouse HOVER_MOVE / BUTTON_PRESS arrive here, not onTouch.
         if (inputReady && GameInput.handleGenericMotion(event)) return true
         return super.dispatchGenericMotionEvent(event)
     }
@@ -531,12 +585,17 @@ class LaunchActivity : AppCompatActivity() {
             enableGameInput()
             return
         }
+        // Stop intercepting touches immediately; the fade-out is visual only.
+        binding.panelOverlay.isClickable = false
+        binding.panelOverlay.isFocusable = false
         binding.panelOverlay.animate()
             .alpha(0f)
             .setDuration(300)
             .withEndAction {
                 binding.panelOverlay.visibility = View.GONE
                 binding.panelOverlay.isClickable = false
+                binding.panelOverlay.isFocusable = false
+                Log.i(TAG, "panelOverlay hidden; touchPad should receive input")
                 enableGameInput()
             }
             .start()
@@ -553,6 +612,23 @@ class LaunchActivity : AppCompatActivity() {
         if (!overlayHidden) {
             updateLoadingFromLog(line)
         }
+    }
+
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        val now = System.currentTimeMillis()
+        if (ev.actionMasked == MotionEvent.ACTION_DOWN ||
+            ev.actionMasked == MotionEvent.ACTION_UP ||
+            (ev.actionMasked == MotionEvent.ACTION_MOVE && now - lastTouchDispatchLogMs > 250L)
+        ) {
+            lastTouchDispatchLogMs = now
+            Log.i(
+                TAG,
+                "dispatchTouch action=${ev.actionMasked} x=${ev.x.toInt()} y=${ev.y.toInt()} " +
+                    "overlayVis=${binding.panelOverlay.visibility} overlayAlpha=${binding.panelOverlay.alpha} " +
+                    "touchPadVis=${binding.touchPad.visibility} touchPadEnabled=${binding.touchPad.isEnabled}"
+            )
+        }
+        return super.dispatchTouchEvent(ev)
     }
 
     override fun onDestroy() {

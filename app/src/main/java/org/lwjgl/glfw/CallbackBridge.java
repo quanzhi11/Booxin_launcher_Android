@@ -56,6 +56,9 @@ public class CallbackBridge {
     private static volatile GrabListener grabListener;
     private static volatile boolean linkErrorLogged;
     private static volatile long lastBridgeDumpMs;
+    private static volatile long lastCursorPosLogMs;
+    private static volatile boolean directMouseFallbackTried;
+    private static volatile long lastReadyPumpMs;
 
     public interface GrabListener {
         void onGrabState(boolean grabbing);
@@ -102,8 +105,24 @@ public class CallbackBridge {
         mouseX = x;
         mouseY = y;
         try {
+            maybeSwitchToDirectMousePath();
             nativeSendCursorPos(x, y);
+            // pojavPumpEvents only invokes CursorPos when shouldUpdateMouse=1
+            // (set in pojavStartPumping). Mark dirty so the next pump delivers hover.
+            com.booxin.launcher.core.launch.NativeJvmLauncher.INSTANCE.markMousePositionDirty();
+            // Do NOT invoke GLFW callbacks from ART UI thread — that SIGSEGVs HotSpot.
+            maybePumpReadyBridge(false);
             nativesLinked = true;
+            // CursorPos is very high-frequency; log rate-limited to help verify native wiring.
+            long now = System.currentTimeMillis();
+            if (now - lastCursorPosLogMs > 250L) {
+                lastCursorPosLogMs = now;
+                Log.i(
+                    TAG,
+                    "cursorPos x=" + (int) x + ",y=" + (int) y + " grab=" + isGrabbing + " stackQueue="
+                        + stackQueueEnabled
+                );
+            }
         } catch (UnsatisfiedLinkError | Exception e) {
             logLinkOnce("nativeSendCursorPos", e);
         }
@@ -112,7 +131,10 @@ public class CallbackBridge {
     /** FCL CallbackBridge.sendMouseButton */
     public static void sendMouseButton(int button, boolean pressed) {
         try {
+            maybeSwitchToDirectMousePath();
             nativeSendMouseButton(button, pressed ? 1 : 0, 0);
+            // Do NOT invoke GLFW callbacks from ART UI thread — that SIGSEGVs HotSpot.
+            maybePumpReadyBridge(true);
             nativesLinked = true;
             Log.i(
                 TAG,
@@ -128,6 +150,11 @@ public class CallbackBridge {
                 try {
                     String dump = com.booxin.launcher.core.launch.NativeJvmLauncher.INSTANCE.dumpInputBridge();
                     Log.i(TAG, "bridgeDump " + dump);
+                    if (dump != null && (dump.contains("mouseCb=0x0") || dump.contains("mouseCb=0 ")
+                        || dump.contains("mouseBuf=0x0") || dump.contains("mouseBuf=0 ")
+                        || dump.contains("ready=0") || dump.contains("showing=0"))) {
+                        Log.e(TAG, "input bridge NOT ready for game — clicks will be ignored: " + dump);
+                    }
                 } catch (Throwable t) {
                     Log.w(TAG, "bridgeDump failed: " + t.getMessage());
                 }
@@ -184,25 +211,21 @@ public class CallbackBridge {
     }
 
     /**
-     * FCL-compatible input path: enable stack queue so ART UI-thread events
-     * are consumed safely on the Minecraft/GLFW thread.
-     * Same role as FCL {@code CallbackBridge.nativeSetUseInputStackQueue(true)}.
+     * Arm the pojavexec input bridge.
+     * Stack-queue is required: libpojavexec only persists cursorX/Y for
+     * glfwGetCursorPos when isUseStackQueueCall is true. Direct delivery
+     * fires CursorPos callbacks but leaves hover/hit-testing at (0,0).
      *
-     * @return true if stack-queue mode is confirmed active
+     * @return true if natives were armed successfully
      */
     public static boolean enableAndroidInput() {
         try {
             nativeSetUseInputStackQueue(true);
-            // nativeSetInputReady returns current isUseStackQueueCall flag
-            boolean stackQueue = nativeSetInputReady(true);
-            if (!stackQueue) {
-                nativeSetUseInputStackQueue(true);
-                stackQueue = nativeSetInputReady(true);
-            }
-            stackQueueEnabled = stackQueue;
+            boolean ready = nativeSetInputReady(true);
+            stackQueueEnabled = true;
             nativesLinked = true;
-            Log.i(TAG, "enableAndroidInput stackQueue=" + stackQueue);
-            return stackQueue;
+            Log.i(TAG, "enableAndroidInput stackQueue=true ready=" + ready);
+            return true;
         } catch (UnsatisfiedLinkError | Exception e) {
             stackQueueEnabled = false;
             logLinkOnce("enableAndroidInput", e);
@@ -226,6 +249,15 @@ public class CallbackBridge {
             linkErrorLogged = true;
         }
         Log.e(TAG, where + " failed (pojavexec not ready?): " + e.getMessage());
+    }
+
+    private static void maybeSwitchToDirectMousePath() {
+        // Intentionally disabled: switching off stack-queue breaks cursorX/Y
+        // persistence in libpojavexec (glfwGetCursorPos stays at 0,0).
+    }
+
+    private static void maybePumpReadyBridge(boolean fromButton) {
+        // Events are drained on MC's render-thread GLFW pump; do not forcePump from ART.
     }
 
     /** Called from libpojavexec during JNI_OnLoad. */

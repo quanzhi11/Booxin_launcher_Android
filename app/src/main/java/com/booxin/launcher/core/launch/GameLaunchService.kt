@@ -23,6 +23,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import org.lwjgl.glfw.CallbackBridge
+import java.io.File
 
 /**
  * Headless foreground service in `:game` process.
@@ -105,9 +106,34 @@ class GameLaunchService : Service() {
 
         AndroidGameRuntime.ensure(this)
 
-        val width = if (windowWidth > 0) windowWidth else resources.displayMetrics.widthPixels
-        val height = if (windowHeight > 0) windowHeight else resources.displayMetrics.heightPixels
+        // Prefer real Surface size (FCL writes options after TextureView is ready).
+        appendLog("等待游戏 Surface…")
+        val surface = runCatching { GameSurfaceBridge.awaitSurface() }.getOrElse {
+            appendLog("Surface 超时: ${it.message}")
+            return
+        }
+        val width = when {
+            GameSurfaceBridge.width > 1 -> GameSurfaceBridge.width
+            windowWidth > 0 -> windowWidth
+            else -> resources.displayMetrics.widthPixels
+        }
+        val height = when {
+            GameSurfaceBridge.height > 1 -> GameSurfaceBridge.height
+            windowHeight > 0 -> windowHeight
+            else -> resources.displayMetrics.heightPixels
+        }
         GameSurfaceBridge.onSurfaceSizeChanged(width, height)
+        // FCL JVMActivity: options.txt fullscreen=false + overrideWidth/Height before JVM.
+        runCatching {
+            val gameDir = File(
+                com.booxin.launcher.core.LauncherPaths.versionsDir,
+                versionId
+            )
+            GameOptionsPatch.applyWindowOverrides(gameDir, width, height)
+            appendLog("options.txt → ${width}x${height} fullscreen=false")
+        }.onFailure {
+            appendLog("options.txt 写入失败: ${it.message}")
+        }
         appendLog("构建启动命令…（窗口 ${width}x${height}）")
         val command = runCatching {
             LaunchCommandBuilder(this).build(
@@ -119,12 +145,6 @@ class GameLaunchService : Service() {
             )
         }.getOrElse {
             appendLog("命令构建失败: ${it.message}")
-            return
-        }
-
-        appendLog("等待游戏 Surface…")
-        val surface = runCatching { GameSurfaceBridge.awaitSurface() }.getOrElse {
-            appendLog("Surface 超时: ${it.message}")
             return
         }
 

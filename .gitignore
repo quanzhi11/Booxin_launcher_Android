@@ -27,3 +27,4 @@ scan_*.py
 scan_*.ps1
 diag.bat
 diag.ps1
+diag-logs/
