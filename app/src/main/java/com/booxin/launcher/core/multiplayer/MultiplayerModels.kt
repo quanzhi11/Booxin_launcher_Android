@@ -4,6 +4,7 @@ data class BooxinUser(
     val id: String,
     val username: String,
     val avatarUrl: String? = null,
+    val selectedFrameId: String? = null,
     val signature: String? = null,
     val email: String? = null,
     val isEmailVerified: Boolean = false,
@@ -23,6 +24,7 @@ data class BooxinFriend(
     val userId: String,
     val username: String,
     val avatarUrl: String? = null,
+    val selectedFrameId: String? = null,
     val isOnline: Boolean = false,
     val isInRoom: Boolean = false,
     val isAvailableToChat: Boolean = false,
@@ -64,14 +66,19 @@ data class LobbyUser(
     val id: String,
     val username: String,
     val avatarUrl: String? = null,
+    val selectedFrameId: String? = null,
     val isOnline: Boolean = false,
-    val isFriend: Boolean = false
+    val isFriend: Boolean = false,
+    val hasPendingOutgoingRequest: Boolean = false,
+    val hasPendingIncomingRequest: Boolean = false,
+    val pendingIncomingRequestId: String? = null
 )
 
 data class SearchUser(
     val id: String,
     val username: String,
     val avatarUrl: String? = null,
+    val selectedFrameId: String? = null,
     val isOnline: Boolean = false,
     val isFriend: Boolean = false
 )
@@ -128,3 +135,23 @@ data class RoomMember(
 ) {
     val isHost: Boolean get() = kind.equals("HOST", ignoreCase = true)
 }
+
+data class RewardProfile(
+    val booxinUserId: String,
+    val username: String,
+    val gold: Int = 0,
+    val level: Int = 0,
+    val title: String? = null,
+    val displayLevel: String? = null,
+    val ownedFrameIds: List<String> = emptyList(),
+    val selectedFrameId: String? = null,
+    val lastCheckInDate: String? = null
+)
+
+data class RewardClaimResult(
+    val ok: Boolean = false,
+    val message: String? = null,
+    val alreadyClaimed: Boolean = false,
+    val awarded: Int = 0,
+    val profile: RewardProfile? = null
+)

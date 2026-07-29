@@ -25,6 +25,9 @@ class MultiplayerAuthManager(
     private val _roomMembers = MutableStateFlow<List<RoomMember>>(emptyList())
     val roomMembers: StateFlow<List<RoomMember>> = _roomMembers.asStateFlow()
 
+    private val _rewardProfile = MutableStateFlow<RewardProfile?>(null)
+    val rewardProfile: StateFlow<RewardProfile?> = _rewardProfile.asStateFlow()
+
     @Volatile
     private var joinCoordinator: RoomJoinCoordinator? = null
 
@@ -163,6 +166,37 @@ class MultiplayerAuthManager(
         return result
     }
 
+    suspend fun loadRewardProfile(): Result<RewardProfile> {
+        val session = requireSession()
+        return api.getRewardProfile(session).onSuccess { profile ->
+            _rewardProfile.value = profile
+            val frameId = profile.selectedFrameId
+            if (!frameId.isNullOrBlank() && frameId != session.user.selectedFrameId) {
+                remember(session.copy(user = session.user.copy(selectedFrameId = frameId)))
+            }
+        }
+    }
+
+    suspend fun checkIn(): Result<RewardClaimResult> {
+        val session = requireSession()
+        return api.checkIn(session).onSuccess { result ->
+            result.profile?.let { profile ->
+                _rewardProfile.value = profile
+                remember(session.copy(user = session.user.copy(selectedFrameId = profile.selectedFrameId)))
+            }
+        }
+    }
+
+    suspend fun selectFrame(frameId: String): Result<RewardClaimResult> {
+        val session = requireSession()
+        return api.selectFrame(session, frameId).onSuccess { result ->
+            result.profile?.let { profile ->
+                _rewardProfile.value = profile
+                remember(session.copy(user = session.user.copy(selectedFrameId = profile.selectedFrameId)))
+            }
+        }
+    }
+
     suspend fun sendRoomInvite(friendUserId: String) =
         runCatching { api.sendRoomInvite(requireSession(), friendUserId).getOrThrow() }
 
@@ -224,5 +258,6 @@ class MultiplayerAuthManager(
         _directConnect.value = null
         _roomMembers.value = emptyList()
         _joinStatus.value = null
+        _rewardProfile.value = null
     }
 }

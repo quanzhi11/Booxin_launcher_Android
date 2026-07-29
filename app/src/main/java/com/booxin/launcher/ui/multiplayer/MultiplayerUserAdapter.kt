@@ -11,6 +11,7 @@ data class MultiplayerListItem(
     val name: String,
     val meta: String,
     val avatarUrl: String? = null,
+    val frameId: String? = null,
     val primaryLabel: String? = null,
     val secondaryLabel: String? = null,
     val payload: Any? = null
@@ -44,6 +45,7 @@ class MultiplayerUserAdapter(
         holder.binding.textName.text = item.name
         holder.binding.textMeta.text = item.meta
         holder.binding.imageAvatar.loadBooxinAvatar(item.avatarUrl)
+        holder.binding.imageFrame.applyBooxinFrame(item.frameId)
         val hasActions = !item.primaryLabel.isNullOrBlank() || !item.secondaryLabel.isNullOrBlank()
         holder.binding.rowActions.isVisible = hasActions
         holder.binding.buttonPrimary.isVisible = !item.primaryLabel.isNullOrBlank()

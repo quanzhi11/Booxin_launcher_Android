@@ -1,6 +1,7 @@
 package com.booxin.launcher.ui.multiplayer
 
 import android.widget.ImageView
+import androidx.core.view.isVisible
 import coil.load
 import coil.transform.CircleCropTransformation
 import com.booxin.launcher.AppContainer
@@ -16,5 +17,16 @@ fun ImageView.loadBooxinAvatar(avatarUrl: String?) {
         placeholder(R.drawable.ic_avatar_placeholder)
         error(R.drawable.ic_avatar_placeholder)
         fallback(R.drawable.ic_avatar_placeholder)
+    }
+}
+
+fun ImageView.applyBooxinFrame(frameId: String?) {
+    val drawable = AvatarFrameHelper.resolveDrawable(frameId)
+    if (drawable == null) {
+        isVisible = false
+        setImageDrawable(null)
+    } else {
+        isVisible = true
+        setImageResource(drawable)
     }
 }

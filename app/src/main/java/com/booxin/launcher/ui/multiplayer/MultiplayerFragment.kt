@@ -24,6 +24,8 @@ import com.booxin.launcher.core.multiplayer.ChatConversation
 import com.booxin.launcher.core.multiplayer.FriendRequest
 import com.booxin.launcher.core.multiplayer.LobbyUser
 import com.booxin.launcher.core.multiplayer.PublicRoom
+import com.booxin.launcher.core.multiplayer.RewardProfile
+import com.booxin.launcher.core.multiplayer.RewardProfileHelper
 import com.booxin.launcher.core.multiplayer.RoomInvite
 import com.booxin.launcher.core.multiplayer.RoomMember
 import com.booxin.launcher.core.multiplayer.SearchUser
@@ -39,6 +41,7 @@ class MultiplayerFragment : Fragment() {
     private var _binding: FragmentMultiplayerBinding? = null
     private val binding get() = _binding!!
     private var authMode = AuthMode.PASSWORD
+    private var rewardProfile: RewardProfile? = null
 
     private val pickAvatar = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) uploadAvatar(uri)
@@ -92,7 +95,21 @@ class MultiplayerFragment : Fragment() {
     private val lobbyAdapter = MultiplayerUserAdapter(
         onPrimary = { item ->
             val user = item.payload as? LobbyUser ?: return@MultiplayerUserAdapter
-            addFriend(user.id, user.username)
+            val requestId = user.pendingIncomingRequestId
+            if (user.hasPendingIncomingRequest && !requestId.isNullOrBlank()) {
+                viewLifecycleOwner.lifecycleScope.launch {
+                    val result = AppContainer.multiplayerAuth.acceptFriendRequest(requestId)
+                    Toast.makeText(
+                        requireContext(),
+                        result.getOrElse { it.message ?: "failed" },
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    refreshLobby()
+                    refreshFriends()
+                }
+            } else {
+                addFriend(user.id, user.username) { refreshLobby() }
+            }
         }
     )
     private val searchAdapter = MultiplayerUserAdapter(
@@ -178,6 +195,8 @@ class MultiplayerFragment : Fragment() {
                 AppContainer.multiplayerAuth.leaveActiveRoom()
             }
         }
+        binding.buttonCheckIn.setOnClickListener { performCheckIn() }
+        binding.buttonPickFrame.setOnClickListener { showFramePicker() }
 
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -189,7 +208,14 @@ class MultiplayerFragment : Fragment() {
                             refreshLobby()
                             refreshRooms()
                             refreshMessages()
+                            refreshRewards()
                         }
+                    }
+                }
+                launch {
+                    AppContainer.multiplayerAuth.rewardProfile.collect { profile ->
+                        rewardProfile = profile
+                        renderRewards(profile)
                     }
                 }
                 launch {
@@ -502,6 +528,7 @@ class MultiplayerFragment : Fragment() {
                         name = f.username,
                         meta = friendStatus(f),
                         avatarUrl = f.avatarUrl,
+                        frameId = f.selectedFrameId,
                         primaryLabel = getString(R.string.multiplayer_chat),
                         secondaryLabel = friendSecondaryAction(f, inRoom),
                         payload = f
@@ -562,6 +589,125 @@ class MultiplayerFragment : Fragment() {
         }
     }
 
+    private fun refreshRewards() {
+        if (AppContainer.multiplayerAuth.current() == null) return
+        viewLifecycleOwner.lifecycleScope.launch {
+            binding.textRewards.text = getString(R.string.multiplayer_rewards_loading)
+            binding.buttonCheckIn.isEnabled = false
+            val result = AppContainer.multiplayerAuth.loadRewardProfile()
+            if (result.isFailure) {
+                binding.textRewards.text = getString(R.string.multiplayer_rewards_load_failed)
+            }
+            binding.buttonCheckIn.isEnabled = true
+        }
+    }
+
+    private fun renderRewards(profile: RewardProfile?) {
+        if (profile == null) {
+            binding.buttonCheckIn.text = getString(R.string.multiplayer_checkin)
+            binding.buttonCheckIn.isEnabled = AppContainer.multiplayerAuth.current() != null
+            return
+        }
+        val checkedIn = RewardProfileHelper.hasCheckedInToday(profile)
+        val status = if (checkedIn) {
+            getString(R.string.multiplayer_rewards_checked_in)
+        } else {
+            getString(R.string.multiplayer_rewards_not_checked_in)
+        }
+        binding.textRewards.text = getString(
+            R.string.multiplayer_rewards_summary,
+            RewardProfileHelper.rankLabel(profile),
+            profile.gold,
+            status
+        )
+        binding.buttonCheckIn.text = if (checkedIn) {
+            getString(R.string.multiplayer_checkin_done)
+        } else {
+            getString(R.string.multiplayer_checkin)
+        }
+        binding.buttonCheckIn.isEnabled = !checkedIn
+        applySessionFrame(profile.selectedFrameId)
+    }
+
+    private fun performCheckIn() {
+        viewLifecycleOwner.lifecycleScope.launch {
+            binding.buttonCheckIn.isEnabled = false
+            val result = AppContainer.multiplayerAuth.checkIn()
+            val claim = result.getOrNull()
+            val message = when {
+                result.isFailure -> result.exceptionOrNull()?.message ?: "签到失败"
+                claim?.alreadyClaimed == true -> getString(R.string.multiplayer_checkin_already)
+                claim?.ok == true -> claim.message ?: getString(R.string.multiplayer_checkin_ok)
+                else -> claim?.message ?: getString(R.string.multiplayer_checkin_ok)
+            }
+            Toast.makeText(requireContext(), message, Toast.LENGTH_SHORT).show()
+            if (result.isSuccess) {
+                refreshRewards()
+                renderSession(AppContainer.multiplayerAuth.current())
+            } else {
+                binding.buttonCheckIn.isEnabled = true
+            }
+        }
+    }
+
+    private fun showFramePicker() {
+        val profile = rewardProfile
+        if (profile == null) {
+            toast(R.string.multiplayer_rewards_loading)
+            refreshRewards()
+            return
+        }
+        val frameIds = buildList {
+            add("none")
+            addAll(profile.ownedFrameIds)
+            profile.selectedFrameId?.takeIf { it.isNotBlank() && it != "none" }?.let { add(it) }
+        }.distinct()
+        val labels = frameIds.map { frameLabel(it) }.toTypedArray()
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle(R.string.multiplayer_pick_frame)
+            .setItems(labels) { _, which ->
+                val frameId = frameIds[which]
+                viewLifecycleOwner.lifecycleScope.launch {
+                    val result = AppContainer.multiplayerAuth.selectFrame(frameId)
+                    if (result.isSuccess) {
+                        toast(R.string.multiplayer_frame_updated)
+                        renderSession(AppContainer.multiplayerAuth.current())
+                        refreshRewards()
+                    } else {
+                        Toast.makeText(
+                            requireContext(),
+                            result.exceptionOrNull()?.message ?: "failed",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                }
+            }
+            .show()
+    }
+
+    private fun frameLabel(frameId: String): String {
+        val res = when (frameId.lowercase()) {
+            "none" -> R.string.multiplayer_frame_none
+            "wood" -> R.string.multiplayer_frame_wood
+            "iron" -> R.string.multiplayer_frame_iron
+            "gold" -> R.string.multiplayer_frame_gold
+            "diamond" -> R.string.multiplayer_frame_diamond
+            "nether" -> R.string.multiplayer_frame_nether
+            "end" -> R.string.multiplayer_frame_end
+            "peak" -> R.string.multiplayer_frame_peak
+            "cyan" -> R.string.multiplayer_frame_cyan
+            "rose" -> R.string.multiplayer_frame_rose
+            "aurora" -> R.string.multiplayer_frame_aurora
+            "miner" -> R.string.multiplayer_frame_miner
+            else -> null
+        }
+        return if (res != null) getString(res) else frameId
+    }
+
+    private fun applySessionFrame(frameId: String?) {
+        binding.imageSessionFrame.applyBooxinFrame(frameId)
+    }
+
     private fun refreshLobby() {
         if (AppContainer.multiplayerAuth.current() == null) return
         viewLifecycleOwner.lifecycleScope.launch {
@@ -573,12 +719,19 @@ class MultiplayerFragment : Fragment() {
                         name = u.username,
                         meta = statusLine(u.isOnline, u.isFriend),
                         avatarUrl = u.avatarUrl,
-                        primaryLabel = if (u.isFriend) null else getString(R.string.multiplayer_add_friend),
+                        frameId = u.selectedFrameId,
+                        primaryLabel = when {
+                            u.isFriend -> null
+                            u.hasPendingOutgoingRequest -> getString(R.string.multiplayer_request_sent)
+                            u.hasPendingIncomingRequest -> getString(R.string.multiplayer_accept)
+                            else -> getString(R.string.multiplayer_add_friend)
+                        },
                         payload = u
                     )
                 }
             )
-            binding.textLobbyEmpty.isVisible = lobbyResult.getOrNull().isNullOrEmpty()
+            binding.textLobbyEmpty.isVisible =
+                lobbyResult.isSuccess && lobbyResult.getOrNull().isNullOrEmpty()
             if (lobbyResult.isFailure) {
                 binding.textStatus.text = lobbyResult.exceptionOrNull()?.message
             }
@@ -635,6 +788,7 @@ class MultiplayerFragment : Fragment() {
                         name = u.username,
                         meta = statusLine(u.isOnline, u.isFriend),
                         avatarUrl = u.avatarUrl,
+                        frameId = u.selectedFrameId,
                         primaryLabel = if (u.isFriend) null else getString(R.string.multiplayer_add_friend),
                         payload = u
                     )
@@ -651,7 +805,7 @@ class MultiplayerFragment : Fragment() {
         )
     }
 
-    private fun addFriend(userId: String, username: String) {
+    private fun addFriend(userId: String, username: String, onSuccess: (() -> Unit)? = null) {
         viewLifecycleOwner.lifecycleScope.launch {
             val result = AppContainer.multiplayerAuth.sendFriendRequest(userId, username)
             Toast.makeText(
@@ -659,7 +813,10 @@ class MultiplayerFragment : Fragment() {
                 result.getOrElse { it.message ?: "failed" },
                 Toast.LENGTH_SHORT
             ).show()
-            if (result.isSuccess) refreshFriends()
+            if (result.isSuccess) {
+                refreshFriends()
+                onSuccess?.invoke()
+            }
         }
     }
 
@@ -841,6 +998,10 @@ class MultiplayerFragment : Fragment() {
             }
             binding.inputSignature.setText(user.signature.orEmpty())
             binding.imageSessionAvatar.loadBooxinAvatar(user.avatarUrl)
+            applySessionFrame(
+                rewardProfile?.selectedFrameId?.takeIf { it.isNotBlank() }
+                    ?: user.selectedFrameId
+            )
             if (!user.email.isNullOrBlank()) {
                 binding.inputBindEmail.setText(user.email)
                 binding.textEmailStatus.text = buildString {

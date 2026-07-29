@@ -18,9 +18,14 @@ class BooxinMultiplayerApi {
 
     companion object {
         const val DEFAULT_ROOT = "https://boonix.art/bbx"
+        const val DEFAULT_ECO_ROOT = "https://boonix.art/eco"
         private val ROOTS = listOf(
             "https://boonix.art/bbx",
             "https://175.178.174.103/bbx"
+        )
+        private val ECO_ROOTS = listOf(
+            "https://boonix.art/eco",
+            "https://175.178.174.103/eco"
         )
         private val JSON = "application/json; charset=utf-8".toMediaType()
     }
@@ -88,12 +93,21 @@ class BooxinMultiplayerApi {
             }
         }
 
-    suspend fun fetchLobby(session: BooxinAuthSession, page: Int = 1, pageSize: Int = 40) =
-        withContext(Dispatchers.IO) {
+    suspend fun fetchLobby(
+        session: BooxinAuthSession,
+        page: Int = 1,
+        pageSize: Int = 30,
+        onlineOnly: Boolean = false,
+        query: String? = null
+    ) = withContext(Dispatchers.IO) {
             runCatching {
+                val queryPart = query?.trim()?.takeIf { it.isNotEmpty() }?.let {
+                    "&query=${URLEncoder.encode(it, Charsets.UTF_8.name())}"
+                }.orEmpty()
                 val url =
-                    "${session.apiRoot}/api/auth/users/lobby?page=$page&pageSize=$pageSize&onlineOnly=false"
-                parseLobby(JSONObject(execute(authorizedGet(session, url))).optJSONArray("results"))
+                    "${session.apiRoot}/api/auth/users/lobby?page=$page&pageSize=$pageSize&onlineOnly=$onlineOnly$queryPart"
+                val root = JSONObject(execute(authorizedGet(session, url)))
+                parseLobby(readPagedUsers(root))
             }
         }
 
@@ -413,6 +427,43 @@ class BooxinMultiplayerApi {
             }
         }
 
+    suspend fun getRewardProfile(session: BooxinAuthSession): Result<RewardProfile> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                firstSuccessEcoRoot { root ->
+                    val text = execute(authorizedGet(session, "$root/api/rewards/me/profile"))
+                    parseRewardProfile(JSONObject(text))
+                }
+            }
+        }
+
+    suspend fun checkIn(session: BooxinAuthSession): Result<RewardClaimResult> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                firstSuccessEcoRoot { root ->
+                    val text = execute(
+                        authorizedPost(
+                            session,
+                            "$root/api/rewards/check-in",
+                            "{}".toRequestBody(JSON)
+                        )
+                    )
+                    parseRewardClaimResult(JSONObject(text))
+                }
+            }
+        }
+
+    suspend fun selectFrame(session: BooxinAuthSession, frameId: String): Result<RewardClaimResult> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                firstSuccessEcoRoot { root ->
+                    val body = JSONObject().put("frameId", frameId).toString().toRequestBody(JSON)
+                    val text = execute(authorizedPost(session, "$root/api/rewards/me/frame", body))
+                    parseRewardClaimResult(JSONObject(text))
+                }
+            }
+        }
+
     suspend fun sendRoomInvite(session: BooxinAuthSession, friendUserId: String): Result<String> =
         withContext(Dispatchers.IO) {
             runCatching {
@@ -554,6 +605,18 @@ class BooxinMultiplayerApi {
         throw last ?: IOException("无法连接联机服务器")
     }
 
+    private fun <T> firstSuccessEcoRoot(block: (String) -> T): T {
+        var last: Throwable? = null
+        for (root in ECO_ROOTS) {
+            try {
+                return block(root)
+            } catch (t: Throwable) {
+                last = t
+            }
+        }
+        throw last ?: IOException("无法连接积分服务器")
+    }
+
     private fun parseAuthResponse(body: String, apiRoot: String): BooxinAuthSession {
         val o = JSONObject(body)
         return BooxinAuthSession(
@@ -569,6 +632,7 @@ class BooxinMultiplayerApi {
         id = o.getString("id"),
         username = o.getString("username"),
         avatarUrl = o.optString("avatarUrl").ifBlank { null },
+        selectedFrameId = o.optString("selectedFrameId").ifBlank { null },
         signature = o.optString("signature").ifBlank { null },
         email = o.optString("email").ifBlank { null },
         isEmailVerified = o.optBoolean("isEmailVerified", false),
@@ -586,6 +650,7 @@ class BooxinMultiplayerApi {
                         userId = o.optString("userId").ifBlank { o.optString("id") },
                         username = o.optString("username"),
                         avatarUrl = o.optString("avatarUrl").ifBlank { null },
+                        selectedFrameId = o.optString("selectedFrameId").ifBlank { null },
                         isOnline = o.optBoolean("isOnline", false),
                         isInRoom = o.optBoolean("isInRoom", false),
                         isAvailableToChat = o.optBoolean("isAvailableToChat", false),
@@ -656,6 +721,12 @@ class BooxinMultiplayerApi {
         }
     }
 
+    private fun readPagedUsers(root: JSONObject): JSONArray? {
+        // Lobby API returns `users`; search uses `results` (see bphone PaginatedResponse).
+        return root.optJSONArray("users")
+            ?: root.optJSONArray("results")
+    }
+
     private fun parseLobby(arr: JSONArray?): List<LobbyUser> {
         if (arr == null) return emptyList()
         return buildList {
@@ -663,11 +734,15 @@ class BooxinMultiplayerApi {
                 val o = arr.getJSONObject(i)
                 add(
                     LobbyUser(
-                        id = o.optString("id"),
+                        id = o.optString("id").ifBlank { o.optString("userId") },
                         username = o.optString("username"),
                         avatarUrl = o.optString("avatarUrl").ifBlank { null },
+                        selectedFrameId = o.optString("selectedFrameId").ifBlank { null },
                         isOnline = o.optBoolean("isOnline", false),
-                        isFriend = o.optBoolean("isFriend", false)
+                        isFriend = o.optBoolean("isFriend", false),
+                        hasPendingOutgoingRequest = o.optBoolean("hasPendingOutgoingRequest", false),
+                        hasPendingIncomingRequest = o.optBoolean("hasPendingIncomingRequest", false),
+                        pendingIncomingRequestId = o.optString("pendingIncomingRequestId").ifBlank { null }
                     )
                 )
             }
@@ -684,6 +759,7 @@ class BooxinMultiplayerApi {
                         id = o.optString("id"),
                         username = o.optString("username"),
                         avatarUrl = o.optString("avatarUrl").ifBlank { null },
+                        selectedFrameId = o.optString("selectedFrameId").ifBlank { null },
                         isOnline = o.optBoolean("isOnline", false),
                         isFriend = o.optBoolean("isFriend", false)
                     )
@@ -710,5 +786,34 @@ class BooxinMultiplayerApi {
         isMine = o.optBoolean("isMine", false),
         isRevoked = o.optBoolean("isRevoked", false),
         canRecall = o.optBoolean("canRecall", false)
+    )
+
+    private fun parseRewardProfile(o: JSONObject) = RewardProfile(
+        booxinUserId = o.optString("booxinUserId").ifBlank { o.optString("userId") },
+        username = o.optString("username"),
+        gold = o.optInt("gold", 0),
+        level = o.optInt("level", 0),
+        title = o.optString("title").ifBlank { null },
+        displayLevel = o.optString("displayLevel").ifBlank { null },
+        ownedFrameIds = o.optJSONArray("ownedFrameIds").toStringList(),
+        selectedFrameId = o.optString("selectedFrameId").ifBlank { null },
+        lastCheckInDate = o.optString("lastCheckInDate").ifBlank { null }
+    )
+
+    private fun JSONArray?.toStringList(): List<String> {
+        if (this == null) return emptyList()
+        return buildList {
+            for (i in 0 until length()) {
+                optString(i).takeIf { it.isNotBlank() }?.let { add(it) }
+            }
+        }
+    }
+
+    private fun parseRewardClaimResult(o: JSONObject) = RewardClaimResult(
+        ok = o.optBoolean("ok", false),
+        message = o.optString("message").ifBlank { null },
+        alreadyClaimed = o.optBoolean("alreadyClaimed", false),
+        awarded = o.optInt("awarded", 0),
+        profile = o.optJSONObject("profile")?.let { parseRewardProfile(it) }
     )
 }
