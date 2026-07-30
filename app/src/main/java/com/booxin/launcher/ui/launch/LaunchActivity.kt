@@ -531,7 +531,7 @@ class LaunchActivity : AppCompatActivity() {
         refreshMoveVisibility()
         Log.i(TAG, "enableGameInput ok=$ok w=${CallbackBridge.windowWidth} h=${CallbackBridge.windowHeight}")
         appendLog(
-            if (ok) "触控已启用：屏幕触摸 = 鼠标（FCL 模式）"
+            if (ok) "触控已启用：屏幕触摸 = 鼠标"
             else "触控 UI 已显示，等待 pojavexec 输入桥…"
         )
         logInputBridgeStatus("enableGameInput")

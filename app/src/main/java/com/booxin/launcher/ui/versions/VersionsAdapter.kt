@@ -1,6 +1,7 @@
 package com.booxin.launcher.ui.versions
 
 import android.view.LayoutInflater
+import android.view.View
 import android.view.ViewGroup
 import androidx.recyclerview.widget.RecyclerView
 import com.booxin.launcher.R
@@ -12,6 +13,7 @@ class VersionsAdapter(
     private val selectedIdProvider: () -> String? = { null },
     private val installedMode: Boolean = true,
     private val onDelete: ((GameVersion) -> Unit)? = null,
+    private val onManage: ((GameVersion) -> Unit)? = null,
     private val onClick: (GameVersion) -> Unit
 ) : RecyclerView.Adapter<VersionsAdapter.Holder>() {
 
@@ -59,6 +61,10 @@ class VersionsAdapter(
             }
             binding.textVersionBadge.text = item.type.name.lowercase()
             binding.root.setOnClickListener { onClick(item) }
+            binding.buttonManageVersion.visibility = if (installedMode) View.VISIBLE else View.GONE
+            binding.buttonManageVersion.setOnClickListener {
+                onManage?.invoke(item)
+            }
             binding.root.setOnLongClickListener {
                 if (installedMode && onDelete != null) {
                     onDelete.invoke(item)

@@ -9,9 +9,9 @@
         android:icon="@drawable/ic_nav_versions"
         android:title="@string/nav_versions" />
     <item
-        android:id="@+id/nav_accounts"
-        android:icon="@drawable/ic_nav_accounts"
-        android:title="@string/nav_accounts" />
+        android:id="@+id/nav_community"
+        android:icon="@drawable/ic_nav_community"
+        android:title="@string/nav_community" />
     <item
         android:id="@+id/nav_multiplayer"
         android:icon="@drawable/ic_nav_multiplayer"

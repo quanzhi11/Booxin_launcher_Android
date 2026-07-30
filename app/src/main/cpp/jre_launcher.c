@@ -329,6 +329,20 @@ static void stop_stdio_capture(void) {
     pthread_join(g_log_thread, NULL);
 }
 
+/**
+ * Tool JVMs (binarypatcher) keep non-daemon threads writing stdout after main().
+ * Joining the pipe reader there can deadlock until the app is backgrounded/resumed
+ * (binder/logd scheduling). Abandon the reader — :forge process is killed next.
+ */
+static void abandon_stdio_capture(void) {
+    g_log_running = 0;
+    if (g_log_pipe[0] >= 0) {
+        close(g_log_pipe[0]);
+        g_log_pipe[0] = -1;
+    }
+    pthread_detach(g_log_thread);
+}
+
 static void reset_signals(void) {
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
@@ -1368,16 +1382,18 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_pojav) {
     if ((*jenv)->ExceptionCheck(jenv)) {
         log_exception(jenv, "main()");
         free_parsed(&pa);
-        stop_stdio_capture();
+        if (!with_pojav) abandon_stdio_capture();
+        else stop_stdio_capture();
         return 1;
     }
 
     if (!with_pojav) {
         /* Tool JVM: ForgeProcessorService kills this process; DestroyJavaVM hangs on
-         * binarypatcher non-daemon threads after main() returns. */
-        LOGI("tool main returned — skip DestroyJavaVM");
+         * binarypatcher non-daemon threads after main() returns.
+         * Also abandon stdio capture — join can hang until user switches apps. */
+        LOGI("tool main returned — skip DestroyJavaVM / stdio join");
         free_parsed(&pa);
-        stop_stdio_capture();
+        abandon_stdio_capture();
         return 0;
     }
 
@@ -1860,27 +1876,26 @@ Java_com_booxin_launcher_core_launch_NativeJvmLauncher_nativeLaunchToolJvm(
     char **argv = to_argv(env, argsArray, &argc);
     if (!argv || argc <= 0) return -1;
 
-    start_stdio_capture();
-    jint code = launch_jli(argc, argv);
-    if (code < 0) {
-        LOGW("JLI_Launch failed (%d), falling back to embedded JVM", (int)code);
-        LaunchCtx ctx = { .argc = argc, .argv = argv, .result = -1 };
-        pthread_attr_t attr;
-        pthread_t thread;
-        pthread_attr_init(&attr);
-        pthread_attr_setstacksize(&attr, 16 * 1024 * 1024);
-        int cr = pthread_create(&thread, &attr, launch_tool_thread, &ctx);
-        pthread_attr_destroy(&attr);
-        if (cr != 0) {
-            LOGE("pthread_create tool fallback: %d", cr);
-            stop_stdio_capture();
-            free_argv(argv, argc);
-            return -4;
-        }
-        pthread_join(thread, NULL);
-        code = ctx.result;
+    /*
+     * Do NOT call JLI_Launch here. After FclJavaRuntimeSetup preloads libjli,
+     * JLI_Launch can hang forever on Android (no progress, no exit) — which
+     * freezes Forge install on “重命名 MC jar”. Use embedded HotSpot only.
+     */
+    LOGI("tool JVM: embedded HotSpot (skip JLI_Launch)");
+    LaunchCtx ctx = { .argc = argc, .argv = argv, .result = -1 };
+    pthread_attr_t attr;
+    pthread_t thread;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, 16 * 1024 * 1024);
+    int cr = pthread_create(&thread, &attr, launch_tool_thread, &ctx);
+    pthread_attr_destroy(&attr);
+    if (cr != 0) {
+        LOGE("pthread_create tool: %d", cr);
+        free_argv(argv, argc);
+        return -4;
     }
-    stop_stdio_capture();
+    pthread_join(thread, NULL);
+    jint code = ctx.result;
     free_argv(argv, argc);
     LOGI("tool JVM exit code: %d", (int)code);
     return code;

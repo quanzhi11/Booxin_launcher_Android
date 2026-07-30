@@ -2,6 +2,7 @@ package com.booxin.launcher
 
 import com.booxin.launcher.core.BooxinGameRuntime
 import com.booxin.launcher.core.GameRuntime
+import com.booxin.launcher.data.repository.CommunityRepository
 import com.booxin.launcher.core.download.game.VanillaGameInstaller
 import com.booxin.launcher.core.java.JavaEnvironmentManager
 import com.booxin.launcher.core.multiplayer.BooxinMultiplayerApi
@@ -24,6 +25,12 @@ object AppContainer {
     }
     val gameRuntime: GameRuntime by lazy {
         BooxinGameRuntime(javaEnvironment, repository)
+    }
+    val communityRepository: CommunityRepository by lazy {
+        CommunityRepository(
+            launcherRepository = repository,
+            javaEnvironment = javaEnvironment
+        )
     }
     val multiplayerAuth: MultiplayerAuthManager by lazy {
         MultiplayerAuthManager(

@@ -111,6 +111,14 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
                 android:text="@string/home_switch_version" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/buttonAccountManage"
+                style="@style/Widget.Booxin.SecondaryButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/home_account_manage" />
         </LinearLayout>
     </LinearLayout>
 </androidx.core.widget.NestedScrollView>

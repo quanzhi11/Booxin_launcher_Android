@@ -39,7 +39,8 @@ class VersionsFragment : Fragment() {
         super.onViewCreated(view, savedInstanceState)
         adapter = VersionsAdapter(
             selectedIdProvider = { AppContainer.repository.session.value.selectedVersionId },
-            onDelete = { version -> confirmDeleteVersion(version) }
+            onDelete = { version -> confirmDeleteVersion(version) },
+            onManage = { version -> openVersionManage(version) }
         ) { version ->
             AppContainer.repository.selectVersion(version.id)
             adapter.notifyDataSetChanged()
@@ -73,6 +74,13 @@ class VersionsFragment : Fragment() {
                 }
             }
         }
+    }
+
+    private fun openVersionManage(version: GameVersion) {
+        findNavController().navigate(
+            R.id.action_versions_to_version_manage,
+            Bundle().apply { putString("versionId", version.id) }
+        )
     }
 
     private fun confirmDeleteVersion(version: GameVersion) {

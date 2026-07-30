@@ -9,6 +9,7 @@ import androidx.fragment.app.Fragment
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import androidx.navigation.fragment.findNavController
 import com.booxin.launcher.AppContainer
 import com.booxin.launcher.R
 import com.booxin.launcher.core.auth.MicrosoftAuthLogger
@@ -50,6 +51,9 @@ class HomeFragment : Fragment() {
         }
 
         binding.buttonSwitchVersion.setOnClickListener { showSwitchVersionDialog() }
+        binding.buttonAccountManage.setOnClickListener {
+            findNavController().navigate(R.id.action_home_to_accounts)
+        }
 
         binding.buttonLaunch.setOnClickListener {
             val version = AppContainer.repository.selectedVersion()

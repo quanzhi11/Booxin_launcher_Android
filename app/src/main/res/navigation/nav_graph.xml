@@ -7,7 +7,15 @@
     <fragment
         android:id="@+id/nav_home"
         android:name="com.booxin.launcher.ui.home.HomeFragment"
-        android:label="@string/nav_home" />
+        android:label="@string/nav_home">
+        <action
+            android:id="@+id/action_home_to_accounts"
+            app:destination="@id/nav_accounts"
+            app:enterAnim="@android:anim/slide_in_left"
+            app:exitAnim="@android:anim/fade_out"
+            app:popEnterAnim="@android:anim/fade_in"
+            app:popExitAnim="@android:anim/slide_out_right" />
+    </fragment>
 
     <fragment
         android:id="@+id/nav_versions"
@@ -20,12 +28,29 @@
             app:exitAnim="@android:anim/fade_out"
             app:popEnterAnim="@android:anim/fade_in"
             app:popExitAnim="@android:anim/slide_out_right" />
+        <action
+            android:id="@+id/action_versions_to_version_manage"
+            app:destination="@id/nav_version_manage"
+            app:enterAnim="@android:anim/slide_in_left"
+            app:exitAnim="@android:anim/fade_out"
+            app:popEnterAnim="@android:anim/fade_in"
+            app:popExitAnim="@android:anim/slide_out_right" />
     </fragment>
 
     <fragment
         android:id="@+id/nav_download"
         android:name="com.booxin.launcher.ui.download.DownloadFragment"
         android:label="@string/download_title" />
+
+    <fragment
+        android:id="@+id/nav_version_manage"
+        android:name="com.booxin.launcher.ui.versions.manage.VersionManageFragment"
+        android:label="@string/version_manage_title" />
+
+    <fragment
+        android:id="@+id/nav_community"
+        android:name="com.booxin.launcher.ui.community.CommunityFragment"
+        android:label="@string/nav_community" />
 
     <fragment
         android:id="@+id/nav_accounts"

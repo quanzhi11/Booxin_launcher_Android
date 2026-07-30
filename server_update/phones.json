@@ -1,0 +1,10 @@
+{
+  "latestVersion": "0.0.2",
+  "latestVersionCode": 2,
+  "minSupportedVersionCode": 1,
+  "forceUpdate": false,
+  "releaseNotes": "Booxin Launcher 0.0.2\n- 联机：验证码登录 / 私聊 / 好友 / 公开房间\n- 房间码解析与目录登记（EasyTier 内核尚未内置）\n- 微软正版登录与退出回启动器",
+  "apkUrl": "https://www.boonix.art/server_update/BooxinLauncher-0.0.2.apk",
+  "apkSha256": "",
+  "publishedAt": "2026-07-29T14:00:00+08:00"
+}

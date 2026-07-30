@@ -24,11 +24,15 @@ import java.net.InetSocketAddress
 
 /**
  * FCL ProcessService equivalent: run Forge processors in an isolated process.
+ *
+ * Job is passed via files (not large Intent extras) to avoid binder limits and
+ * lost UDP races — exit code is written to a file and also sent over UDP.
  */
 class ForgeProcessorService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        Log.i(TAG, "onStartCommand pid=${Process.myPid()}")
         if (intent == null) {
             stopSelf(startId)
             return START_NOT_STICKY
@@ -46,24 +50,55 @@ class ForgeProcessorService : Service() {
             startForeground(NOTIFICATION_ID, notification)
         }
 
-        val command = intent.getStringArrayExtra(EXTRA_COMMAND)
-        val javaMajor = intent.getIntExtra(EXTRA_JAVA_MAJOR, 21)
-        val workingDir = intent.getStringExtra(EXTRA_WORKING_DIR)
+        val jobFile = intent.getStringExtra(EXTRA_JOB_FILE)?.let(::File)
+        val exitFile = intent.getStringExtra(EXTRA_EXIT_FILE)?.let(::File)
+        val legacyCommand = intent.getStringArrayExtra(EXTRA_COMMAND)
+        val legacyJava = intent.getIntExtra(EXTRA_JAVA_MAJOR, 21)
+        val legacyWorkingDir = intent.getStringExtra(EXTRA_WORKING_DIR)
             ?: LauncherPaths.rootDir.absolutePath
-        val jvmArgs = intent.getStringArrayExtra(EXTRA_JVM_ARGS)?.toList().orEmpty()
-        if (command == null || command.isEmpty()) {
-            sendExitCode(1)
-            stopSelf(startId)
-            return START_NOT_STICKY
-        }
+        val legacyJvmArgs = intent.getStringArrayExtra(EXTRA_JVM_ARGS)?.toList().orEmpty()
 
-        Thread {
-            val code = runProcessor(javaMajor, workingDir, jvmArgs, command)
-            sendExitCode(code)
-            stopSelf(startId)
-            Process.killProcess(Process.myPid())
-        }.start()
+        Thread({
+            var code = 1
+            try {
+                code = when {
+                    jobFile != null && jobFile.isFile -> runJobFile(jobFile)
+                    legacyCommand != null && legacyCommand.isNotEmpty() ->
+                        runProcessor(legacyJava, legacyWorkingDir, legacyJvmArgs, legacyCommand)
+                    else -> {
+                        Log.e(TAG, "missing job file / command")
+                        1
+                    }
+                }
+            } catch (error: Exception) {
+                Log.e(TAG, "processor thread failed", error)
+                code = 1
+            } finally {
+                writeExitFile(exitFile, code)
+                sendExitCode(code)
+                stopSelf(startId)
+                Process.killProcess(Process.myPid())
+            }
+        }, "forge-processor").start()
         return START_NOT_STICKY
+    }
+
+    private fun runJobFile(jobFile: File): Int {
+        val lines = jobFile.readLines()
+        if (lines.size < 4) {
+            Log.e(TAG, "invalid job file: ${jobFile.absolutePath}")
+            return 1
+        }
+        val workingDir = lines[0]
+        val javaMajor = lines[1].toIntOrNull() ?: 21
+        val sep = lines.indexOf("--")
+        if (sep < 2 || sep >= lines.lastIndex) {
+            Log.e(TAG, "job file missing command separator")
+            return 1
+        }
+        val jvmArgs = lines.subList(2, sep)
+        val command = lines.subList(sep + 1, lines.size).toTypedArray()
+        return runProcessor(javaMajor, workingDir, jvmArgs, command)
     }
 
     private fun runProcessor(
@@ -85,7 +120,7 @@ class ForgeProcessorService : Service() {
                 addAll(jvmArgs)
                 addAll(command)
             }
-            Log.i(TAG, "launch ${argv.joinToString(" ")}")
+            Log.i(TAG, "launch main=${command.firstOrNull { !it.startsWith("-") && it.contains('.') } ?: "?"} args=${argv.size}")
             NativeJvmLauncher.launchToolJvm(argv.toTypedArray())
         } catch (error: Exception) {
             Log.e(TAG, "processor failed", error)
@@ -93,12 +128,24 @@ class ForgeProcessorService : Service() {
         }
     }
 
+    private fun writeExitFile(exitFile: File?, code: Int) {
+        if (exitFile == null) return
+        runCatching {
+            exitFile.parentFile?.mkdirs()
+            exitFile.writeText(code.toString())
+        }.onFailure { Log.e(TAG, "write exit file failed", it) }
+    }
+
     private fun sendExitCode(code: Int) {
         runCatching {
             DatagramSocket().use { socket ->
                 socket.connect(InetSocketAddress("127.0.0.1", ForgeInstallSocketServer.PORT))
                 val data = code.toString().toByteArray()
-                socket.send(DatagramPacket(data, data.size))
+                // Retry a few times in case the listener binds slightly late.
+                repeat(5) { attempt ->
+                    socket.send(DatagramPacket(data, data.size))
+                    if (attempt < 4) Thread.sleep(100)
+                }
             }
         }.onFailure { error ->
             Log.e(TAG, "send exit code failed", error)
@@ -132,5 +179,7 @@ class ForgeProcessorService : Service() {
         const val EXTRA_JAVA_MAJOR = "java"
         const val EXTRA_WORKING_DIR = "workingDir"
         const val EXTRA_JVM_ARGS = "jvmArgs"
+        const val EXTRA_JOB_FILE = "jobFile"
+        const val EXTRA_EXIT_FILE = "exitFile"
     }
 }

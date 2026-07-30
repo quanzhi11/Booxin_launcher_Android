@@ -13,6 +13,9 @@ import java.util.jar.Attributes
 import java.util.jar.JarFile
 import java.util.zip.ZipFile
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -54,15 +57,30 @@ object ForgeNewInstaller {
                         .map { processors.getJSONObject(it) }
                         .filter { isClientProcessor(it) }
                     val totalSteps = clientProcessors.size.coerceAtLeast(1)
+                    val roadmap = clientProcessors.mapIndexed { index, processor ->
+                        "${index + 1}.${shortProcessorLabel(processor)}"
+                    }.joinToString(" → ")
 
-                    onProgress("准备 Forge 安装器文件…", 0, totalSteps)
+                    onProgress(
+                        "Forge 安装流程：$roadmap\n准备：解压安装器内嵌库与补丁数据…",
+                        0,
+                        totalSteps
+                    )
                     copyEmbeddedLibraries(zip, profileLibraries)
                     copyProfileMainJar(zip, profile.optJSONObject("path") ?: pathAsObject(profile.opt("path")))
 
-                    onProgress("下载 processor 依赖库…", 0, totalSteps)
+                    onProgress(
+                        "Forge 安装流程：$roadmap\n准备：下载安装工具依赖（ASM / renaming / patcher）…",
+                        0,
+                        totalSteps
+                    )
                     libraryDownloader.downloadLibraries(profileLibraries, mcVersion) { done, total, _ ->
                         if (total > 0) {
-                            onProgress("下载 processor 依赖 $done / $total…", 0, totalSteps)
+                            onProgress(
+                                "Forge 安装流程：$roadmap\n准备：下载安装工具依赖 $done / $total",
+                                0,
+                                totalSteps
+                            )
                         }
                     }
 
@@ -70,17 +88,46 @@ object ForgeNewInstaller {
                     var step = 0
                     for (processor in clientProcessors) {
                         step++
-                        val label = processorLabel(processor)
-                        onProgress("步骤 $step/$totalSteps：$label…", step - 1, totalSteps)
-                        if (tryDownloadMojmaps(processor, vars, mcVersion)) {
-                            onProgress("步骤 $step/$totalSteps：$label 完成", step, totalSteps)
+                        val detail = processorDetail(processor)
+                        onProgress(
+                            "工具步骤 $step/$totalSteps：${detail.title}\n${detail.hint}\n流程：$roadmap",
+                            step - 1,
+                            totalSteps
+                        )
+                        if (tryDownloadMojmaps(processor, vars, mcVersion, onStatus = { msg ->
+                                onProgress(
+                                    "工具步骤 $step/$totalSteps：${detail.title}\n$msg\n流程：$roadmap",
+                                    step - 1,
+                                    totalSteps
+                                )
+                            })
+                        ) {
+                            onProgress(
+                                "工具步骤 $step/$totalSteps：${detail.title} ✓ 完成\n流程：$roadmap",
+                                step,
+                                totalSteps
+                            )
                             continue
                         }
-                        runProcessor(java, processor, vars, mcVersion)
-                        onProgress("步骤 $step/$totalSteps：$label 完成", step, totalSteps)
+                        runProcessor(java, processor, vars, mcVersion, onStatus = { msg ->
+                            onProgress(
+                                "工具步骤 $step/$totalSteps：${detail.title}\n$msg\n流程：$roadmap",
+                                step - 1,
+                                totalSteps
+                            )
+                        })
+                        onProgress(
+                            "工具步骤 $step/$totalSteps：${detail.title} ✓ 完成\n流程：$roadmap",
+                            step,
+                            totalSteps
+                        )
                     }
 
-                    onProgress("写入 Forge 版本信息…", totalSteps, totalSteps)
+                    onProgress(
+                        "写入 Forge 版本 JSON（$versionId）…\n随后还会下载 Forge 运行库",
+                        totalSteps,
+                        totalSteps
+                    )
                     val versionJsonPath = profile.getString("json").trimStart('/')
                     val versionJsonText = zip.readZipText(versionJsonPath)
                         ?: error("Forge 安装包缺少版本 JSON: $versionJsonPath")
@@ -166,7 +213,8 @@ object ForgeNewInstaller {
         java: InstalledJavaRuntime,
         processor: JSONObject,
         vars: Map<String, String>,
-        mcVersion: String
+        mcVersion: String,
+        onStatus: (String) -> Unit = {}
     ) {
         val outputs = mutableMapOf<String, String>()
         val outputsJson = processor.optJSONObject("outputs")
@@ -190,7 +238,10 @@ object ForgeNewInstaller {
             if (file.isFile) file.delete()
             miss = true
         }
-        if (outputs.isNotEmpty() && !miss) return
+        if (outputs.isNotEmpty() && !miss) {
+            onStatus("输出已存在且校验通过，跳过本步")
+            return
+        }
 
         val jarDescriptor = when (val jarObj = processor.get("jar")) {
             is String -> jarObj
@@ -240,6 +291,8 @@ object ForgeNewInstaller {
         }.orEmpty()
 
         Log.i(TAG, "processor: $mainClass (${args.size} args)")
+        val outputHint = outputs.keys.firstOrNull()?.let { File(it).name } ?: "输出 jar"
+        onStatus("正在启动 Java 工具…\n目标：$outputHint")
 
         val command = buildList {
             add("-cp")
@@ -247,15 +300,33 @@ object ForgeNewInstaller {
             add(mainClass)
             addAll(args)
         }
-        val exitCode = EmbeddedJavaRunner.run(
-            java = java,
-            workingDir = LauncherPaths.rootDir,
-            command = command
-        )
+        val watchFiles = outputs.keys.map(::File)
+        val exitCode = coroutineScope {
+            val startedAt = System.currentTimeMillis()
+            val runner = async(Dispatchers.IO) {
+                EmbeddedJavaRunner.run(
+                    java = java,
+                    workingDir = LauncherPaths.rootDir,
+                    command = command
+                )
+            }
+            while (!runner.isCompleted) {
+                delay(3_000)
+                val elapsedSec = ((System.currentTimeMillis() - startedAt) / 1000).toInt()
+                val grown = watchFiles.firstOrNull { it.isFile && it.length() > 0L }
+                val sizeText = grown?.let { formatBytes(it.length()) } ?: "尚未写出"
+                onStatus(
+                    "Java 工具运行中（已 ${elapsedSec}s）· 输出 $sizeText\n" +
+                        "这一步在手机上可能要几分钟，请保持应用在前台"
+                )
+            }
+            runner.await()
+        }
         if (exitCode != 0) {
             throw IllegalStateException("Forge processor 退出码 $exitCode")
         }
         Log.i(TAG, "processor done: $mainClass")
+        onStatus("工具已结束，正在校验输出…")
 
         for ((path, sha1) in outputs) {
             val file = File(path)
@@ -265,12 +336,14 @@ object ForgeNewInstaller {
                 error("processor 输出校验失败: ${file.name}")
             }
         }
+        onStatus("校验通过：${outputs.keys.joinToString { File(it).name }}")
     }
 
     private suspend fun tryDownloadMojmaps(
         processor: JSONObject,
         vars: Map<String, String>,
-        mcVersion: String
+        mcVersion: String,
+        onStatus: (String) -> Unit = {}
     ): Boolean {
         val args = processor.optJSONArray("args") ?: return false
         val options = parseOptions(args, vars)
@@ -278,6 +351,7 @@ object ForgeNewInstaller {
         val output = options["output"] ?: return false
         val version = options["version"] ?: mcVersion
 
+        onStatus("正在读取 $version 的官方 mappings 地址…")
         val vanillaJson = File(LauncherPaths.versionsDir, "$version/$version.json")
         if (!vanillaJson.isFile) error("缺少版本 JSON: $version")
         val downloads = JSONObject(vanillaJson.readText()).optJSONObject("downloads")
@@ -290,11 +364,17 @@ object ForgeNewInstaller {
 
         val dest = File(output)
         dest.parentFile?.mkdirs()
+        if (dest.isFile && Digests.matchesSha1(dest, sha1)) {
+            onStatus("mappings 已缓存，跳过下载")
+            return true
+        }
+        onStatus("正在下载官方 mappings…")
         FileDownloader().download(url, dest).getOrThrow()
         if (!Digests.matchesSha1(dest, sha1)) {
             dest.delete()
             error("mappings 校验失败")
         }
+        onStatus("mappings 下载完成：${dest.name}")
         return true
     }
 
@@ -331,22 +411,49 @@ object ForgeNewInstaller {
         }
     }
 
-    private fun processorLabel(processor: JSONObject): String {
+    private data class ProcessorDetail(val title: String, val hint: String)
+
+    private fun shortProcessorLabel(processor: JSONObject): String = processorDetail(processor).title
+
+    private fun processorDetail(processor: JSONObject): ProcessorDetail {
         val args = processor.optJSONArray("args")
         if (args != null) {
             for (i in 0 until args.length()) {
-                if (args.optString(i) == "DOWNLOAD_MOJMAPS") return "下载官方 mappings"
+                if (args.optString(i) == "DOWNLOAD_MOJMAPS") {
+                    return ProcessorDetail(
+                        "下载官方 mappings",
+                        "从 Mojang 拉取混淆对照表，通常很快"
+                    )
+                }
             }
         }
         val descriptor = processorJarDescriptor(processor).lowercase()
         return when {
-            "fart" in descriptor || "renaming" in descriptor ->
-                "重命名 MC jar（较慢，约 2-5 分钟）"
-            "binarypatcher" in descriptor || "binpatch" in descriptor ->
-                "应用 Forge 补丁（写入 client.jar，约 1-3 分钟）"
-            descriptor.isBlank() -> "运行安装工具"
-            else -> descriptor.substringAfter(':').substringAfterLast('.')
+            "fart" in descriptor || "renaming" in descriptor -> ProcessorDetail(
+                "重命名 MC jar",
+                "把原版 client.jar 转成 official 映射名；约 2–5 分钟，属正常"
+            )
+            "binarypatcher" in descriptor || "binpatch" in descriptor -> ProcessorDetail(
+                "应用 Forge 补丁",
+                "生成 forge-*-client.jar；约 1–3 分钟。完成后会立刻进入写版本信息"
+            )
+            descriptor.isBlank() -> ProcessorDetail("运行安装工具", "正在执行 Forge 安装器子步骤")
+            else -> ProcessorDetail(
+                descriptor.substringAfter(':').substringAfterLast('.'),
+                "正在执行 Forge 安装器子步骤"
+            )
         }
+    }
+
+    private fun processorLabel(processor: JSONObject): String {
+        val detail = processorDetail(processor)
+        return "${detail.title}（${detail.hint}）"
+    }
+
+    private fun formatBytes(bytes: Long): String {
+        if (bytes < 1024) return "${bytes}B"
+        if (bytes < 1024 * 1024) return "%.1fKB".format(bytes / 1024.0)
+        return "%.1fMB".format(bytes / (1024.0 * 1024.0))
     }
 
     private fun libraryRelPath(lib: JSONObject): String? {

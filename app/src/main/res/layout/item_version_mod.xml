@@ -3,12 +3,11 @@
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:layout_marginBottom="10dp"
+    android:layout_marginBottom="8dp"
     android:background="@drawable/bg_surface_card"
-    android:elevation="1dp"
     android:gravity="center_vertical"
     android:orientation="horizontal"
-    android:padding="16dp">
+    android:padding="12dp">
 
     <LinearLayout
         android:layout_width="0dp"
@@ -17,41 +16,37 @@
         android:orientation="vertical">
 
         <TextView
-            android:id="@+id/textVersionName"
+            android:id="@+id/textModName"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:textColor="@color/booxin_navy"
-            android:textSize="16sp"
+            android:textSize="14sp"
             android:textStyle="bold"
-            tools:text="1.21.4" />
+            tools:text="example-mod.jar" />
 
         <TextView
-            android:id="@+id/textVersionMeta"
+            android:id="@+id/textModStatus"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
+            android:layout_marginTop="2dp"
             android:textColor="@color/md_theme_light_outline"
-            android:textSize="13sp"
-            tools:text="正式版 · 未安装" />
+            android:textSize="12sp"
+            tools:text="已启用" />
     </LinearLayout>
 
-    <TextView
-        android:id="@+id/textVersionBadge"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:background="@drawable/bg_brand_hero"
-        android:paddingHorizontal="10dp"
-        android:paddingVertical="4dp"
-        android:textColor="@color/white"
-        android:textSize="11sp"
-        tools:text="release" />
-
     <com.google.android.material.button.MaterialButton
-        android:id="@+id/buttonManageVersion"
+        android:id="@+id/buttonToggle"
         style="@style/Widget.Material3.Button.TextButton"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_marginStart="8dp"
         android:minWidth="0dp"
-        android:text="@string/version_manage_entry" />
+        android:text="@string/version_manage_mod_disable" />
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/buttonUninstall"
+        style="@style/Widget.Material3.Button.TextButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:minWidth="0dp"
+        android:text="@string/version_manage_mod_uninstall" />
 </LinearLayout>
