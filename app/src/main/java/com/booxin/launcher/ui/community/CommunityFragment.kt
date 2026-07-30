@@ -7,6 +7,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
 import android.widget.Toast
+import androidx.core.os.bundleOf
 import androidx.core.view.isVisible
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.Lifecycle
@@ -16,13 +17,13 @@ import androidx.navigation.fragment.findNavController
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.booxin.launcher.AppContainer
 import com.booxin.launcher.R
+import com.booxin.launcher.core.community.ModrinthClient
 import com.booxin.launcher.data.model.CommunityContentType
 import com.booxin.launcher.data.model.CommunityLoader
-import com.booxin.launcher.data.model.InstallTargetRecommendation
 import com.booxin.launcher.data.model.ModrinthProject
-import com.booxin.launcher.data.model.ModrinthProjectVersion
+import com.booxin.launcher.data.model.ModrinthSearchPage
 import com.booxin.launcher.databinding.FragmentCommunityBinding
-import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 class CommunityFragment : Fragment() {
@@ -33,6 +34,8 @@ class CommunityFragment : Fragment() {
     private val adapter = CommunityAdapter(::openProject)
     private var contentType: CommunityContentType = CommunityContentType.MOD
     private var loader: CommunityLoader = CommunityLoader.ANY
+    private var lastPage: ModrinthSearchPage? = null
+    private var searchJob: Job? = null
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -53,27 +56,38 @@ class CommunityFragment : Fragment() {
         binding.buttonMultiplayer.setOnClickListener {
             findNavController().navigate(R.id.nav_multiplayer)
         }
+        binding.buttonPrevPage.setOnClickListener {
+            val page = lastPage ?: return@setOnClickListener
+            if (!page.hasPrevious) return@setOnClickListener
+            performSearch((page.offset - page.limit).coerceAtLeast(0))
+        }
+        binding.buttonNextPage.setOnClickListener {
+            val page = lastPage ?: return@setOnClickListener
+            if (!page.hasNext) return@setOnClickListener
+            performSearch(page.offset + page.limit)
+        }
 
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
-                AppContainer.repository.session.collect {
-                    binding.textSelectedVersion.text = getString(
+                AppContainer.repository.session.collect { session ->
+                    val b = _binding ?: return@collect
+                    b.textSelectedVersion.text = getString(
                         R.string.community_selected_version,
-                        it.selectedVersionId ?: getString(R.string.community_no_selected_version)
+                        session.selectedVersionId ?: getString(R.string.community_no_selected_version)
                     )
                 }
             }
         }
 
-        performSearch()
+        performSearch(0)
     }
 
     private fun setupSearch() {
-        binding.buttonSearch.setOnClickListener { performSearch() }
+        binding.buttonSearch.setOnClickListener { performSearch(0) }
         binding.editSearch.setOnEditorActionListener { _, actionId, event ->
             val enter = event?.keyCode == KeyEvent.KEYCODE_ENTER && event.action == KeyEvent.ACTION_DOWN
             if (actionId == EditorInfo.IME_ACTION_SEARCH || enter) {
-                performSearch()
+                performSearch(0)
                 true
             } else {
                 false
@@ -86,21 +100,21 @@ class CommunityFragment : Fragment() {
             if (checked) {
                 contentType = CommunityContentType.MOD
                 refreshLoaderVisibility()
-                performSearch()
+                performSearch(0)
             }
         }
         binding.chipResourcePacks.setOnCheckedChangeListener { _, checked ->
             if (checked) {
                 contentType = CommunityContentType.RESOURCE_PACK
                 refreshLoaderVisibility()
-                performSearch()
+                performSearch(0)
             }
         }
         binding.chipModpacks.setOnCheckedChangeListener { _, checked ->
             if (checked) {
                 contentType = CommunityContentType.MODPACK
                 refreshLoaderVisibility()
-                performSearch()
+                performSearch(0)
             }
         }
         listOf(
@@ -114,7 +128,7 @@ class CommunityFragment : Fragment() {
                 if (checked) {
                     loader = value
                     if (contentType == CommunityContentType.MOD) {
-                        performSearch()
+                        performSearch(0)
                     }
                 }
             }
@@ -123,9 +137,10 @@ class CommunityFragment : Fragment() {
     }
 
     private fun refreshLoaderVisibility() {
+        val b = _binding ?: return
         val show = contentType == CommunityContentType.MOD
-        binding.scrollLoaders.isVisible = show
-        binding.textHint.text = when (contentType) {
+        b.scrollLoaders.isVisible = show
+        b.textHint.text = when (contentType) {
             CommunityContentType.MOD ->
                 getString(R.string.community_hint_mods)
             CommunityContentType.RESOURCE_PACK ->
@@ -135,181 +150,73 @@ class CommunityFragment : Fragment() {
         }
     }
 
-    private fun performSearch() {
-        viewLifecycleOwner.lifecycleScope.launch {
+    private fun performSearch(offset: Int) {
+        val b = _binding ?: return
+        val query = b.editSearch.text?.toString().orEmpty().trim()
+        val type = contentType
+        val selectedLoader = loader
+        searchJob?.cancel()
+        searchJob = viewLifecycleOwner.lifecycleScope.launch {
             showLoading(getString(R.string.community_loading))
-            val query = binding.editSearch.text?.toString().orEmpty().trim()
-            val result = AppContainer.communityRepository.searchProjects(query, contentType, loader)
+            val result = AppContainer.communityRepository.searchProjects(
+                query = query,
+                contentType = type,
+                loader = selectedLoader,
+                offset = offset,
+                limit = ModrinthClient.PAGE_SIZE
+            )
+            val ui = _binding ?: return@launch
             hideLoading()
-            val items = result.getOrElse { err ->
+            val page = result.getOrElse { err ->
+                lastPage = null
                 adapter.submit(emptyList())
-                binding.textEmpty.isVisible = true
-                Toast.makeText(
-                    requireContext(),
-                    getString(R.string.community_search_failed, err.message ?: "unknown"),
-                    Toast.LENGTH_LONG
-                ).show()
+                ui.textEmpty.isVisible = true
+                updatePagination(null)
+                if (isAdded) {
+                    Toast.makeText(
+                        requireContext(),
+                        getString(R.string.community_search_failed, err.message ?: "unknown"),
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
                 return@launch
             }
-            adapter.submit(items)
-            binding.textEmpty.isVisible = items.isEmpty()
+            lastPage = page
+            adapter.submit(page.projects)
+            ui.textEmpty.isVisible = page.projects.isEmpty()
+            updatePagination(page)
+            if (page.projects.isNotEmpty()) {
+                ui.recyclerProjects.scrollToPosition(0)
+            }
         }
+    }
+
+    private fun updatePagination(page: ModrinthSearchPage?) {
+        val b = _binding ?: return
+        if (page == null || page.projects.isEmpty()) {
+            b.paginationBar.isVisible = false
+            return
+        }
+        b.paginationBar.isVisible = true
+        b.buttonPrevPage.isEnabled = page.hasPrevious
+        b.buttonNextPage.isEnabled = page.hasNext
+        b.textPageInfo.text = getString(
+            R.string.community_page_info,
+            page.pageNumber,
+            page.totalPages,
+            page.totalHits
+        )
     }
 
     private fun openProject(project: ModrinthProject) {
-        viewLifecycleOwner.lifecycleScope.launch {
-            showLoading(getString(R.string.community_loading_versions))
-            val versions = AppContainer.communityRepository.getProjectVersions(project.id).getOrElse { err ->
-                hideLoading()
-                Toast.makeText(
-                    requireContext(),
-                    getString(R.string.community_versions_failed, err.message ?: "unknown"),
-                    Toast.LENGTH_LONG
-                ).show()
-                return@launch
-            }
-            hideLoading()
-            if (versions.isEmpty()) {
-                Toast.makeText(requireContext(), R.string.community_versions_empty, Toast.LENGTH_SHORT).show()
-                return@launch
-            }
-            showVersionPicker(project, versions)
-        }
-    }
-
-    private fun showVersionPicker(
-        project: ModrinthProject,
-        versions: List<ModrinthProjectVersion>
-    ) {
-        val selected = AppContainer.repository.session.value.selectedVersionId
-        val sorted = versions.sortedWith(
-            compareByDescending<ModrinthProjectVersion> {
-                selected != null && AppContainer.communityRepository.recommendTargets(contentType, it)
-                    .any { target -> target.versionId == selected }
-            }.thenByDescending { it.datePublished.orEmpty() }
+        if (!isAdded || _binding == null) return
+        findNavController().navigate(
+            R.id.action_community_to_project_detail,
+            bundleOf(
+                CommunityProjectDetailFragment.ARG_PROJECT_ID to project.id,
+                CommunityProjectDetailFragment.ARG_CONTENT_TYPE to contentType.name
+            )
         )
-        val labels = sorted.map { version ->
-            val recommend = AppContainer.communityRepository.recommendTargets(contentType, version)
-                .firstOrNull { it.recommended }
-                ?.let { " · ${getString(R.string.community_recommended_short, it.versionId)}" }
-                .orEmpty()
-            buildString {
-                append(version.name.ifBlank { version.versionNumber })
-                if (version.gameVersions.isNotEmpty()) {
-                    append(" · ")
-                    append(version.gameVersions.take(2).joinToString("/"))
-                }
-                if (version.loaders.isNotEmpty()) {
-                    append(" · ")
-                    append(version.loaders.take(2).joinToString("/"))
-                }
-                append(recommend)
-            }
-        }.toTypedArray()
-        MaterialAlertDialogBuilder(requireContext())
-            .setTitle(project.title)
-            .setItems(labels) { _, which ->
-                val version = sorted[which]
-                when (contentType) {
-                    CommunityContentType.MOD, CommunityContentType.RESOURCE_PACK ->
-                        showTargetPicker(version)
-                    CommunityContentType.MODPACK ->
-                        installModpack(version)
-                }
-            }
-            .show()
-    }
-
-    private fun showTargetPicker(version: ModrinthProjectVersion) {
-        val targets = AppContainer.communityRepository.recommendTargets(contentType, version)
-        if (targets.isEmpty()) {
-            Toast.makeText(requireContext(), R.string.community_no_compatible_target, Toast.LENGTH_LONG).show()
-            return
-        }
-        val labels = targets.map { target ->
-            val prefix = if (target.recommended) {
-                getString(R.string.community_recommended_prefix)
-            } else {
-                getString(R.string.community_target_prefix)
-            }
-            "$prefix ${target.versionId}\n${target.reason}"
-        }.toTypedArray()
-        MaterialAlertDialogBuilder(requireContext())
-            .setTitle(R.string.community_pick_target)
-            .setItems(labels) { _, which ->
-                installIntoTarget(targets[which], version)
-            }
-            .show()
-    }
-
-    private fun installIntoTarget(
-        target: InstallTargetRecommendation,
-        version: ModrinthProjectVersion
-    ) {
-        viewLifecycleOwner.lifecycleScope.launch {
-            showLoading(getString(R.string.community_installing_target, target.versionId))
-            val result = AppContainer.communityRepository.installVersionFile(
-                contentType = contentType,
-                targetVersionId = target.versionId,
-                version = version
-            )
-            hideLoading()
-            result.fold(
-                onSuccess = {
-                    Toast.makeText(
-                        requireContext(),
-                        getString(R.string.community_install_done, it.name, target.versionId),
-                        Toast.LENGTH_SHORT
-                    ).show()
-                },
-                onFailure = { err ->
-                    Toast.makeText(
-                        requireContext(),
-                        getString(R.string.community_install_failed, err.message ?: "unknown"),
-                        Toast.LENGTH_LONG
-                    ).show()
-                }
-            )
-        }
-    }
-
-    private fun installModpack(version: ModrinthProjectVersion) {
-        val compatibleTargets = AppContainer.communityRepository.recommendTargets(
-            CommunityContentType.MODPACK,
-            version
-        )
-        val options = compatibleTargets.map { it.versionId } + getString(R.string.community_auto_create_target)
-        MaterialAlertDialogBuilder(requireContext())
-            .setTitle(R.string.community_pick_target)
-            .setItems(options.toTypedArray()) { _, which ->
-                val target = compatibleTargets.getOrNull(which)?.versionId
-                doInstallModpack(target, version)
-            }
-            .show()
-    }
-
-    private fun doInstallModpack(targetVersionId: String?, version: ModrinthProjectVersion) {
-        viewLifecycleOwner.lifecycleScope.launch {
-            showLoading(getString(R.string.community_installing_modpack))
-            val result = AppContainer.communityRepository.installModpack(targetVersionId, version)
-            hideLoading()
-            result.fold(
-                onSuccess = { target ->
-                    Toast.makeText(
-                        requireContext(),
-                        getString(R.string.community_modpack_done, target),
-                        Toast.LENGTH_LONG
-                    ).show()
-                },
-                onFailure = { err ->
-                    Toast.makeText(
-                        requireContext(),
-                        getString(R.string.community_install_failed, err.message ?: "unknown"),
-                        Toast.LENGTH_LONG
-                    ).show()
-                }
-            )
-        }
     }
 
     private fun showLoading(message: String) {
@@ -324,7 +231,9 @@ class CommunityFragment : Fragment() {
     }
 
     override fun onDestroyView() {
-        super.onDestroyView()
+        searchJob?.cancel()
+        searchJob = null
         _binding = null
+        super.onDestroyView()
     }
 }

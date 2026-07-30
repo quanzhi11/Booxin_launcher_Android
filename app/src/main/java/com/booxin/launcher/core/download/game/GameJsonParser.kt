@@ -187,17 +187,21 @@ object GameJsonParser {
     }
 
     fun mavenPath(name: String): String {
-        // group:artifact:version[:classifier[@extension]]
+        // group:artifact:version[@ext] | group:artifact:version:classifier[@ext]
         val parts = name.split(':')
         require(parts.size >= 3) { "非法 Maven 坐标: $name" }
         val group = parts[0].replace('.', '/')
         val artifact = parts[1]
-        val version = parts[2]
-        val classifierPart = parts.getOrNull(3)
-        val (classifier, extension) = if (classifierPart != null && classifierPart.contains('@')) {
-            classifierPart.substringBefore('@') to classifierPart.substringAfter('@')
-        } else {
-            classifierPart to "jar"
+        var version = parts[2]
+        var classifier = parts.getOrNull(3)
+        var extension = "jar"
+        if (version.contains('@')) {
+            extension = version.substringAfter('@')
+            version = version.substringBefore('@')
+        }
+        if (classifier != null && classifier.contains('@')) {
+            extension = classifier.substringAfter('@')
+            classifier = classifier.substringBefore('@')
         }
         val fileName = if (classifier.isNullOrBlank()) {
             "$artifact-$version.$extension"

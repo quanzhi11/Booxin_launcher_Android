@@ -284,6 +284,18 @@ class LaunchActivity : AppCompatActivity() {
 
     private fun onLaunchLogLine(line: String) {
         if (overlayHidden) return
+        val crash = line.contains("ExceptionInInitializerError", ignoreCase = true) ||
+            line.contains("InaccessibleObjectException", ignoreCase = true) ||
+            line.contains("FindException", ignoreCase = true) ||
+            line.contains("ResolutionException", ignoreCase = true) ||
+            (line.contains("main():", ignoreCase = true) &&
+                (line.contains("Exception", ignoreCase = true) || line.contains("Error", ignoreCase = true)))
+        if (crash) {
+            updateLoadingUi(100, "启动失败（已崩溃，不是卡在加载）")
+            binding.textLoadingStatus.text = shortenStatus(line)
+            appendLog("检测到 JVM 崩溃，请查看上方日志")
+            return
+        }
         val ready = overlayReadyPatterns.any { pattern ->
             line.contains(pattern, ignoreCase = true)
         }

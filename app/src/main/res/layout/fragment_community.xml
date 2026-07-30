@@ -188,7 +188,7 @@
         android:layout_height="0dp"
         android:layout_marginTop="10dp"
         android:clipToPadding="false"
-        app:layout_constraintBottom_toTopOf="@id/progressPanel"
+        app:layout_constraintBottom_toTopOf="@id/paginationBar"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toBottomOf="@id/textHint"
@@ -206,6 +206,45 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="@id/recyclerProjects"
         tools:visibility="visible" />
+
+    <LinearLayout
+        android:id="@+id/paginationBar"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingTop="8dp"
+        android:visibility="gone"
+        app:layout_constraintBottom_toTopOf="@id/progressPanel"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        tools:visibility="visible">
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/buttonPrevPage"
+            style="@style/Widget.Material3.Button.OutlinedButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:enabled="false"
+            android:text="@string/community_prev_page" />
+
+        <TextView
+            android:id="@+id/textPageInfo"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:textColor="@color/md_theme_light_outline"
+            android:textSize="13sp"
+            tools:text="第 1 / 5 页" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/buttonNextPage"
+            style="@style/Widget.Material3.Button.OutlinedButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/community_next_page" />
+    </LinearLayout>
 
     <LinearLayout
         android:id="@+id/progressPanel"

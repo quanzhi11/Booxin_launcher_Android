@@ -50,7 +50,35 @@
     <fragment
         android:id="@+id/nav_community"
         android:name="com.booxin.launcher.ui.community.CommunityFragment"
-        android:label="@string/nav_community" />
+        android:label="@string/nav_community">
+        <action
+            android:id="@+id/action_community_to_project_detail"
+            app:destination="@id/nav_community_project_detail"
+            app:enterAnim="@android:anim/slide_in_left"
+            app:exitAnim="@android:anim/fade_out"
+            app:popEnterAnim="@android:anim/fade_in"
+            app:popExitAnim="@android:anim/slide_out_right" />
+    </fragment>
+
+    <fragment
+        android:id="@+id/nav_community_project_detail"
+        android:name="com.booxin.launcher.ui.community.CommunityProjectDetailFragment"
+        android:label="@string/community_detail_title">
+        <argument
+            android:name="projectId"
+            app:argType="string" />
+        <argument
+            android:name="contentType"
+            app:argType="string"
+            android:defaultValue="MOD" />
+        <action
+            android:id="@+id/action_community_project_detail_self"
+            app:destination="@id/nav_community_project_detail"
+            app:enterAnim="@android:anim/slide_in_left"
+            app:exitAnim="@android:anim/fade_out"
+            app:popEnterAnim="@android:anim/fade_in"
+            app:popExitAnim="@android:anim/slide_out_right" />
+    </fragment>
 
     <fragment
         android:id="@+id/nav_accounts"

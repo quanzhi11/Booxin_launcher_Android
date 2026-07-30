@@ -128,12 +128,18 @@ static bool parse_args(char **argv, int argc, ParsedArgs *out) {
             }
             if (valued) {
                 const char *val = argv[++i];
-                size_t len = strlen(a) + 1 + strlen(val) + 1;
+                /* JNI_CreateJavaVM does not accept short forms like -p=… / -m=…;
+                 * expand to long options (JLI would do this on desktop). */
+                const char *optName = a;
+                if (strcmp(a, "-p") == 0) optName = "--module-path";
+                else if (strcmp(a, "-m") == 0) optName = "--module";
+                size_t len = strlen(optName) + 1 + strlen(val) + 1;
                 char *combined = (char *)malloc(len);
                 if (combined) {
-                    snprintf(combined, len, "%s=%s", a, val);
+                    snprintf(combined, len, "%s=%s", optName, val);
                     out->opts[out->nOpts].optionString = combined;
                     out->nOpts++;
+                    LOGI("jvm valued opt: %s", combined);
                 }
                 continue;
             }

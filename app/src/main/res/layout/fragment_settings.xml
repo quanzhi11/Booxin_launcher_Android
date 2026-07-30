@@ -74,6 +74,14 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="10dp"
                 android:text="@string/settings_download_source" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/buttonProbeDownloadSource"
+                style="@style/Widget.Booxin.SecondaryButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="重新测速" />
         </LinearLayout>
 
         <LinearLayout

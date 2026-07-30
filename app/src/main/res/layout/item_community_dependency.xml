@@ -4,9 +4,9 @@
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:layout_marginBottom="10dp"
+    android:layout_marginBottom="8dp"
     app:cardBackgroundColor="@color/md_theme_light_surface"
-    app:cardCornerRadius="20dp"
+    app:cardCornerRadius="16dp"
     app:strokeColor="@color/md_theme_light_outline"
     app:strokeWidth="1dp">
 
@@ -15,12 +15,12 @@
         android:layout_height="wrap_content"
         android:gravity="center_vertical"
         android:orientation="horizontal"
-        android:padding="14dp">
+        android:padding="12dp">
 
         <ImageView
             android:id="@+id/imageIcon"
-            android:layout_width="52dp"
-            android:layout_height="52dp"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
             android:contentDescription="@null"
             android:scaleType="centerCrop"
             android:src="@drawable/ic_nav_versions" />
@@ -28,7 +28,7 @@
         <LinearLayout
             android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:layout_marginStart="12dp"
+            android:layout_marginStart="10dp"
             android:layout_weight="1"
             android:orientation="vertical">
 
@@ -37,45 +37,27 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:textColor="@color/booxin_navy"
-                android:textSize="16sp"
+                android:textSize="14sp"
                 android:textStyle="bold"
-                tools:text="Sodium" />
-
-            <TextView
-                android:id="@+id/textMeta"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="2dp"
-                android:textColor="@color/md_theme_light_outline"
-                android:textSize="12sp"
-                tools:text="作者 · 120 万下载" />
+                tools:text="Fabric API" />
 
             <TextView
                 android:id="@+id/textDescription"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
+                android:layout_marginTop="2dp"
+                android:ellipsize="end"
                 android:maxLines="2"
-                android:textColor="@color/md_theme_light_onSurface"
-                android:textSize="13sp"
-                tools:text="优化客户端性能的热门模组。" />
-
-            <TextView
-                android:id="@+id/textTags"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="6dp"
-                android:maxLines="1"
-                android:textColor="@color/booxin_blue"
+                android:textColor="@color/md_theme_light_outline"
                 android:textSize="12sp"
-                tools:text="forge · fabric · 1.21.1" />
+                tools:text="前置模组简介" />
         </LinearLayout>
 
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/buttonInstall"
-            style="@style/Widget.Material3.Button.OutlinedButton"
+        <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="@string/community_view" />
+            android:text="@string/community_dependency_required"
+            android:textColor="@color/booxin_blue"
+            android:textSize="12sp" />
     </LinearLayout>
 </com.google.android.material.card.MaterialCardView>

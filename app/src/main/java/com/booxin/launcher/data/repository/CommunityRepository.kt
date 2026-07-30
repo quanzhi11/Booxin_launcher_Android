@@ -10,6 +10,8 @@ import com.booxin.launcher.data.model.CommunityLoader
 import com.booxin.launcher.data.model.InstallTargetRecommendation
 import com.booxin.launcher.data.model.ModrinthProject
 import com.booxin.launcher.data.model.ModrinthProjectVersion
+import com.booxin.launcher.data.model.ModrinthResolvedDependency
+import com.booxin.launcher.data.model.ModrinthSearchPage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -26,15 +28,44 @@ class CommunityRepository(
     suspend fun searchProjects(
         query: String,
         contentType: CommunityContentType,
-        loader: CommunityLoader
-    ): Result<List<ModrinthProject>> {
+        loader: CommunityLoader,
+        offset: Int = 0,
+        limit: Int = ModrinthClient.PAGE_SIZE
+    ): Result<ModrinthSearchPage> {
         val selectedMc = launcherRepository.session.value.selectedVersionId
             ?.let { resolveMinecraftVersionId(it) }
-        return client.searchProjects(query, contentType, selectedMc, loader)
+        return client.searchProjects(query, contentType, selectedMc, loader, offset, limit)
+    }
+
+    suspend fun getProject(projectId: String): Result<ModrinthProject> {
+        return client.getProject(projectId)
     }
 
     suspend fun getProjectVersions(projectId: String): Result<List<ModrinthProjectVersion>> {
         return client.getProjectVersions(projectId)
+    }
+
+    suspend fun resolveRequiredDependencies(
+        version: ModrinthProjectVersion
+    ): Result<List<ModrinthResolvedDependency>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val required = version.requiredDependencies
+            if (required.isEmpty()) return@runCatching emptyList()
+            val projects = client.getProjects(required.mapNotNull { it.projectId }).getOrThrow()
+            val byId = projects.associateBy { it.id }
+            required.mapNotNull { dep ->
+                val id = dep.projectId ?: return@mapNotNull null
+                val project = byId[id] ?: return@mapNotNull null
+                ModrinthResolvedDependency(
+                    projectId = project.id,
+                    title = project.title,
+                    slug = project.slug,
+                    iconUrl = project.iconUrl,
+                    description = project.description,
+                    versionId = dep.versionId
+                )
+            }
+        }
     }
 
     fun recommendTargets(

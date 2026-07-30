@@ -36,7 +36,8 @@ class MainActivity : AppCompatActivity() {
 
         navController.addOnDestinationChangedListener { _, destination, _ ->
             val hideBottom = destination.id == R.id.nav_download ||
-                destination.id == R.id.nav_version_manage
+                destination.id == R.id.nav_version_manage ||
+                destination.id == R.id.nav_community_project_detail
             binding.bottomNav.visibility = if (hideBottom) View.GONE else View.VISIBLE
         }
 

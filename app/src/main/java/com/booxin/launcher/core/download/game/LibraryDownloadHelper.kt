@@ -1,5 +1,6 @@
 package com.booxin.launcher.core.download.game
 
+import android.util.Log
 import com.booxin.launcher.core.LauncherPaths
 import com.booxin.launcher.core.download.DownloadProviders
 import com.booxin.launcher.core.net.FileDownloader
@@ -55,12 +56,18 @@ class LibraryDownloadHelper(
         val semaphore = Semaphore(LIBRARY_CONCURRENCY)
         val completed = AtomicInteger(0)
         val total = libraries.size
+        Log.i(TAG, "download $total libraries for $versionId")
         libraries.map { lib ->
             async {
                 semaphore.withPermit {
                     val destination = File(LauncherPaths.librariesDir, lib.path)
-                    if (!Digests.matchesSha1(destination, lib.sha1)) {
-                        ensureLibrary(lib, destination)
+                    try {
+                        if (!Digests.matchesSha1(destination, lib.sha1)) {
+                            ensureLibrary(lib, destination)
+                        }
+                    } catch (error: Exception) {
+                        Log.e(TAG, "library failed: ${lib.name} url=${lib.url}", error)
+                        throw IOException("下载依赖失败 ${lib.name}: ${error.message}", error)
                     }
                     val done = completed.incrementAndGet()
                     onProgress(done, total, "下载依赖 $done / $total")
@@ -88,6 +95,7 @@ class LibraryDownloadHelper(
         val candidates = DownloadProviders.current().candidateUrls(rawUrl)
         var lastError: Throwable? = null
         for (url in candidates) {
+            Log.i(TAG, "try $label <- $url")
             val result = downloader.download(url, destination)
             if (result.isSuccess) {
                 if (!Digests.matchesSha1(destination, sha1)) {
@@ -98,11 +106,13 @@ class LibraryDownloadHelper(
                 return@withContext
             }
             lastError = result.exceptionOrNull()
+            Log.w(TAG, "candidate failed $label <- $url : ${lastError?.message}")
         }
         throw lastError ?: IOException("下载失败: $label")
     }
 
     companion object {
+        private const val TAG = "LibraryDownload"
         private const val LIBRARY_CONCURRENCY = 6
     }
 }

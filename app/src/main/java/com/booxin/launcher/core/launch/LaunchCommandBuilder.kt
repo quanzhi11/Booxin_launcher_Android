@@ -42,6 +42,21 @@ data class LaunchCommand(
             appendLine("main=$mainClass")
             appendLine("cp=${classpath.size} jars")
             appendLine("jvm=${jvmArgs.size} args")
+            val modulePath = jvmArgs.asSequence()
+                .mapIndexedNotNull { index, arg ->
+                    when {
+                        arg == "-p" || arg == "--module-path" ->
+                            jvmArgs.getOrNull(index + 1)
+                        arg.startsWith("--module-path=") ->
+                            arg.removePrefix("--module-path=")
+                        arg.startsWith("-p=") ->
+                            arg.removePrefix("-p=")
+                        else -> null
+                    }
+                }
+                .firstOrNull()
+            appendLine("modulePath=${modulePath?.let { "yes (${it.split(File.pathSeparator).size} entries)" } ?: "MISSING"}")
+            appendLine("ignoreList=${jvmArgs.firstOrNull { it.startsWith("-DignoreList=") } ?: "default"}")
             appendLine("game=${gameArgs.joinToString(" ")}")
         }
     }
@@ -151,6 +166,9 @@ class LaunchCommandBuilder(
             "library_directory" to LauncherPaths.librariesDir.absolutePath,
             "classpath_separator" to File.pathSeparator,
             "primary_jar" to jarFile.absolutePath,
+            // FCL: Forge ignoreList may reference ${primary_jar_name} so vanilla jar
+            // is not turned into a second JPMS module next to forge-*-client.jar.
+            "primary_jar_name" to jarFile.name,
             "language" to Locale.getDefault().toString()
         )
 
@@ -172,7 +190,8 @@ class LaunchCommandBuilder(
                 renderer = renderer,
                 mainClass = mainClass,
                 versionRoot = root,
-                tokens = tokens
+                tokens = tokens,
+                mcVersionId = mcVersionId
             )
         } else {
             buildVanillaJvmArgs(
@@ -306,10 +325,19 @@ class LaunchCommandBuilder(
         renderer: GlRendererKind,
         mainClass: String,
         versionRoot: JSONObject,
-        tokens: Map<String, String>
+        tokens: Map<String, String>,
+        mcVersionId: String
     ): List<String> {
         val nativeDir = AndroidGameRuntime.nativesDir().absolutePath
         val versionJvm = parseVersionJvmArgs(versionRoot, tokens, nativeDir)
+        val ignoreExtras = listOfNotNull(
+            jarFile.name,
+            // Parent vanilla jar e.g. 1.20.1.jar — must not become module "_1._20._1"
+            // next to forge client module "minecraft" (ResolutionException / flywheel).
+            File(LauncherPaths.versionsDir, "$mcVersionId/$mcVersionId.jar")
+                .takeIf { it.isFile }
+                ?.name
+        ).distinct()
         return buildList {
             addAll(
                 buildCommonAndroidJvmArgs(
@@ -325,7 +353,7 @@ class LaunchCommandBuilder(
                     forgeExtras = true
                 )
             )
-            addAll(versionJvm)
+            addAll(patchIgnoreList(versionJvm, ignoreExtras))
             // ForgeBootstrap: enable bootstrap debug to logcat via stdout capture.
             add("-Dbsl.debug=true")
             // FCL: only BootstrapLauncher needs this export on Java 9+.
@@ -333,6 +361,53 @@ class LaunchCommandBuilder(
                 add("--add-exports")
                 add("cpw.mods.bootstraplauncher/cpw.mods.bootstraplauncher=ALL-UNNAMED")
             }
+            // Extra ALL-UNNAMED opens: version JSON opens to cpw.mods.securejarhandler,
+            // but that module is not visible to unnamed bootstrap code until -p is applied.
+            if (javaMajor >= 9) {
+                addAll(forgeUnnamedModuleOpens())
+            }
+        }
+    }
+
+    /**
+     * FCL/NeoForge: keep official ignoreList, but always also ignore the vanilla/primary
+     * client jar filename so it is not loaded as a competing JPMS module.
+     */
+    private fun patchIgnoreList(jvmArgs: List<String>, extraIgnores: List<String>): List<String> {
+        if (extraIgnores.isEmpty()) return jvmArgs
+        var found = false
+        val out = jvmArgs.map { arg ->
+            if (!arg.startsWith("-DignoreList=")) return@map arg
+            found = true
+            val current = arg.removePrefix("-DignoreList=").split(',').filter { it.isNotBlank() }
+            "-DignoreList=" + (current + extraIgnores).distinct().joinToString(",")
+        }
+        return if (found) {
+            out
+        } else {
+            out + ("-DignoreList=" + extraIgnores.joinToString(","))
+        }
+    }
+
+    private fun forgeUnnamedModuleOpens(): List<String> = buildList {
+        val targets = listOf(
+            "java.base/java.lang.invoke",
+            "java.base/java.lang",
+            "java.base/java.lang.reflect",
+            "java.base/java.io",
+            "java.base/java.util",
+            "java.base/java.util.concurrent",
+            "java.base/java.net",
+            "java.base/java.nio",
+            "java.base/java.nio.file",
+            "java.base/java.util.jar",
+            "java.base/jdk.internal.loader",
+            "java.base/sun.nio.ch",
+            "java.base/sun.security.util"
+        )
+        for (target in targets) {
+            add("--add-opens")
+            add("$target=ALL-UNNAMED")
         }
     }
 

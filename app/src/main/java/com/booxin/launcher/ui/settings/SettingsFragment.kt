@@ -47,8 +47,14 @@ class SettingsFragment : Fragment() {
         binding.buttonDownloadSource.setOnClickListener {
             val values = DownloadSource.entries
             val next = values[(DownloadProviders.source.ordinal + 1) % values.size]
-            DownloadProviders.source = next
+            DownloadProviders.setSource(requireContext(), next)
             refreshDownloadSource()
+            if (next == DownloadSource.BALANCED) {
+                probeDownloadSource(force = DownloadProviders.needsProbe())
+            }
+        }
+        binding.buttonProbeDownloadSource.setOnClickListener {
+            probeDownloadSource(force = true)
         }
 
         bindJavaButton(binding.buttonDownloadJava8, 8)
@@ -159,7 +165,39 @@ class SettingsFragment : Fragment() {
         val b = _binding ?: return
         val source = DownloadProviders.source
         b.buttonDownloadSource.text = source.displayName
-        b.textDownloadSource.text = getString(R.string.settings_download_source_hint)
+        b.textDownloadSource.text = buildString {
+            append(getString(R.string.settings_download_source_hint))
+            append('\n')
+            append(DownloadProviders.statusText())
+        }
+        b.buttonProbeDownloadSource.isEnabled = true
+    }
+
+    private fun probeDownloadSource(force: Boolean) {
+        viewLifecycleOwner.lifecycleScope.launch {
+            val b = _binding ?: return@launch
+            b.buttonProbeDownloadSource.isEnabled = false
+            b.textDownloadSource.text = getString(R.string.settings_download_source_probing)
+            val result = runCatching {
+                DownloadProviders.ensureProbed(requireContext(), force = force)
+            }.getOrElse {
+                Toast.makeText(
+                    requireContext(),
+                    getString(R.string.settings_download_source_probed, it.message ?: "失败"),
+                    Toast.LENGTH_LONG
+                ).show()
+                null
+            }
+            _binding ?: return@launch
+            refreshDownloadSource()
+            if (result != null) {
+                Toast.makeText(
+                    requireContext(),
+                    getString(R.string.settings_download_source_probed, result.summary),
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
     }
 
     private fun refreshJavaStatus() {

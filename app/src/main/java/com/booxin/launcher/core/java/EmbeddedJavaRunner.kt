@@ -158,7 +158,35 @@ object EmbeddedJavaRunner {
             }
         }
 
-        if (!done.await(ForgeInstallSocketServer.TIMEOUT_MINUTES, TimeUnit.MINUTES)) {
+        // Wait until UDP/exit file arrives, but bail if :forge vanished without reporting.
+        val deadline = System.nanoTime() +
+            TimeUnit.MINUTES.toNanos(ForgeInstallSocketServer.TIMEOUT_MINUTES)
+        var vanishedSince = 0L
+        while (done.count != 0L && System.nanoTime() < deadline) {
+            if (exitFile.isFile) {
+                exitCode.set(exitFile.readText().trim().toIntOrNull() ?: exitCode.get())
+                break
+            }
+            val running = isProcessRunning(forgeName)
+            if (!running && sawForge) {
+                if (vanishedSince == 0L) vanishedSince = System.currentTimeMillis()
+                // Give UDP/exit-file a short grace after process death.
+                if (System.currentTimeMillis() - vanishedSince > 3_000L) {
+                    if (exitFile.isFile) {
+                        exitCode.set(exitFile.readText().trim().toIntOrNull() ?: 1)
+                    } else {
+                        Log.e(TAG, ":forge exited without exit code — treating as failure")
+                        exitCode.set(1)
+                    }
+                    runCatching { receiver.interrupt() }
+                    break
+                }
+            } else {
+                vanishedSince = 0L
+            }
+            done.await(500, TimeUnit.MILLISECONDS)
+        }
+        if (done.count != 0L && !exitFile.isFile && System.nanoTime() >= deadline) {
             Log.e(TAG, "processor timed out")
             killStaleForgeProcesses()
             runCatching { receiver.interrupt() }
