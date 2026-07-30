@@ -112,22 +112,15 @@ object JvmEnvironment {
             findLibrary(javaHome, name)?.let { candidates += it.absolutePath }
         }
         // pojavexec is loaded via System.loadLibrary in PojavExecLoader (clean hook path).
+        // Do NOT preload LWJGL/game native libs here. Forge 1.21+ creates a secure
+        // module layer classloader and will load liblwjgl.so itself; preloading it in
+        // AppClassLoader causes "already loaded in another classloader".
         listOf(
             "libc++_shared.so",
             "libbytehook.so",
             "liblinkerhook.so",
             "libdriver_helper.so",
-            "libfcl.so",
-            "libopenal.so",
-            "libfreetype.so",
-            "libshaderc.so",
-            "libspirv-cross-c-shared.so",
-            // Do not preload MobileGlues here — see loadGraphicsLibrary().
-            "liblwjgl.so",
-            "liblwjgl_opengl.so",
-            "liblwjgl_stb.so",
-            "liblwjgl_tinyfd.so",
-            "liblwjgl_vma.so"
+            "libfcl.so"
         ).forEach { name ->
             File(nativeLibDir, name).takeIf { it.isFile }?.let { candidates += it.absolutePath }
         }

@@ -50,7 +50,11 @@ object AndroidGameRuntime {
 
     fun lwjglJar(): File = File(LauncherPaths.runtimeDir, "lwjgl/lwjgl.jar")
 
-    /** Must be ahead of [lwjglJar] on the classpath (CallbackBridge JNI patch). */
+    /**
+     * Legacy separate patch jar (kept on disk for older installs).
+     * Forge 1.21+ must NOT put this on the classpath — merge bridge classes into
+     * [lwjglJar] instead so there is only one `org.lwjgl` module.
+     */
     fun lwjglBridgePatchJar(): File = File(LauncherPaths.runtimeDir, "lwjgl/lwjgl-bridge-patch.jar")
 
     fun nativesDir(): File = File(LauncherPaths.runtimeDir, "natives")

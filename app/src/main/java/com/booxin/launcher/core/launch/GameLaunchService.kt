@@ -134,13 +134,17 @@ class GameLaunchService : Service() {
         }
         appendLog("Java 就绪: ${java.homeDir.absolutePath}")
 
-        runCatching {
-            appendLog("检查联机模组（关闭正版验证）…")
-            val lan = com.booxin.launcher.core.multiplayer.LanServerPropertiesInstaller
-                .ensureInstalled(versionId)
-            appendLog(lan.message)
-        }.onFailure {
-            appendLog("联机模组检查失败（可继续启动）: ${it.message}")
+        if (com.booxin.launcher.core.download.game.VersionJsonMerger.isModLoaderVersion(versionId)) {
+            appendLog("Forge/模组版本：跳过联机模组自动注入（避免 Mixin 冲突）")
+        } else {
+            runCatching {
+                appendLog("检查联机模组（关闭正版验证）…")
+                val lan = com.booxin.launcher.core.multiplayer.LanServerPropertiesInstaller
+                    .ensureInstalled(versionId)
+                appendLog(lan.message)
+            }.onFailure {
+                appendLog("联机模组检查失败（可继续启动）: ${it.message}")
+            }
         }
 
         AndroidGameRuntime.ensure(this)
@@ -199,10 +203,16 @@ class GameLaunchService : Service() {
                 "libname=${command.jvmArgs.firstOrNull { it.startsWith("-Dorg.lwjgl.opengl.libname=") }}"
             )
 
-        appendLog("初始化 pojavexec（ART hooks）…")
-        runCatching { PojavExecLoader.ensureLoaded() }.onFailure { err ->
-            appendLog("pojavexec 初始化失败: ${err.message}")
-            return
+        val isForgeOrLoader =
+            com.booxin.launcher.core.download.game.VersionJsonMerger.isModLoaderVersion(versionId)
+        if (isForgeOrLoader) {
+            appendLog("Forge/模组版本：跳过 ART 侧 pojavexec 预加载")
+        } else {
+            appendLog("初始化 pojavexec（ART hooks）…")
+            runCatching { PojavExecLoader.ensureLoaded() }.onFailure { err ->
+                appendLog("pojavexec 初始化失败: ${err.message}")
+                return
+            }
         }
         // FCL: nativeSetUseInputStackQueue before JVM so ART touch reaches GLFW safely.
         val inputOk = CallbackBridge.enableAndroidInput()

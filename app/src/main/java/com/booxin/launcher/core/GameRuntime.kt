@@ -27,7 +27,7 @@ class BooxinGameRuntime(
         javaEnvironment.ensureForMinecraft(versionId).getOrElse {
             return Result.failure(it)
         }
-        return repository.installVersion(versionId)
+        return repository.ensureVersionReady(versionId)
     }
 
     suspend fun prepareForge(

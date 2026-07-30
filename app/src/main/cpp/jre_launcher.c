@@ -110,6 +110,34 @@ static bool parse_args(char **argv, int argc, ParsedArgs *out) {
             if (!cp) cp = strdup(a + 18);
             continue; /* will re-add as single option below */
         }
+        /*
+         * FCL/JLI: options like --add-exports take a following argv token.
+         * JNI_CreateJavaVM needs a single optionString ("--add-exports=…"),
+         * otherwise the value is mis-parsed as the main class.
+         */
+        if (a[0] == '-' && !strchr(a, '=') && i + 1 < argc && argv[i + 1][0] != '-') {
+            static const char *kValued[] = {
+                "--add-exports", "--add-opens", "--add-modules", "--add-reads",
+                "--module-path", "-p", "--upgrade-module-path", "--patch-module",
+                "--limit-modules", "--module", "-m", "--enable-native-access",
+                NULL
+            };
+            int valued = 0;
+            for (int k = 0; kValued[k]; k++) {
+                if (strcmp(a, kValued[k]) == 0) { valued = 1; break; }
+            }
+            if (valued) {
+                const char *val = argv[++i];
+                size_t len = strlen(a) + 1 + strlen(val) + 1;
+                char *combined = (char *)malloc(len);
+                if (combined) {
+                    snprintf(combined, len, "%s=%s", a, val);
+                    out->opts[out->nOpts].optionString = combined;
+                    out->nOpts++;
+                }
+                continue;
+            }
+        }
         if (a[0] == '-') {
             out->opts[out->nOpts].optionString = strdup(a);
             out->nOpts++;
@@ -141,6 +169,8 @@ static void log_exception(JNIEnv *jenv, const char *where) {
     jclass exCls = (*jenv)->GetObjectClass(jenv, ex);
     jmethodID toString = (*jenv)->GetMethodID(jenv, exCls, "toString", "()Ljava/lang/String;");
     jmethodID getMsg = (*jenv)->GetMethodID(jenv, exCls, "getMessage", "()Ljava/lang/String;");
+    jmethodID getCause = (*jenv)->GetMethodID(jenv, exCls, "getCause", "()Ljava/lang/Throwable;");
+    jmethodID printStack = (*jenv)->GetMethodID(jenv, exCls, "printStackTrace", "()V");
     if (toString) {
         jstring js = (jstring)(*jenv)->CallObjectMethod(jenv, ex, toString);
         if (js) {
@@ -159,6 +189,92 @@ static void log_exception(JNIEnv *jenv, const char *where) {
             (*jenv)->DeleteLocalRef(jenv, js);
         }
     }
+    /* Unwrap cause chain — InvocationTargetException message is often null. */
+    if (getCause) {
+        jthrowable cur = ex;
+        int depth = 0;
+        while (cur && depth < 8) {
+            jclass curCls = (*jenv)->GetObjectClass(jenv, cur);
+            jmethodID gc = (*jenv)->GetMethodID(jenv, curCls, "getCause", "()Ljava/lang/Throwable;");
+            jmethodID ts = (*jenv)->GetMethodID(jenv, curCls, "toString", "()Ljava/lang/String;");
+            jthrowable next = gc
+                ? (jthrowable)(*jenv)->CallObjectMethod(jenv, cur, gc)
+                : NULL;
+            if (!next) {
+                (*jenv)->DeleteLocalRef(jenv, curCls);
+                break;
+            }
+            if (ts) {
+                jstring js = (jstring)(*jenv)->CallObjectMethod(jenv, next, ts);
+                if (js) {
+                    const char *msg = (*jenv)->GetStringUTFChars(jenv, js, NULL);
+                    LOGE("%s cause[%d]: %s", where, depth, msg ? msg : "(null)");
+                    if (msg) (*jenv)->ReleaseStringUTFChars(jenv, js, msg);
+                    (*jenv)->DeleteLocalRef(jenv, js);
+                }
+            }
+            if (depth > 0 && cur != ex) (*jenv)->DeleteLocalRef(jenv, cur);
+            (*jenv)->DeleteLocalRef(jenv, curCls);
+            cur = next;
+            depth++;
+        }
+        if (cur && cur != ex) (*jenv)->DeleteLocalRef(jenv, cur);
+    }
+    if (printStack) {
+        LOGI("%s stack:", where);
+        (*jenv)->CallVoidMethod(jenv, ex, printStack);
+    }
+    /*
+     * printStackTrace() writes to stderr and can be truncated when the process
+     * dies quickly; mirror the full stack into logcat directly as well.
+     */
+    jclass swCls = (*jenv)->FindClass(jenv, "java/io/StringWriter");
+    jclass pwCls = (*jenv)->FindClass(jenv, "java/io/PrintWriter");
+    jclass thCls = (*jenv)->FindClass(jenv, "java/lang/Throwable");
+    if (swCls && pwCls && thCls) {
+        jmethodID swCtor = (*jenv)->GetMethodID(jenv, swCls, "<init>", "()V");
+        jmethodID pwCtor = (*jenv)->GetMethodID(jenv, pwCls, "<init>", "(Ljava/io/Writer;)V");
+        jmethodID thPs = (*jenv)->GetMethodID(jenv, thCls, "printStackTrace", "(Ljava/io/PrintWriter;)V");
+        jmethodID swToString = (*jenv)->GetMethodID(jenv, swCls, "toString", "()Ljava/lang/String;");
+        if (swCtor && pwCtor && thPs && swToString) {
+            jobject sw = (*jenv)->NewObject(jenv, swCls, swCtor);
+            jobject pw = sw ? (*jenv)->NewObject(jenv, pwCls, pwCtor, sw) : NULL;
+            if (sw && pw) {
+                (*jenv)->CallVoidMethod(jenv, ex, thPs, pw);
+                jstring stackJs = (jstring)(*jenv)->CallObjectMethod(jenv, sw, swToString);
+                if (stackJs) {
+                    const char *stack = (*jenv)->GetStringUTFChars(jenv, stackJs, NULL);
+                    if (stack) {
+                        const char *line = stack;
+                        while (*line) {
+                            const char *nl = strchr(line, '\n');
+                            if (!nl) {
+                                LOGE("%s stackline: %s", where, line);
+                                break;
+                            }
+                            size_t len = (size_t)(nl - line);
+                            if (len > 0) {
+                                char tmp[1024];
+                                size_t copy = len < sizeof(tmp) - 1 ? len : sizeof(tmp) - 1;
+                                memcpy(tmp, line, copy);
+                                tmp[copy] = '\0';
+                                LOGE("%s stackline: %s", where, tmp);
+                            }
+                            line = nl + 1;
+                        }
+                        (*jenv)->ReleaseStringUTFChars(jenv, stackJs, stack);
+                    }
+                    (*jenv)->DeleteLocalRef(jenv, stackJs);
+                }
+            }
+            if (pw) (*jenv)->DeleteLocalRef(jenv, pw);
+            if (sw) (*jenv)->DeleteLocalRef(jenv, sw);
+        }
+    }
+    if ((*jenv)->ExceptionCheck(jenv)) (*jenv)->ExceptionClear(jenv);
+    if (swCls) (*jenv)->DeleteLocalRef(jenv, swCls);
+    if (pwCls) (*jenv)->DeleteLocalRef(jenv, pwCls);
+    if (thCls) (*jenv)->DeleteLocalRef(jenv, thCls);
     (*jenv)->DeleteLocalRef(jenv, exCls);
     (*jenv)->DeleteLocalRef(jenv, ex);
 }
@@ -1139,28 +1255,49 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_pojav) {
      * list, so GLFW.nglfwSetMouseButtonCallback later fails to link and mouseCb
      * stays NULL — ART then queues events that the game never receives.
      *
-     * Order matters (FCL): initialize GLFW first so keyDownBuffer/mouseDownBuffer
+     * Order matters (FCL vanilla): initialize GLFW first so keyDownBuffer/mouseDownBuffer
      * exist, THEN System.load → JNI_OnLoad "Saving JVM" binds those buffers.
-     * Early System.load before GLFW <clinit> can leave mouseDownBuffer NULL;
-     * with SIGSEGV ignored here, every click becomes a silent no-op.
+     *
+     * ForgeBootstrap builds a SecureModule layer that loads org.lwjgl again. If we
+     * System.load(liblwjgl.so) on the AppClassLoader first, Forge fails with:
+     * UnsatisfiedLinkError: liblwjgl.so already loaded in another classloader.
+     * So skip GLFW preinit / pump patch for Forge; only load pojavexec.
      */
-    if (!preinit_hotspot_glfw(jenv)) {
-        LOGW("GLFW preinit failed — continuing with System.load anyway");
-    }
-    if (!hotspot_system_load_pojavexec(jenv)) {
-        LOGW("HotSpot System.load(pojavexec) failed — trying manual JNI_OnLoad");
-        if (!call_pojav_jni_onload(jvm, jenv, "HotSpot")) {
-            LOGW("HotSpot pojavexec JNI_OnLoad failed — input may be dead");
+    int forge_like = pa.mainClass &&
+        (strstr(pa.mainClass, "minecraftforge") ||
+         strstr(pa.mainClass, "ForgeBootstrap") ||
+         strstr(pa.mainClass, "bootstraplauncher") ||
+         strstr(pa.mainClass, "modlauncher"));
+    if (!forge_like) {
+        if (!preinit_hotspot_glfw(jenv)) {
+            LOGW("GLFW preinit failed — continuing with System.load anyway");
         }
     } else {
-        log_pojav_environ("after HotSpot System.load(pojavexec)");
+        LOGI("Forge-like main=%s — skip GLFW preinit (avoid double-load liblwjgl)",
+             pa.mainClass);
     }
-    force_input_bridge_ready("after HotSpot pojavexec load");
-    log_hotspot_pump_diag(jenv);
-    if (!patch_hotspot_pump_function_pointers(jenv)) {
-        LOGW("GLFW pump pointer patch failed — touch may not reach Minecraft");
+    if (!forge_like) {
+        if (!hotspot_system_load_pojavexec(jenv)) {
+            LOGW("HotSpot System.load(pojavexec) failed — trying manual JNI_OnLoad");
+            if (!call_pojav_jni_onload(jvm, jenv, "HotSpot")) {
+                LOGW("HotSpot pojavexec JNI_OnLoad failed — input may be dead");
+            }
+        } else {
+            log_pojav_environ("after HotSpot System.load(pojavexec)");
+        }
+        force_input_bridge_ready("after HotSpot pojavexec load");
+    } else {
+        LOGI("Forge-like — skip HotSpot System.load(pojavexec) to avoid classloader split");
     }
-    log_hotspot_pump_diag(jenv);
+    if (!forge_like) {
+        log_hotspot_pump_diag(jenv);
+        if (!patch_hotspot_pump_function_pointers(jenv)) {
+            LOGW("GLFW pump pointer patch failed — touch may not reach Minecraft");
+        }
+        log_hotspot_pump_diag(jenv);
+    } else {
+        LOGI("Forge-like — defer GLFW pump patch until module-layer LWJGL loads");
+    }
 
     /* pojavexec hookExec/installLwjglDlopenHook crash in embedded HotSpot; rely on
      * JNI_OnLoad + POJAV_RENDERER env + ART setupBridgeWindow instead. */
@@ -1201,7 +1338,8 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_pojav) {
 
     if (!mainCls) {
         LOGE("failed to load main class %s", pa.mainClass);
-        if (with_pojav) (*jvm)->DestroyJavaVM(jvm);
+        /* DestroyJavaVM hangs with non-daemon HotSpot threads — never call it
+         * on the game path; let GameLaunchService tear down the process. */
         free_parsed(&pa);
         stop_stdio_capture();
         return -6;
@@ -1212,7 +1350,6 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_pojav) {
         jenv, mainCls, "main", "([Ljava/lang/String;)V");
     if (!mainMethod) {
         log_exception(jenv, "GetStaticMethodID main");
-        if (with_pojav) (*jvm)->DestroyJavaVM(jvm);
         free_parsed(&pa);
         stop_stdio_capture();
         return -7;
@@ -1230,7 +1367,6 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_pojav) {
     (*jenv)->CallStaticVoidMethod(jenv, mainCls, mainMethod, argsArr);
     if ((*jenv)->ExceptionCheck(jenv)) {
         log_exception(jenv, "main()");
-        if (with_pojav) (*jvm)->DestroyJavaVM(jvm);
         free_parsed(&pa);
         stop_stdio_capture();
         return 1;
@@ -1245,10 +1381,11 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_pojav) {
         return 0;
     }
 
-    (*jvm)->DestroyJavaVM(jvm);
+    /* Game main() normally never returns. If it does, DestroyJavaVM still hangs
+     * (ForgeBootstrap / daemon threads) — skip and exit the :game process. */
+    LOGI("game main returned — skip DestroyJavaVM");
     free_parsed(&pa);
     stop_stdio_capture();
-    LOGI("JVM exited cleanly");
     return 0;
 }
 

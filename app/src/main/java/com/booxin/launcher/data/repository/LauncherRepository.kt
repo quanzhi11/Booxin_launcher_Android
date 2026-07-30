@@ -144,6 +144,31 @@ class LauncherRepository(
         return result
     }
 
+    /**
+     * Ensure a version is ready to launch. Forge/Fabric wrappers must not be
+     * re-installed via the vanilla installer (their ids are not Mojang versions).
+     */
+    suspend fun ensureVersionReady(versionId: String): Result<Unit> {
+        if (forgeInstaller.isInstalled(versionId) || VersionJsonMerger.isModLoaderVersion(versionId)) {
+            val parent = VersionJsonMerger.resolveMinecraftVersionId(versionId)
+            if (parent != versionId && !gameInstaller.isInstalled(parent)) {
+                val remote = _remoteVersions.value.firstOrNull { it.id == parent }
+                gameInstaller.install(parent, remote?.url).getOrElse {
+                    return Result.failure(it)
+                }
+            }
+            if (!forgeInstaller.isInstalled(versionId) && VersionJsonMerger.versionJsonFile(versionId) == null) {
+                return Result.failure(IllegalStateException("模组加载器版本未安装: $versionId"))
+            }
+            refreshInstalledVersions()
+            return Result.success(Unit)
+        }
+        if (gameInstaller.isInstalled(versionId)) {
+            return Result.success(Unit)
+        }
+        return installVersion(versionId)
+    }
+
     suspend fun installForgeVersion(
         mcVersion: String,
         loaderVersion: String,
