@@ -6,6 +6,7 @@ import com.booxin.launcher.BuildConfig
 import com.booxin.launcher.core.LauncherPaths
 import com.booxin.launcher.core.download.game.GameJsonParser
 import com.booxin.launcher.core.download.game.LibraryFilter
+import com.booxin.launcher.core.download.game.VersionJsonMerger
 import com.booxin.launcher.core.java.InstalledJavaRuntime
 import org.json.JSONArray
 import org.json.JSONObject
@@ -67,11 +68,14 @@ class LaunchCommandBuilder(
     ): LaunchCommand {
         val versionRoot = File(LauncherPaths.versionsDir, versionId)
         val jsonFile = File(versionRoot, "$versionId.json")
-        val jarFile = File(versionRoot, "$versionId.jar")
         require(jsonFile.exists()) { "缺少 version.json: ${jsonFile.absolutePath}" }
-        require(jarFile.exists()) { "缺少客户端 jar: ${jarFile.absolutePath}" }
 
-        val root = JSONObject(jsonFile.readText())
+        val root = VersionJsonMerger.merge(versionId)
+            ?: error("无法合并 version.json: $versionId")
+        val jarFile = VersionJsonMerger.resolveClientJar(versionId)
+            ?: error("缺少客户端 jar: $versionId")
+        require(jarFile.isFile) { "缺少客户端 jar: ${jarFile.absolutePath}" }
+
         val mainClass = root.optString("mainClass").ifBlank {
             error("version.json 缺少 mainClass")
         }

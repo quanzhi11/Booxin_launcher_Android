@@ -83,6 +83,12 @@
     <string name="download_loader_quilt">Quilt</string>
     <string name="download_loader_optifine">OptiFine</string>
     <string name="download_loader_wip">开发中ing</string>
+    <string name="download_forge_pick">选择 %1$s 的 Forge 版本</string>
+    <string name="download_forge_empty">未获取到 Forge 版本：%1$s</string>
+    <string name="download_forge_installing">正在安装 %1$s…</string>
+    <string name="forge_processor_fg_channel">Forge 安装</string>
+    <string name="forge_processor_fg_title">正在安装 Forge</string>
+    <string name="forge_processor_fg_text">正在运行 Forge 安装工具，请勿关闭</string>
     <string name="download_installing">正在下载安装…</string>
     <string name="download_install_done">安装完成：%1$s</string>
     <string name="download_install_failed">安装失败：%1$s</string>

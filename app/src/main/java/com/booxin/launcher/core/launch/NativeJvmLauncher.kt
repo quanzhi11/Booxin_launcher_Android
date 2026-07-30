@@ -23,6 +23,9 @@ object NativeJvmLauncher {
         return nativeLaunchJvm(args, full, dot)
     }
 
+    /** Headless tool JVM (Forge processors). Skips pojavexec/GLFW hooks. */
+    fun launchToolJvm(args: Array<String>): Int = nativeLaunchToolJvm(args)
+
     fun chdir(path: String): Boolean = nativeChdir(path)
 
     /** Snapshot pojav_environ input gates (ready / callbacks / queue). */
@@ -72,4 +75,6 @@ object NativeJvmLauncher {
         fullVersion: String,
         dotVersion: String
     ): Int
+
+    private external fun nativeLaunchToolJvm(args: Array<String>): Int
 }

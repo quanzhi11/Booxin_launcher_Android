@@ -6,6 +6,7 @@ enum class GameInstallPhase {
     VERSION_JSON,
     CLIENT,
     LIBRARIES,
+    MODLOADER,
     ASSETS,
     DONE,
     FAILED

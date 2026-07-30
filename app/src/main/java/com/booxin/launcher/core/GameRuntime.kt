@@ -30,6 +30,17 @@ class BooxinGameRuntime(
         return repository.installVersion(versionId)
     }
 
+    suspend fun prepareForge(
+        mcVersion: String,
+        loaderVersion: String,
+        versionJsonUrl: String? = null
+    ): Result<String> {
+        val java = javaEnvironment.ensureForMinecraft(mcVersion).getOrElse {
+            return Result.failure(it)
+        }
+        return repository.installForgeVersion(mcVersion, loaderVersion, versionJsonUrl, java)
+    }
+
     override suspend fun launch(
         context: Context,
         versionId: String,

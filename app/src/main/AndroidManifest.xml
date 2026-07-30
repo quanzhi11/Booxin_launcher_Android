@@ -75,5 +75,15 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="minecraft_jvm" />
         </service>
+
+        <service
+            android:name=".core.download.modloader.ForgeProcessorService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse"
+            android:process=":forge">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="forge_installer" />
+        </service>
     </application>
 </manifest>

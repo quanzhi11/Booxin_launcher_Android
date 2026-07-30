@@ -146,9 +146,10 @@ object GameJsonParser {
 
             val path = artifact?.optString("path")?.ifBlank { null } ?: mavenPath(name)
             val url = when {
-                artifact?.has("url") == true -> artifact.getString("url")
+                artifact?.has("url") == true -> artifact.getString("url").ifBlank { "" }
                 lib.has("url") -> lib.getString("url").let { base ->
-                    if (base.endsWith("/")) base + path else "$base/$path"
+                    if (base.isBlank()) ""
+                    else if (base.endsWith("/")) base + path else "$base/$path"
                 }
                 else -> DEFAULT_LIBRARY_URL + path
             }
@@ -186,17 +187,22 @@ object GameJsonParser {
     }
 
     fun mavenPath(name: String): String {
-        // group:artifact:version[:classifier]
+        // group:artifact:version[:classifier[@extension]]
         val parts = name.split(':')
         require(parts.size >= 3) { "非法 Maven 坐标: $name" }
         val group = parts[0].replace('.', '/')
         val artifact = parts[1]
         val version = parts[2]
-        val classifier = parts.getOrNull(3)
-        val fileName = if (classifier.isNullOrBlank()) {
-            "$artifact-$version.jar"
+        val classifierPart = parts.getOrNull(3)
+        val (classifier, extension) = if (classifierPart != null && classifierPart.contains('@')) {
+            classifierPart.substringBefore('@') to classifierPart.substringAfter('@')
         } else {
-            "$artifact-$version-$classifier.jar"
+            classifierPart to "jar"
+        }
+        val fileName = if (classifier.isNullOrBlank()) {
+            "$artifact-$version.$extension"
+        } else {
+            "$artifact-$version-$classifier.$extension"
         }
         return "$group/$artifact/$version/$fileName"
     }

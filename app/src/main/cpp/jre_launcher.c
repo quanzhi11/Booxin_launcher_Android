@@ -1083,10 +1083,10 @@ static void preload_pojav_deps(void) {
     }
 }
 
-static jint launch_embedded(LaunchCtx *ctx) {
+static jint launch_embedded(LaunchCtx *ctx, bool with_pojav) {
     reset_signals();
     setenv("_JAVA_VERSION_SET", "true", 1);
-    preload_pojav_deps();
+    if (with_pojav) preload_pojav_deps();
     start_stdio_capture();
 
     void *libjvm = dlopen("libjvm.so", RTLD_LAZY | RTLD_GLOBAL);
@@ -1132,6 +1132,7 @@ static jint launch_embedded(LaunchCtx *ctx) {
     }
     LOGI("JVM created");
 
+    if (with_pojav) {
     /*
      * Register libpojavexec with THIS HotSpot VM via System.load(absolutePath).
      * Plain dlopen+JNI_OnLoad does NOT put the .so on HotSpot's JNI native-library
@@ -1163,6 +1164,7 @@ static jint launch_embedded(LaunchCtx *ctx) {
 
     /* pojavexec hookExec/installLwjglDlopenHook crash in embedded HotSpot; rely on
      * JNI_OnLoad + POJAV_RENDERER env + ART setupBridgeWindow instead. */
+    }
 
     /* Prefer system classloader first (uses -Djava.class.path) */
     jclass clCls = (*jenv)->FindClass(jenv, "java/lang/ClassLoader");
@@ -1199,7 +1201,7 @@ static jint launch_embedded(LaunchCtx *ctx) {
 
     if (!mainCls) {
         LOGE("failed to load main class %s", pa.mainClass);
-        (*jvm)->DestroyJavaVM(jvm);
+        if (with_pojav) (*jvm)->DestroyJavaVM(jvm);
         free_parsed(&pa);
         stop_stdio_capture();
         return -6;
@@ -1210,7 +1212,7 @@ static jint launch_embedded(LaunchCtx *ctx) {
         jenv, mainCls, "main", "([Ljava/lang/String;)V");
     if (!mainMethod) {
         log_exception(jenv, "GetStaticMethodID main");
-        (*jvm)->DestroyJavaVM(jvm);
+        if (with_pojav) (*jvm)->DestroyJavaVM(jvm);
         free_parsed(&pa);
         stop_stdio_capture();
         return -7;
@@ -1228,10 +1230,19 @@ static jint launch_embedded(LaunchCtx *ctx) {
     (*jenv)->CallStaticVoidMethod(jenv, mainCls, mainMethod, argsArr);
     if ((*jenv)->ExceptionCheck(jenv)) {
         log_exception(jenv, "main()");
-        (*jvm)->DestroyJavaVM(jvm);
+        if (with_pojav) (*jvm)->DestroyJavaVM(jvm);
         free_parsed(&pa);
         stop_stdio_capture();
         return 1;
+    }
+
+    if (!with_pojav) {
+        /* Tool JVM: ForgeProcessorService kills this process; DestroyJavaVM hangs on
+         * binarypatcher non-daemon threads after main() returns. */
+        LOGI("tool main returned — skip DestroyJavaVM");
+        free_parsed(&pa);
+        stop_stdio_capture();
+        return 0;
     }
 
     (*jvm)->DestroyJavaVM(jvm);
@@ -1243,7 +1254,59 @@ static jint launch_embedded(LaunchCtx *ctx) {
 
 static void *launch_thread(void *arg) {
     LaunchCtx *ctx = (LaunchCtx *)arg;
-    ctx->result = launch_embedded(ctx);
+    ctx->result = launch_embedded(ctx, true);
+    return NULL;
+}
+
+typedef jint (*JLI_Launch_func)(
+    int argc, char **argv,
+    int jargc, const char **jargv,
+    int appclassc, const char **appclassv,
+    const char *fullversion, const char *dotversion,
+    const char *pname, const char *lname,
+    jboolean javaargs, jboolean cpwildcard, jboolean javaw, jint ergo);
+
+static void reset_signals_for_jli(void) {
+    struct sigaction clean_sa;
+    memset(&clean_sa, 0, sizeof(clean_sa));
+    for (int sigid = SIGHUP; sigid < NSIG; sigid++) {
+        if (sigid == SIGSEGV) clean_sa.sa_handler = SIG_IGN;
+        else clean_sa.sa_handler = SIG_DFL;
+        sigaction(sigid, &clean_sa, NULL);
+    }
+}
+
+/** FCL ProcessService / VMLauncher.launchJVM — run java tools via libjli JLI_Launch. */
+static jint launch_jli(int argc, char **argv) {
+    if (argc <= 0 || !argv || !argv[0]) return -1;
+
+    reset_signals_for_jli();
+
+    void *libjli = dlopen("libjli.so", RTLD_LAZY | RTLD_GLOBAL);
+    if (!libjli) {
+        LOGE("dlopen libjli.so: %s", dlerror());
+        return -1;
+    }
+
+    JLI_Launch_func pJLI_Launch = (JLI_Launch_func)dlsym(libjli, "JLI_Launch");
+    if (!pJLI_Launch) {
+        LOGE("JLI_Launch missing: %s", dlerror());
+        return -1;
+    }
+
+    LOGI("JLI_Launch: %s (%d args)", argv[0], argc);
+    return pJLI_Launch(
+        argc, argv,
+        0, NULL,
+        0, NULL,
+        "21.0.1-internal", "21.0.1",
+        argv[0], argv[0],
+        JNI_FALSE, JNI_TRUE, JNI_FALSE, 0);
+}
+
+static void *launch_tool_thread(void *arg) {
+    LaunchCtx *ctx = (LaunchCtx *)arg;
+    ctx->result = launch_embedded(ctx, false);
     return NULL;
 }
 
@@ -1646,4 +1709,42 @@ Java_com_booxin_launcher_core_launch_NativeJvmLauncher_nativeLaunchJvm(
     pthread_join(thread, NULL);
     free_argv(argv, argc);
     return ctx.result;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_booxin_launcher_core_launch_NativeJvmLauncher_nativeLaunchToolJvm(
+    JNIEnv *env, jclass clazz, jobjectArray argsArray)
+{
+    (void)clazz;
+
+    if (!argsArray) return -1;
+
+    int argc = 0;
+    char **argv = to_argv(env, argsArray, &argc);
+    if (!argv || argc <= 0) return -1;
+
+    start_stdio_capture();
+    jint code = launch_jli(argc, argv);
+    if (code < 0) {
+        LOGW("JLI_Launch failed (%d), falling back to embedded JVM", (int)code);
+        LaunchCtx ctx = { .argc = argc, .argv = argv, .result = -1 };
+        pthread_attr_t attr;
+        pthread_t thread;
+        pthread_attr_init(&attr);
+        pthread_attr_setstacksize(&attr, 16 * 1024 * 1024);
+        int cr = pthread_create(&thread, &attr, launch_tool_thread, &ctx);
+        pthread_attr_destroy(&attr);
+        if (cr != 0) {
+            LOGE("pthread_create tool fallback: %d", cr);
+            stop_stdio_capture();
+            free_argv(argv, argc);
+            return -4;
+        }
+        pthread_join(thread, NULL);
+        code = ctx.result;
+    }
+    stop_stdio_capture();
+    free_argv(argv, argc);
+    LOGI("tool JVM exit code: %d", (int)code);
+    return code;
 }

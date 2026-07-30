@@ -3,7 +3,10 @@ package com.booxin.launcher.data.repository
 import android.content.Context
 import com.booxin.launcher.core.LauncherPaths
 import com.booxin.launcher.core.download.game.VanillaGameInstaller
+import com.booxin.launcher.core.download.game.VersionJsonMerger
 import com.booxin.launcher.core.download.game.VersionManifestClient
+import com.booxin.launcher.core.download.modloader.ForgeGameInstaller
+import com.booxin.launcher.core.java.InstalledJavaRuntime
 import com.booxin.launcher.data.model.AccountType
 import com.booxin.launcher.data.model.GameVersion
 import com.booxin.launcher.data.model.LauncherAccount
@@ -23,7 +26,8 @@ import java.io.File
 class LauncherRepository(
     private val appContext: Context,
     private val manifestClient: VersionManifestClient = VersionManifestClient(),
-    private val gameInstaller: VanillaGameInstaller = VanillaGameInstaller()
+    private val gameInstaller: VanillaGameInstaller = VanillaGameInstaller(),
+    private val forgeInstaller: ForgeGameInstaller = ForgeGameInstaller()
 ) {
 
     private val prefs by lazy {
@@ -46,6 +50,7 @@ class LauncherRepository(
     val session: StateFlow<LauncherSession> = _session.asStateFlow()
 
     val installProgress = gameInstaller.progress
+    val forgeInstallProgress = forgeInstaller.progress
 
     init {
         loadAccounts()
@@ -56,9 +61,10 @@ class LauncherRepository(
             ?.filter { it.isDirectory }
             ?.sortedByDescending { it.lastModified() }
             .orEmpty()
-        _installedVersions.value = dirs.mapNotNull { dir ->
+        val allInstalled = dirs.mapNotNull { dir ->
             val id = dir.name
-            if (!gameInstaller.isInstalled(id)) return@mapNotNull null
+            val installed = gameInstaller.isInstalled(id) || forgeInstaller.isInstalled(id)
+            if (!installed) return@mapNotNull null
             val remote = _remoteVersions.value.firstOrNull { it.id == id }
             GameVersion(
                 id = id,
@@ -67,6 +73,15 @@ class LauncherRepository(
                 releaseTime = remote?.releaseTime,
                 url = remote?.url
             )
+        }
+        // Hide vanilla (or other) parents that only exist as inheritsFrom for a loader version.
+        // Explicitly installed vanilla stays visible.
+        val inheritedParents = allInstalled
+            .mapNotNull { VersionJsonMerger.resolveInheritsFrom(it.id) }
+            .toSet()
+        val explicit = explicitVersionIds()
+        _installedVersions.value = allInstalled.filter { version ->
+            version.id !in inheritedParents || version.id in explicit
         }
         val selected = _session.value.selectedVersionId
         if (selected == null || _installedVersions.value.none { it.id == selected }) {
@@ -119,9 +134,27 @@ class LauncherRepository(
         val remote = _remoteVersions.value.firstOrNull { it.id == versionId }
         val result = gameInstaller.install(versionId, remote?.url)
         if (result.isSuccess) {
+            markExplicitVersion(versionId)
             _remoteVersions.update { list ->
                 list.map { if (it.id == versionId) it.copy(installed = true) else it }
             }
+            refreshInstalledVersions()
+            selectVersion(versionId)
+        }
+        return result
+    }
+
+    suspend fun installForgeVersion(
+        mcVersion: String,
+        loaderVersion: String,
+        versionJsonUrl: String? = null,
+        java: InstalledJavaRuntime
+    ): Result<String> {
+        val result = forgeInstaller.install(mcVersion, loaderVersion, versionJsonUrl, java)
+        if (result.isSuccess) {
+            val versionId = result.getOrThrow()
+            // Forge's vanilla base is a dependency only — do not list it as a separate version.
+            markExplicitVersion(versionId)
             refreshInstalledVersions()
             selectVersion(versionId)
         }
@@ -139,6 +172,7 @@ class LauncherRepository(
         }
         versionDir.deleteRecursively()
         clearForgeInstallerCache(versionId)
+        unmarkExplicitVersion(versionId)
         _remoteVersions.update { list ->
             list.map { if (it.id == versionId) it.copy(installed = false) else it }
         }
@@ -272,6 +306,20 @@ class LauncherRepository(
         prefs.edit().putString(KEY_ACCOUNTS, arr.toString()).apply()
     }
 
+    private fun explicitVersionIds(): Set<String> {
+        return prefs.getStringSet(KEY_EXPLICIT_VERSIONS, emptySet())?.toSet().orEmpty()
+    }
+
+    private fun markExplicitVersion(versionId: String) {
+        val next = explicitVersionIds().toMutableSet().apply { add(versionId) }
+        prefs.edit().putStringSet(KEY_EXPLICIT_VERSIONS, next).apply()
+    }
+
+    private fun unmarkExplicitVersion(versionId: String) {
+        val next = explicitVersionIds().toMutableSet().apply { remove(versionId) }
+        prefs.edit().putStringSet(KEY_EXPLICIT_VERSIONS, next).apply()
+    }
+
     private fun readLocalType(dir: File): VersionType {
         val jsonFile = File(dir, "${dir.name}.json")
         if (!jsonFile.exists()) return VersionType.RELEASE
@@ -289,5 +337,6 @@ class LauncherRepository(
     companion object {
         private const val PREFS_ACCOUNTS = "booxin_accounts"
         private const val KEY_ACCOUNTS = "accounts_json"
+        private const val KEY_EXPLICIT_VERSIONS = "explicit_version_ids"
     }
 }
