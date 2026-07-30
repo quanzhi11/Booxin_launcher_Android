@@ -132,6 +132,29 @@ class LauncherRepository(
         _session.update { it.copy(selectedVersionId = versionId) }
     }
 
+    fun deleteInstalledVersion(versionId: String): Result<Unit> = runCatching {
+        val versionDir = File(LauncherPaths.versionsDir, versionId)
+        if (!versionDir.isDirectory) {
+            error("版本不存在: $versionId")
+        }
+        versionDir.deleteRecursively()
+        clearForgeInstallerCache(versionId)
+        _remoteVersions.update { list ->
+            list.map { if (it.id == versionId) it.copy(installed = false) else it }
+        }
+        refreshInstalledVersions()
+    }
+
+    private fun clearForgeInstallerCache(versionId: String) {
+        val marker = "-forge-"
+        if (!versionId.contains(marker, ignoreCase = true)) return
+        val parts = versionId.split(marker, limit = 2)
+        if (parts.size != 2) return
+        File(LauncherPaths.rootDir, "cache/forge/installer-${parts[0]}-${parts[1]}.jar")
+            .takeIf { it.isFile }
+            ?.delete()
+    }
+
     fun addOfflineAccount(name: String) {
         val account = LauncherAccount(
             id = "offline-${System.currentTimeMillis()}",

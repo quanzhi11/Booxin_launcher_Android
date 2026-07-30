@@ -14,7 +14,9 @@ import androidx.navigation.fragment.findNavController
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.booxin.launcher.AppContainer
 import com.booxin.launcher.R
+import com.booxin.launcher.data.model.GameVersion
 import com.booxin.launcher.databinding.FragmentVersionsBinding
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import kotlinx.coroutines.launch
 
 class VersionsFragment : Fragment() {
@@ -37,16 +39,16 @@ class VersionsFragment : Fragment() {
         super.onViewCreated(view, savedInstanceState)
         adapter = VersionsAdapter(
             selectedIdProvider = { AppContainer.repository.session.value.selectedVersionId },
-            onClick = { version ->
-                AppContainer.repository.selectVersion(version.id)
-                adapter.notifyDataSetChanged()
-                Toast.makeText(
-                    requireContext(),
-                    getString(R.string.home_switched, version.id),
-                    Toast.LENGTH_SHORT
-                ).show()
-            }
-        )
+            onDelete = { version -> confirmDeleteVersion(version) }
+        ) { version ->
+            AppContainer.repository.selectVersion(version.id)
+            adapter.notifyDataSetChanged()
+            Toast.makeText(
+                requireContext(),
+                getString(R.string.home_switched, version.id),
+                Toast.LENGTH_SHORT
+            ).show()
+        }
         binding.recyclerVersions.layoutManager = LinearLayoutManager(requireContext())
         binding.recyclerVersions.adapter = adapter
 
@@ -71,6 +73,33 @@ class VersionsFragment : Fragment() {
                 }
             }
         }
+    }
+
+    private fun confirmDeleteVersion(version: GameVersion) {
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle(R.string.versions_delete_title)
+            .setMessage(getString(R.string.versions_delete_confirm, version.id))
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(R.string.versions_delete_action) { _, _ ->
+                val result = AppContainer.repository.deleteInstalledVersion(version.id)
+                if (result.isSuccess) {
+                    Toast.makeText(
+                        requireContext(),
+                        getString(R.string.versions_delete_done, version.id),
+                        Toast.LENGTH_SHORT
+                    ).show()
+                } else {
+                    Toast.makeText(
+                        requireContext(),
+                        getString(
+                            R.string.versions_delete_failed,
+                            result.exceptionOrNull()?.message ?: "unknown"
+                        ),
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+            .show()
     }
 
     override fun onResume() {

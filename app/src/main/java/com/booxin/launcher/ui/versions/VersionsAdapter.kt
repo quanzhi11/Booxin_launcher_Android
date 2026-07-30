@@ -11,6 +11,7 @@ import com.booxin.launcher.databinding.ItemVersionBinding
 class VersionsAdapter(
     private val selectedIdProvider: () -> String? = { null },
     private val installedMode: Boolean = true,
+    private val onDelete: ((GameVersion) -> Unit)? = null,
     private val onClick: (GameVersion) -> Unit
 ) : RecyclerView.Adapter<VersionsAdapter.Holder>() {
 
@@ -58,6 +59,14 @@ class VersionsAdapter(
             }
             binding.textVersionBadge.text = item.type.name.lowercase()
             binding.root.setOnClickListener { onClick(item) }
+            binding.root.setOnLongClickListener {
+                if (installedMode && onDelete != null) {
+                    onDelete.invoke(item)
+                    true
+                } else {
+                    false
+                }
+            }
         }
     }
 }

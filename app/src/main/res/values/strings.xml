@@ -55,11 +55,16 @@
     <string name="control_menu_title">操控设置</string>
 
     <string name="versions_title">已下载版本</string>
-    <string name="versions_subtitle">管理本机已安装的游戏实例</string>
+    <string name="versions_subtitle">管理本机已安装的游戏实例，长按可删除</string>
     <string name="versions_empty">暂无已下载版本</string>
     <string name="versions_download">下载游戏</string>
     <string name="versions_selected">已选中</string>
     <string name="versions_tap_select">点击选择此版本</string>
+    <string name="versions_delete_title">删除版本</string>
+    <string name="versions_delete_confirm">确定删除 %1$s？\n仅删除本机文件，不会卸载原版基础包。</string>
+    <string name="versions_delete_action">删除</string>
+    <string name="versions_delete_done">已删除 %1$s</string>
+    <string name="versions_delete_failed">删除失败：%1$s</string>
 
     <string name="download_title">下载游戏</string>
     <string name="download_subtitle">选择游戏版本进行安装</string>
