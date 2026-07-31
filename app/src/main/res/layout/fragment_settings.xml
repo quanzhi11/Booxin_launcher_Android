@@ -105,9 +105,17 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="6dp"
-                android:text="2048 MB（占位）"
                 android:textColor="@color/md_theme_light_outline"
                 android:textSize="13sp" />
+
+            <com.google.android.material.slider.Slider
+                android:id="@+id/sliderMemory"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:stepSize="256"
+                android:valueFrom="512"
+                android:valueTo="8192" />
         </LinearLayout>
 
         <LinearLayout

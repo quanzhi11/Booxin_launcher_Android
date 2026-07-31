@@ -8,6 +8,7 @@ import com.booxin.launcher.core.download.game.GameJsonParser
 import com.booxin.launcher.core.download.game.LibraryFilter
 import com.booxin.launcher.core.download.game.VersionJsonMerger
 import com.booxin.launcher.core.java.InstalledJavaRuntime
+import com.booxin.launcher.core.java.MinecraftJavaRequirement
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -69,6 +70,10 @@ data class LaunchCommand(
 class LaunchCommandBuilder(
     private val context: Context
 ) {
+    companion object {
+        /** Brand shown as --versionType / ${launcher_name}; keep stable for mods & F3. */
+        const val LAUNCHER_BRAND = "Booxin_launcher"
+    }
 
     fun build(
         versionId: String,
@@ -79,7 +84,8 @@ class LaunchCommandBuilder(
         windowHeight: Int = 480,
         uuid: String? = null,
         accessToken: String? = null,
-        userType: String? = null
+        userType: String? = null,
+        serverAddress: String? = null
     ): LaunchCommand {
         val versionRoot = File(LauncherPaths.versionsDir, versionId)
         val jsonFile = File(versionRoot, "$versionId.json")
@@ -139,9 +145,13 @@ class LaunchCommandBuilder(
         val assetsDir = LauncherPaths.assetsDir
         val resolvedUuid = uuid?.replace("-", "")?.ifBlank { null }
             ?: OfflineAuth.uuidNoDash(username)
+        // Offline / empty token must stay legacy — never launch offline as msa (invalid session).
         val resolvedToken = accessToken?.ifBlank { null } ?: "0"
-        val resolvedUserType = userType?.ifBlank { null }
-            ?: if (resolvedToken != "0") "msa" else "legacy"
+        val resolvedUserType = when {
+            resolvedToken == "0" -> "legacy"
+            !userType.isNullOrBlank() -> userType
+            else -> "msa"
+        }
         val userProperties = "{}"
 
         val tokens = mapOf(
@@ -153,12 +163,13 @@ class LaunchCommandBuilder(
             "auth_uuid" to resolvedUuid,
             "auth_access_token" to resolvedToken,
             "user_type" to resolvedUserType,
-            "version_type" to root.optString("type", "release"),
+            // Shown in title / F3 as brand; Create etc. also surface this string.
+            "version_type" to LAUNCHER_BRAND,
             "user_properties" to userProperties,
             "auth_session" to resolvedToken,
             "game_assets" to File(assetsDir, "virtual/$assetIndexId").absolutePath,
             "natives_directory" to AndroidGameRuntime.nativesDir().absolutePath,
-            "launcher_name" to "BooxinLauncher",
+            "launcher_name" to LAUNCHER_BRAND,
             "launcher_version" to BuildConfig.VERSION_NAME,
             "classpath" to existingClasspath.joinToString(File.pathSeparator) { it.absolutePath },
             "resolution_width" to windowWidth.toString(),
@@ -207,7 +218,8 @@ class LaunchCommandBuilder(
             )
         }
 
-        val gameArgs = buildGameArgs(root, tokens)
+        val gameArgs = forceVersionType(buildGameArgs(root, tokens), LAUNCHER_BRAND)
+            .let { appendServerArgs(it, serverAddress, mcVersionId) }
 
         val stagedNatives = AndroidGameRuntime.nativesDir().absolutePath
         val glLib = when (renderer) {
@@ -474,6 +486,9 @@ class LaunchCommandBuilder(
             add("-Djna.nosys=true")
             add("-Djna.nounpack=true")
             add("-Djna.tmpdir=${context.cacheDir.absolutePath}")
+            // Android has no netty epoll/kqueue natives; force NIO.
+            add("-Dio.netty.transport.noNative=true")
+            add("-Dio.netty.noUnsafe=true")
         }
     }
 
@@ -596,6 +611,79 @@ class LaunchCommandBuilder(
             "--userType", tokens.getValue("user_type"),
             "--versionType", tokens.getValue("version_type")
         )
+    }
+
+    private fun forceVersionType(args: List<String>, brand: String): List<String> {
+        val out = args.toMutableList()
+        val idx = out.indexOf("--versionType")
+        if (idx >= 0 && idx + 1 < out.size) {
+            out[idx + 1] = brand
+        } else {
+            out += listOf("--versionType", brand)
+        }
+        return out
+    }
+
+    /**
+     * Auto-join EasyTier local forward / official server after lobby join.
+     * 1.20+ prefers --quickPlayMultiplayer; older clients use --server/--port.
+     * Always replaces any existing server/quickPlay args so a blank/spaced
+     * placeholder from version.json cannot win.
+     */
+    private fun appendServerArgs(
+        args: List<String>,
+        serverAddress: String?,
+        mcVersionId: String
+    ): List<String> {
+        val raw = serverAddress?.trim().orEmpty()
+        if (raw.isEmpty()) return args
+
+        val host = raw.substringBefore(':')
+            .trim()
+            .filterNot { it.isWhitespace() }
+            .ifBlank { "127.0.0.1" }
+        val portPart = raw.substringAfter(':', missingDelimiterValue = "25565").trim()
+        val port = portPart.toIntOrNull() ?: 25565
+        val useQuickPlay = supportsQuickPlay(mcVersionId)
+
+        val cleaned = stripServerArgs(args)
+        return cleaned + if (useQuickPlay) {
+            listOf("--quickPlayMultiplayer", "$host:$port")
+        } else {
+            listOf("--server", host, "--port", port.toString())
+        }
+    }
+
+    private fun stripServerArgs(args: List<String>): List<String> {
+        val out = ArrayList<String>(args.size)
+        var i = 0
+        while (i < args.size) {
+            val a = args[i]
+            when {
+                a == "--server" || a == "--port" || a == "--quickPlayMultiplayer" -> {
+                    i += 2 // skip flag + value
+                }
+                a.startsWith("--server=") ||
+                    a.startsWith("--port=") ||
+                    a.startsWith("--quickPlayMultiplayer=") -> {
+                    i += 1
+                }
+                else -> {
+                    out += a
+                    i += 1
+                }
+            }
+        }
+        return out
+    }
+
+    private fun supportsQuickPlay(mcVersionId: String): Boolean {
+        val ver = MinecraftJavaRequirement.parseVersion(mcVersionId)
+        if (ver == null) {
+            val major = mcVersionId.substringBefore('.').toIntOrNull() ?: return false
+            return major >= 20
+        }
+        return ver.first > 1 || (ver.first == 1 && ver.second >= 20)
     }
 
     private fun substitute(raw: String, tokens: Map<String, String>): String {

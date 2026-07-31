@@ -56,9 +56,19 @@ object DiagnosticLogExporter {
         sb.appendLine(
             "multiplayer=${mp?.user?.username ?: "(not logged in)"} root=${mp?.apiRoot ?: "-"}"
         )
+        sb.appendLine("joinStatus=${AppContainer.multiplayerAuth.joinStatus.value ?: "(none)"}")
+        sb.appendLine(
+            "directConnect=${AppContainer.multiplayerAuth.directConnectAddress.value ?: "(none)"}"
+        )
+        sb.appendLine()
+        sb.appendLine("=== app event log (release-safe) ===")
+        sb.appendLine(DiagEventLog.readPersisted())
         sb.appendLine()
         sb.appendLine("=== latest launch log (shared with :game) ===")
         sb.appendLine(GameLaunchLogBus.readPersistedLog())
+        sb.appendLine()
+        sb.appendLine("=== HotSpot hs_err (native crash) ===")
+        sb.appendLine(collectHsErrLogs())
         sb.appendLine()
         sb.appendLine("=== logcat (pid=${android.os.Process.myPid()}, last ~400 lines) ===")
         sb.appendLine(captureLogcat(pidOnly = true, lines = 400))
@@ -66,6 +76,32 @@ object DiagnosticLogExporter {
         sb.appendLine("=== logcat (package, last ~400 lines) ===")
         sb.appendLine(captureLogcat(pidOnly = false, lines = 400))
         return sb.toString()
+    }
+
+    private fun collectHsErrLogs(maxChars: Int = 80_000): String {
+        if (!LauncherPaths.isInitialized) return "(paths unavailable)"
+        val files = mutableListOf<File>()
+        runCatching {
+            LauncherPaths.versionsDir.listFiles()?.forEach { verDir ->
+                if (!verDir.isDirectory) return@forEach
+                verDir.listFiles()
+                    ?.filter { it.isFile && it.name.startsWith("hs_err_pid") && it.name.endsWith(".log") }
+                    ?.let { files += it }
+            }
+            File(LauncherPaths.rootDir, "logs").listFiles()
+                ?.filter { it.isFile && it.name.startsWith("hs_err_pid") }
+                ?.let { files += it }
+        }
+        if (files.isEmpty()) return "(no hs_err_pid*.log found)"
+        files.sortByDescending { it.lastModified() }
+        return buildString {
+            for (f in files.take(3)) {
+                appendLine("--- ${f.absolutePath} (${f.length()} bytes) ---")
+                val text = runCatching { f.readText() }.getOrElse { "read failed: ${it.message}" }
+                appendLine(if (text.length <= maxChars / 3) text else text.take(maxChars / 3))
+                appendLine()
+            }
+        }.take(maxChars)
     }
 
     private fun captureLogcat(pidOnly: Boolean, lines: Int): String {
@@ -76,6 +112,10 @@ object DiagnosticLogExporter {
             } else {
                 // Best-effort: include HotSpot / launcher tags from any process we can read.
                 cmd += listOf(
+                    "BooxinDiag:I",
+                    "EasyTierSession:I",
+                    "EasyTierRuntime:I",
+                    "RoomJoin:I",
                     "BooxinLaunch:I",
                     "GameLaunchService:I",
                     "LaunchActivity:I",
@@ -86,8 +126,12 @@ object DiagnosticLogExporter {
             }
             val proc = ProcessBuilder(cmd).redirectErrorStream(true).start()
             val text = proc.inputStream.bufferedReader().use { it.readText() }
-            proc.waitFor()
-            text.ifBlank { "(empty logcat dump)" }
+            val code = proc.waitFor()
+            when {
+                text.isNotBlank() -> text
+                code != 0 -> "(empty logcat dump; exit=$code — release builds often cannot read logcat; see app event log above)"
+                else -> "(empty logcat dump — release builds often cannot read logcat; see app event log above)"
+            }
         } catch (t: Throwable) {
             "logcat failed: ${t.message}"
         }

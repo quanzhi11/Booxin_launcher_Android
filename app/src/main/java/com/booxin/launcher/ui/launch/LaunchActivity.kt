@@ -51,6 +51,7 @@ class LaunchActivity : AppCompatActivity() {
     private var pendingUuid: String? = null
     private var pendingAccessToken: String? = null
     private var pendingUserType: String? = null
+    private var pendingServerAddress: String? = null
     private var serviceStarted = false
     private var surfaceWidth = 0
     private var surfaceHeight = 0
@@ -152,6 +153,8 @@ class LaunchActivity : AppCompatActivity() {
         pendingUuid = intent.getStringExtra(EXTRA_UUID)
         pendingAccessToken = intent.getStringExtra(EXTRA_ACCESS_TOKEN)
         pendingUserType = intent.getStringExtra(EXTRA_USER_TYPE)
+        pendingServerAddress = intent.getStringExtra(EXTRA_SERVER_ADDRESS)
+            ?.takeIf { it.isNotBlank() }
         if (pendingVersionId.isBlank()) {
             appendLog("缺少版本 ID")
             updateLoadingUi(0, "缺少版本 ID")
@@ -159,6 +162,9 @@ class LaunchActivity : AppCompatActivity() {
         }
 
         binding.textLaunchMeta.text = getString(R.string.launch_meta, pendingVersionId, pendingUsername)
+        if (!pendingServerAddress.isNullOrBlank()) {
+            appendLog("联机直连: $pendingServerAddress")
+        }
         updateLoadingUi(0, getString(R.string.launch_loading_status_init))
         binding.buttonClose.setOnClickListener { returnToLauncher() }
         binding.buttonStop.setOnClickListener {
@@ -623,7 +629,8 @@ class LaunchActivity : AppCompatActivity() {
             surfaceHeight,
             uuid = pendingUuid,
             accessToken = pendingAccessToken,
-            userType = pendingUserType
+            userType = pendingUserType,
+            serverAddress = pendingServerAddress
         )
     }
 
@@ -684,6 +691,8 @@ class LaunchActivity : AppCompatActivity() {
         const val EXTRA_UUID = "uuid"
         const val EXTRA_ACCESS_TOKEN = "access_token"
         const val EXTRA_USER_TYPE = "user_type"
+        /** EasyTier local forward, e.g. 127.0.0.1:37859 */
+        const val EXTRA_SERVER_ADDRESS = "server_address"
         private const val TAG = "LaunchActivity"
 
         private val PERCENT_IN_LOG = Regex("""(?<![\d.])(\d{1,3})\s*%""")

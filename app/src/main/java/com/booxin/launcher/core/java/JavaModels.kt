@@ -12,7 +12,9 @@ data class JavaRuntimePackage(
     val fileName: String,
     val sha256: String? = null,
     val packageKind: JavaPackageKind = JavaPackageKind.WHOLE_ARCHIVE,
-    val fallbackUrl: String? = null
+    val fallbackUrl: String? = null,
+    /** Ordered candidates; Gitee first, then GitHub / whole-package mirrors. */
+    val downloadUrls: List<String> = listOfNotNull(downloadUrl, fallbackUrl)
 )
 
 enum class JavaPackageKind {

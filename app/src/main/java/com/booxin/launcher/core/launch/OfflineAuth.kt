@@ -5,9 +5,13 @@ import java.security.MessageDigest
 import java.util.UUID
 
 /**
- * Offline account helpers aligned with HMCL/FCL offline UUID rules.
+ * Offline account helpers aligned with HMCL/FCL / Java UUID.nameUUIDFromBytes rules.
  */
 object OfflineAuth {
+
+    private val USERNAME_REGEX = Regex("^[A-Za-z0-9_]{3,16}$")
+
+    fun isValidUsername(username: String): Boolean = USERNAME_REGEX.matches(username.trim())
 
     fun uuidFromUsername(username: String): UUID {
         val digest = MessageDigest.getInstance("MD5")

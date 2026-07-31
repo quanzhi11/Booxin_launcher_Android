@@ -1,7 +1,7 @@
 package com.booxin.launcher.core.multiplayer
 
 import android.content.Context
-import android.util.Log
+import com.booxin.launcher.core.diag.DiagEventLog
 import kotlinx.coroutines.delay
 import java.util.UUID
 
@@ -67,7 +67,7 @@ class RoomJoinCoordinator(
 
         val address = if (localMcPort == 25565) "127.0.0.1" else "127.0.0.1:$localMcPort"
         onStatus("加入成功 · 直连 $address · ${members.size} 人")
-        Log.i(TAG, "join ok room=${lobby.roomCode} addr=$address players=${members.size}")
+        DiagEventLog.i(TAG, "join ok room=${lobby.roomCode} addr=$address players=${members.size}")
         return RoomJoinResult(
             lobby = lobby,
             directConnectAddress = address,
@@ -100,7 +100,7 @@ class RoomJoinCoordinator(
                 return
             } catch (t: Throwable) {
                 last = t
-                Log.w(TAG, "scaffolding attempt ${i + 1}: ${t.message}")
+                DiagEventLog.w(TAG, "scaffolding attempt ${i + 1}: ${t.message}")
                 delay(350)
             }
         }

@@ -14,6 +14,7 @@ import com.booxin.launcher.AppContainer
 import com.booxin.launcher.BuildConfig
 import com.booxin.launcher.R
 import com.booxin.launcher.core.LauncherPaths
+import com.booxin.launcher.core.LauncherPrefs
 import com.booxin.launcher.core.diag.DiagnosticLogExporter
 import com.booxin.launcher.core.download.DownloadProviders
 import com.booxin.launcher.core.download.DownloadSource
@@ -21,6 +22,7 @@ import com.booxin.launcher.core.java.JavaInstallState
 import com.booxin.launcher.databinding.FragmentSettingsBinding
 import com.booxin.launcher.ui.update.LauncherUpdateUi
 import com.google.android.material.button.MaterialButton
+import com.google.android.material.slider.Slider
 import kotlinx.coroutines.launch
 
 class SettingsFragment : Fragment() {
@@ -43,6 +45,7 @@ class SettingsFragment : Fragment() {
         binding.textAbout.text = getString(R.string.settings_version, BuildConfig.VERSION_NAME)
         refreshDownloadSource()
         refreshJavaStatus()
+        setupMemorySlider()
 
         binding.buttonDownloadSource.setOnClickListener {
             val values = DownloadSource.entries
@@ -128,26 +131,76 @@ class SettingsFragment : Fragment() {
         }
     }
 
+    private fun setupMemorySlider() {
+        val b = _binding ?: return
+        val maxAllowed = LauncherPrefs.recommendedMaxMb().toFloat()
+        b.sliderMemory.valueFrom = LauncherPrefs.MEMORY_MIN_MB.toFloat()
+        b.sliderMemory.valueTo = maxAllowed
+        b.sliderMemory.stepSize = LauncherPrefs.MEMORY_STEP_MB.toFloat()
+        val current = LauncherPrefs.maxMemoryMb().coerceIn(
+            LauncherPrefs.MEMORY_MIN_MB,
+            maxAllowed.toInt()
+        )
+        b.sliderMemory.value = current.toFloat()
+        updateMemoryLabel(current)
+        b.sliderMemory.addOnChangeListener { _: Slider, value: Float, fromUser: Boolean ->
+            val mb = LauncherPrefs.clampMemory(value.toInt())
+            updateMemoryLabel(mb)
+            if (fromUser) LauncherPrefs.setMaxMemoryMb(mb)
+        }
+    }
+
+    private fun updateMemoryLabel(mb: Int) {
+        val b = _binding ?: return
+        b.textMemory.text = getString(R.string.settings_memory_value, mb)
+    }
+
     private fun bindJavaButton(button: MaterialButton, major: Int) {
         button.setOnClickListener {
             viewLifecycleOwner.lifecycleScope.launch {
+                val componentId = "java-$major"
+                val present = AppContainer.javaEnvironment.isPresent(componentId)
                 setJavaButtonsEnabled(false)
-                val result = AppContainer.javaEnvironment.ensureMajor(major)
-                _binding ?: return@launch
-                setJavaButtonsEnabled(true)
-                refreshJavaStatus()
-                val context = context ?: return@launch
-                if (result.isSuccess) {
-                    Toast.makeText(context, R.string.settings_java_done, Toast.LENGTH_SHORT).show()
+                if (present) {
+                    val result = AppContainer.javaEnvironment.delete(componentId)
+                    _binding ?: return@launch
+                    setJavaButtonsEnabled(true)
+                    refreshJavaStatus()
+                    val context = context ?: return@launch
+                    if (result.isSuccess) {
+                        Toast.makeText(
+                            context,
+                            getString(R.string.settings_java_uninstall_done, major),
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    } else {
+                        Toast.makeText(
+                            context,
+                            getString(
+                                R.string.settings_java_uninstall_failed,
+                                result.exceptionOrNull()?.message ?: "unknown"
+                            ),
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
                 } else {
-                    Toast.makeText(
-                        context,
-                        getString(
-                            R.string.settings_java_failed,
-                            result.exceptionOrNull()?.message ?: "unknown"
-                        ),
-                        Toast.LENGTH_LONG
-                    ).show()
+                    val result = AppContainer.javaEnvironment.ensureMajor(major)
+                    _binding ?: return@launch
+                    setJavaButtonsEnabled(true)
+                    refreshJavaStatus()
+                    val context = context ?: return@launch
+                    if (result.isSuccess) {
+                        Toast.makeText(context, R.string.settings_java_done, Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(
+                            context,
+                            getString(
+                                R.string.settings_java_failed,
+                                result.exceptionOrNull()?.message ?: "unknown"
+                            ),
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
                 }
             }
         }
@@ -210,9 +263,9 @@ class SettingsFragment : Fragment() {
     }
 
     private fun updateJavaButton(button: MaterialButton, major: Int) {
-        val installed = AppContainer.javaEnvironment.isInstalled("java-$major")
-        button.text = if (installed) {
-            "Java $major · ${getString(R.string.settings_java_ready)}"
+        val present = AppContainer.javaEnvironment.isPresent("java-$major")
+        button.text = if (present) {
+            getString(R.string.settings_java_uninstall, major)
         } else {
             getString(R.string.settings_java_download, major)
         }

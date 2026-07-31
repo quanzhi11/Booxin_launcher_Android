@@ -215,11 +215,20 @@ class LauncherRepository(
     }
 
     fun addOfflineAccount(name: String) {
+        val trimmed = name.trim().ifBlank { "Player" }
+        require(com.booxin.launcher.core.launch.OfflineAuth.isValidUsername(trimmed)) {
+            "离线用户名需为 3–16 位字母/数字/下划线"
+        }
         val account = LauncherAccount(
             id = "offline-${System.currentTimeMillis()}",
-            name = name.ifBlank { "Player" },
+            name = trimmed,
             type = AccountType.OFFLINE,
-            selected = true
+            selected = true,
+            // Match PC offline accounts: stable UUID + dummy token for LAN/offline servers.
+            uuid = com.booxin.launcher.core.launch.OfflineAuth.uuidNoDash(trimmed),
+            accessToken = "0",
+            userType = "legacy",
+            hasMinecraft = true
         )
         upsertAccount(account)
     }
@@ -295,17 +304,37 @@ class LauncherRepository(
                             hasMinecraft = o.optBoolean(
                                 "hasMinecraft",
                                 type != AccountType.MICROSOFT
-                            )
+                            ),
+                            skinPath = o.optString("skinPath").ifBlank { null }
+                                ?: com.booxin.launcher.core.skin.OfflineSkinStore
+                                    .skinFile(o.getString("id"))
+                                    .takeIf { it.isFile }
+                                    ?.absolutePath
                         )
                     )
                 }
             }
             if (list.isNotEmpty()) {
-                val hasSelected = list.any { it.selected }
-                _accounts.value = if (hasSelected) list else {
-                    list.mapIndexed { i, a -> a.copy(selected = i == 0) }
+                // Backfill offline UUID/token for accounts created before offline-join fix.
+                val normalized = list.map { account ->
+                    if (account.type != AccountType.OFFLINE) return@map account
+                    val uuid = account.uuid?.replace("-", "")?.ifBlank { null }
+                        ?: com.booxin.launcher.core.launch.OfflineAuth.uuidNoDash(account.name)
+                    account.copy(
+                        uuid = uuid,
+                        accessToken = "0",
+                        userType = "legacy",
+                        hasMinecraft = true
+                    )
+                }
+                val hasSelected = normalized.any { it.selected }
+                _accounts.value = if (hasSelected) {
+                    normalized
+                } else {
+                    listOf(normalized.first().copy(selected = true)) + normalized.drop(1)
                 }
                 _session.update { it.copy(selectedAccountId = selectedAccount()?.id) }
+                if (normalized != list) persistAccounts()
             }
         }
     }
@@ -326,9 +355,21 @@ class LauncherRepository(
                     .put("xuid", a.xuid)
                     .put("userType", a.userType)
                     .put("hasMinecraft", a.hasMinecraft)
+                    .put("skinPath", a.skinPath)
             )
         }
         prefs.edit().putString(KEY_ACCOUNTS, arr.toString()).apply()
+    }
+
+    fun setOfflineSkin(accountId: String, skinPath: String?) {
+        _accounts.update { list ->
+            list.map {
+                if (it.id == accountId && it.type == AccountType.OFFLINE) {
+                    it.copy(skinPath = skinPath)
+                } else it
+            }
+        }
+        persistAccounts()
     }
 
     private fun explicitVersionIds(): Set<String> {

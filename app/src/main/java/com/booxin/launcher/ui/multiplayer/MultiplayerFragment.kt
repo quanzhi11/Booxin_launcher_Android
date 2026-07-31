@@ -17,12 +17,16 @@ import androidx.lifecycle.repeatOnLifecycle
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.booxin.launcher.AppContainer
 import com.booxin.launcher.R
+import com.booxin.launcher.core.download.game.GameInstallPhase
 import com.booxin.launcher.core.multiplayer.BlockedUser
 import com.booxin.launcher.core.multiplayer.BooxinAuthSession
 import com.booxin.launcher.core.multiplayer.BooxinFriend
 import com.booxin.launcher.core.multiplayer.ChatConversation
 import com.booxin.launcher.core.multiplayer.FriendRequest
 import com.booxin.launcher.core.multiplayer.LobbyUser
+import com.booxin.launcher.core.multiplayer.OfficialServerCatalog
+import com.booxin.launcher.core.multiplayer.OfficialServerInfo
+import com.booxin.launcher.core.multiplayer.OfficialServerJoinService
 import com.booxin.launcher.core.multiplayer.PublicRoom
 import com.booxin.launcher.core.multiplayer.RewardProfile
 import com.booxin.launcher.core.multiplayer.RewardProfileHelper
@@ -32,7 +36,13 @@ import com.booxin.launcher.core.multiplayer.SearchUser
 import com.booxin.launcher.databinding.FragmentMultiplayerBinding
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.tabs.TabLayout
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
+import kotlin.coroutines.resume
 
 class MultiplayerFragment : Fragment() {
 
@@ -42,6 +52,9 @@ class MultiplayerFragment : Fragment() {
     private val binding get() = _binding!!
     private var authMode = AuthMode.PASSWORD
     private var rewardProfile: RewardProfile? = null
+    private var cachedOfficialServer: OfficialServerInfo? = null
+    private var officialJoinInProgress = false
+    private val officialJoinService = OfficialServerJoinService()
 
     private val pickAvatar = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) uploadAvatar(uri)
@@ -49,20 +62,17 @@ class MultiplayerFragment : Fragment() {
 
     private val friendsAdapter = MultiplayerUserAdapter(
         onPrimary = { item ->
-            when (val p = item.payload) {
-                is BooxinFriend -> openChat(p.userId, p.username)
-                else -> Unit
+            val friend = item.payload as? BooxinFriend ?: return@MultiplayerUserAdapter
+            when (item.primaryLabel) {
+                getString(R.string.multiplayer_join_friend_room) -> joinFriendRoom(friend)
+                else -> openChat(friend.userId, friend.username)
             }
         },
         onSecondary = { item ->
             val friend = item.payload as? BooxinFriend ?: return@MultiplayerUserAdapter
             when (item.secondaryLabel) {
-                getString(R.string.multiplayer_invite_friend) -> inviteFriend(friend)
-                getString(R.string.multiplayer_join_friend_room) -> {
-                    binding.inputRoomCode.setText(friend.roomCode.orEmpty())
-                    binding.tabMultiplayer.getTabAt(0)?.select()
-                    joinRoom()
-                }
+                getString(R.string.multiplayer_chat) -> openChat(friend.userId, friend.username)
+                getString(R.string.multiplayer_join_friend_room) -> joinFriendRoom(friend)
                 else -> confirmRemoveFriend(friend)
             }
         }
@@ -195,6 +205,8 @@ class MultiplayerFragment : Fragment() {
                 AppContainer.multiplayerAuth.leaveActiveRoom()
             }
         }
+        binding.buttonJoinOfficialServer.setOnClickListener { joinOfficialServer() }
+        refreshOfficialServerCard()
         binding.buttonCheckIn.setOnClickListener { performCheckIn() }
         binding.buttonPickFrame.setOnClickListener { showFramePicker() }
 
@@ -202,6 +214,7 @@ class MultiplayerFragment : Fragment() {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 launch {
                     AppContainer.multiplayerAuth.session.collect { session ->
+                        if (_binding == null) return@collect
                         renderSession(session)
                         if (session != null) {
                             refreshFriends()
@@ -215,18 +228,21 @@ class MultiplayerFragment : Fragment() {
                 launch {
                     AppContainer.multiplayerAuth.rewardProfile.collect { profile ->
                         rewardProfile = profile
+                        if (_binding == null) return@collect
                         renderRewards(profile)
                     }
                 }
                 launch {
                     AppContainer.multiplayerAuth.joinStatus.collect { status ->
-                        binding.textJoinStatus.text = status.orEmpty()
+                        val b = _binding ?: return@collect
+                        b.textJoinStatus.text = status.orEmpty()
                     }
                 }
                 launch {
                     AppContainer.multiplayerAuth.directConnectAddress.collect { addr ->
-                        binding.textDirectConnect.isVisible = !addr.isNullOrBlank()
-                        binding.textDirectConnect.text = if (addr.isNullOrBlank()) {
+                        val b = _binding ?: return@collect
+                        b.textDirectConnect.isVisible = !addr.isNullOrBlank()
+                        b.textDirectConnect.text = if (addr.isNullOrBlank()) {
                             ""
                         } else {
                             getString(R.string.multiplayer_direct_connect, addr)
@@ -235,6 +251,7 @@ class MultiplayerFragment : Fragment() {
                 }
                 launch {
                     AppContainer.multiplayerAuth.roomMembers.collect { members ->
+                        if (_binding == null) return@collect
                         renderRoomMembers(members)
                     }
                 }
@@ -243,6 +260,7 @@ class MultiplayerFragment : Fragment() {
     }
 
     private fun renderRoomMembers(members: List<RoomMember>) {
+        val binding = _binding ?: return
         val inRoom = AppContainer.multiplayerAuth.activeLobby.value != null || members.isNotEmpty()
         binding.textRoomMembersTitle.isVisible = inRoom
         binding.recyclerRoomMembers.isVisible = inRoom && members.isNotEmpty()
@@ -407,18 +425,19 @@ class MultiplayerFragment : Fragment() {
                     AppContainer.multiplayerAuth.resetPassword(email, code, p)
                 }
             }
-            binding.buttonLogin.isEnabled = true
+            val ui = _binding ?: return@launch
+            ui.buttonLogin.isEnabled = true
             if (result.isSuccess) {
-                binding.inputPassword.setText("")
-                binding.inputEmailCode.setText("")
-                binding.textStatus.text = if (authMode == AuthMode.FORGOT) {
+                ui.inputPassword.setText("")
+                ui.inputEmailCode.setText("")
+                ui.textStatus.text = if (authMode == AuthMode.FORGOT) {
                     result.getOrThrow()
                 } else {
                     getString(R.string.multiplayer_login_ok, result.getOrThrow())
                 }
             } else {
                 val msg = result.exceptionOrNull()?.message ?: "unknown"
-                binding.textStatus.text = msg
+                ui.textStatus.text = msg
                 Toast.makeText(requireContext(), msg, Toast.LENGTH_LONG).show()
             }
         }
@@ -438,18 +457,191 @@ class MultiplayerFragment : Fragment() {
                 AuthMode.FORGOT -> AppContainer.multiplayerAuth.sendPasswordResetCode(email)
                 AuthMode.PASSWORD -> Result.failure(IllegalStateException("无需验证码"))
             }
-            binding.buttonSendCode.isEnabled = true
+            val ui = _binding ?: return@launch
+            ui.buttonSendCode.isEnabled = true
             if (result.isSuccess) {
                 Toast.makeText(requireContext(), result.getOrThrow(), Toast.LENGTH_SHORT).show()
-                binding.textStatus.text = result.getOrThrow()
+                ui.textStatus.text = result.getOrThrow()
             } else {
                 val msg = getString(
                     R.string.multiplayer_send_code_failed,
                     result.exceptionOrNull()?.message ?: "unknown"
                 )
-                binding.textStatus.text = msg
+                ui.textStatus.text = msg
                 Toast.makeText(requireContext(), msg, Toast.LENGTH_LONG).show()
             }
+        }
+    }
+
+    private fun refreshOfficialServerCard() {
+        viewLifecycleOwner.lifecycleScope.launch {
+            val servers = withContext(Dispatchers.IO) {
+                OfficialServerCatalog.ensureLoaded()
+            }
+            val ui = _binding ?: return@launch
+            val server = servers.firstOrNull()
+            cachedOfficialServer = server
+            if (server == null) {
+                ui.cardOfficialServer.isVisible = false
+                return@launch
+            }
+            ui.cardOfficialServer.isVisible = true
+            ui.textOfficialServerName.text = server.name
+            ui.textOfficialServerDetail.text = buildString {
+                append(server.version.ifBlank { "?" })
+                if (server.forgeVersion.isNotBlank()) {
+                    append(" · Forge ")
+                    append(server.forgeVersion)
+                }
+                append(" · ")
+                append(server.serverAddress)
+            }
+        }
+    }
+
+    private fun joinOfficialServer() {
+        if (officialJoinInProgress) {
+            toast(R.string.multiplayer_official_busy)
+            return
+        }
+        val account = AppContainer.repository.selectedAccount()
+        if (account == null) {
+            toast(R.string.multiplayer_official_need_account)
+            return
+        }
+
+        viewLifecycleOwner.lifecycleScope.launch {
+            var server = cachedOfficialServer
+            if (server == null) {
+                server = withContext(Dispatchers.IO) {
+                    OfficialServerCatalog.ensureLoaded(force = true)
+                }.firstOrNull()
+                cachedOfficialServer = server
+            }
+            val ui = _binding ?: return@launch
+            if (server == null) {
+                toast(R.string.multiplayer_official_missing)
+                ui.cardOfficialServer.isVisible = false
+                return@launch
+            }
+
+            val installed = AppContainer.repository.installedVersions.value.any { ver ->
+                ver.id.contains(server.version, ignoreCase = true) &&
+                    (server.forgeVersion.isBlank() ||
+                        ver.id.contains(server.forgeVersion, ignoreCase = true) ||
+                        ver.id.contains("forge", ignoreCase = true))
+            }
+            if (!installed) {
+                val confirm = suspendCancellableCoroutine { cont ->
+                    MaterialAlertDialogBuilder(requireContext())
+                        .setTitle(R.string.multiplayer_join_official)
+                        .setMessage(
+                            getString(
+                                R.string.multiplayer_official_install_confirm,
+                                server.version,
+                                server.forgeVersion.ifBlank { "-" }
+                            )
+                        )
+                        .setPositiveButton(android.R.string.ok) { _, _ ->
+                            if (cont.isActive) cont.resume(true)
+                        }
+                        .setNegativeButton(android.R.string.cancel) { _, _ ->
+                            if (cont.isActive) cont.resume(false)
+                        }
+                        .setOnCancelListener {
+                            if (cont.isActive) cont.resume(false)
+                        }
+                        .show()
+                }
+                if (!confirm) return@launch
+            }
+
+            officialJoinInProgress = true
+            ui.buttonJoinOfficialServer.isEnabled = false
+            ui.panelOfficialProgress.isVisible = true
+            updateOfficialProgress(-1, getString(R.string.multiplayer_official_busy))
+
+            val progressJob: Job = viewLifecycleOwner.lifecycleScope.launch {
+                AppContainer.repository.forgeInstallProgress.collect { progress ->
+                    if (progress == null) return@collect
+                    if (progress.phase == GameInstallPhase.IDLE) return@collect
+                    val fraction = progress.fraction
+                    val percent = when {
+                        progress.phase == GameInstallPhase.DONE -> 80
+                        progress.phase == GameInstallPhase.FAILED -> -1
+                        fraction >= 0f -> (fraction * 80).toInt().coerceIn(1, 80)
+                        else -> -1
+                    }
+                    val label = progress.message.ifBlank { progress.phase.name }
+                    updateOfficialProgress(percent, label)
+                    if (progress.phase == GameInstallPhase.FAILED) {
+                        // Keep message visible; prepare() will also fail.
+                    }
+                }
+            }
+
+            val prepared = try {
+                officialJoinService.prepare(requireContext(), server) { percent, message ->
+                    viewLifecycleOwner.lifecycleScope.launch {
+                        updateOfficialProgress(percent, message)
+                    }
+                }
+            } catch (cancelled: CancellationException) {
+                progressJob.cancel()
+                officialJoinInProgress = false
+                _binding?.buttonJoinOfficialServer?.isEnabled = true
+                updateOfficialProgress(-1, getString(R.string.multiplayer_official_cancelled))
+                throw cancelled
+            }
+
+            progressJob.cancel()
+            val end = _binding
+            if (prepared.isFailure) {
+                officialJoinInProgress = false
+                end?.buttonJoinOfficialServer?.isEnabled = true
+                val msg = prepared.exceptionOrNull()?.message ?: "unknown"
+                updateOfficialProgress(-1, msg)
+                Toast.makeText(
+                    requireContext(),
+                    getString(R.string.multiplayer_official_failed, msg),
+                    Toast.LENGTH_LONG
+                ).show()
+                return@launch
+            }
+
+            val target = prepared.getOrThrow()
+            updateOfficialProgress(95, getString(R.string.multiplayer_official_launching))
+            val launch = AppContainer.gameRuntime.launch(
+                requireContext(),
+                target.versionId,
+                account,
+                serverAddress = target.server.serverAddress
+            )
+            officialJoinInProgress = false
+            end?.buttonJoinOfficialServer?.isEnabled = true
+            if (launch.isFailure) {
+                val msg = launch.exceptionOrNull()?.message ?: "unknown"
+                updateOfficialProgress(-1, msg)
+                Toast.makeText(
+                    requireContext(),
+                    getString(R.string.multiplayer_official_failed, msg),
+                    Toast.LENGTH_LONG
+                ).show()
+            } else {
+                updateOfficialProgress(100, target.server.serverAddress)
+            }
+        }
+    }
+
+    private fun updateOfficialProgress(percent: Int, message: String) {
+        val b = _binding ?: return
+        b.panelOfficialProgress.isVisible = true
+        b.textOfficialServerStatus.text = message
+        if (percent < 0) {
+            b.progressOfficialServer.isIndeterminate = true
+        } else {
+            b.progressOfficialServer.isIndeterminate = false
+            b.progressOfficialServer.progress = percent.coerceIn(0, 100)
         }
     }
 
@@ -467,7 +659,8 @@ class MultiplayerFragment : Fragment() {
         viewLifecycleOwner.lifecycleScope.launch {
             binding.buttonJoinRoom.isEnabled = false
             val result = AppContainer.multiplayerAuth.joinRoomCode(code)
-            binding.buttonJoinRoom.isEnabled = true
+            val ui = _binding ?: return@launch
+            ui.buttonJoinRoom.isEnabled = true
             if (result.isSuccess) {
                 val joined = result.getOrThrow()
                 Toast.makeText(
@@ -501,10 +694,11 @@ class MultiplayerFragment : Fragment() {
                     payload = room
                 )
             }
+            val ui = _binding ?: return@launch
             roomsAdapter.submit(rooms)
-            binding.textRoomsEmpty.isVisible = rooms.isEmpty()
+            ui.textRoomsEmpty.isVisible = rooms.isEmpty()
             if (result.isFailure) {
-                binding.textStatus.text = result.exceptionOrNull()?.message
+                ui.textStatus.text = result.exceptionOrNull()?.message
             }
         }
     }
@@ -519,8 +713,8 @@ class MultiplayerFragment : Fragment() {
             )
             val friendsResult = AppContainer.multiplayerAuth.loadFriends()
             val dash = friendsResult.getOrNull()
+            val ui = _binding ?: return@launch
 
-            val inRoom = AppContainer.multiplayerAuth.activeLobby.value != null
             friendsAdapter.submit(
                 dash?.friends.orEmpty().map { f ->
                     MultiplayerListItem(
@@ -529,13 +723,13 @@ class MultiplayerFragment : Fragment() {
                         meta = friendStatus(f),
                         avatarUrl = f.avatarUrl,
                         frameId = f.selectedFrameId,
-                        primaryLabel = getString(R.string.multiplayer_chat),
-                        secondaryLabel = friendSecondaryAction(f, inRoom),
+                        primaryLabel = friendPrimaryAction(f),
+                        secondaryLabel = friendSecondaryAction(f),
                         payload = f
                     )
                 }
             )
-            binding.textFriendsEmpty.isVisible = dash?.friends.isNullOrEmpty()
+            ui.textFriendsEmpty.isVisible = dash?.friends.isNullOrEmpty()
 
             requestsAdapter.submit(
                 dash?.incomingRequests.orEmpty().map { r ->
@@ -550,7 +744,7 @@ class MultiplayerFragment : Fragment() {
                     )
                 }
             )
-            binding.textRequestsEmpty.isVisible = dash?.incomingRequests.isNullOrEmpty()
+            ui.textRequestsEmpty.isVisible = dash?.incomingRequests.isNullOrEmpty()
 
             invitesAdapter.submit(
                 dash?.pendingRoomInvites.orEmpty().map { i ->
@@ -565,7 +759,7 @@ class MultiplayerFragment : Fragment() {
                     )
                 }
             )
-            binding.textInvitesEmpty.isVisible = dash?.pendingRoomInvites.isNullOrEmpty()
+            ui.textInvitesEmpty.isVisible = dash?.pendingRoomInvites.isNullOrEmpty()
 
             blockedAdapter.submit(
                 dash?.blockedUsers.orEmpty().map { b ->
@@ -579,9 +773,9 @@ class MultiplayerFragment : Fragment() {
                     )
                 }
             )
-            binding.textBlockedEmpty.isVisible = dash?.blockedUsers.isNullOrEmpty()
+            ui.textBlockedEmpty.isVisible = dash?.blockedUsers.isNullOrEmpty()
 
-            binding.textStatus.text = getString(
+            ui.textStatus.text = getString(
                 R.string.multiplayer_refreshed,
                 AppContainer.multiplayerAuth.current()?.user?.username ?: ""
             )
@@ -592,17 +786,20 @@ class MultiplayerFragment : Fragment() {
     private fun refreshRewards() {
         if (AppContainer.multiplayerAuth.current() == null) return
         viewLifecycleOwner.lifecycleScope.launch {
-            binding.textRewards.text = getString(R.string.multiplayer_rewards_loading)
-            binding.buttonCheckIn.isEnabled = false
+            val start = _binding ?: return@launch
+            start.textRewards.text = getString(R.string.multiplayer_rewards_loading)
+            start.buttonCheckIn.isEnabled = false
             val result = AppContainer.multiplayerAuth.loadRewardProfile()
+            val ui = _binding ?: return@launch
             if (result.isFailure) {
-                binding.textRewards.text = getString(R.string.multiplayer_rewards_load_failed)
+                ui.textRewards.text = getString(R.string.multiplayer_rewards_load_failed)
             }
-            binding.buttonCheckIn.isEnabled = true
+            ui.buttonCheckIn.isEnabled = true
         }
     }
 
     private fun renderRewards(profile: RewardProfile?) {
+        val binding = _binding ?: return
         if (profile == null) {
             binding.buttonCheckIn.text = getString(R.string.multiplayer_checkin)
             binding.buttonCheckIn.isEnabled = AppContainer.multiplayerAuth.current() != null
@@ -640,12 +837,14 @@ class MultiplayerFragment : Fragment() {
                 claim?.ok == true -> claim.message ?: getString(R.string.multiplayer_checkin_ok)
                 else -> claim?.message ?: getString(R.string.multiplayer_checkin_ok)
             }
+            if (!isAdded) return@launch
             Toast.makeText(requireContext(), message, Toast.LENGTH_SHORT).show()
             if (result.isSuccess) {
                 refreshRewards()
                 renderSession(AppContainer.multiplayerAuth.current())
             } else {
-                binding.buttonCheckIn.isEnabled = true
+                val ui = _binding ?: return@launch
+                ui.buttonCheckIn.isEnabled = true
             }
         }
     }
@@ -705,6 +904,7 @@ class MultiplayerFragment : Fragment() {
     }
 
     private fun applySessionFrame(frameId: String?) {
+        val binding = _binding ?: return
         binding.imageSessionFrame.applyBooxinFrame(frameId)
     }
 
@@ -712,6 +912,7 @@ class MultiplayerFragment : Fragment() {
         if (AppContainer.multiplayerAuth.current() == null) return
         viewLifecycleOwner.lifecycleScope.launch {
             val lobbyResult = AppContainer.multiplayerAuth.loadLobby()
+            val ui = _binding ?: return@launch
             lobbyAdapter.submit(
                 lobbyResult.getOrNull().orEmpty().map { u ->
                     MultiplayerListItem(
@@ -730,22 +931,39 @@ class MultiplayerFragment : Fragment() {
                     )
                 }
             )
-            binding.textLobbyEmpty.isVisible =
+            ui.textLobbyEmpty.isVisible =
                 lobbyResult.isSuccess && lobbyResult.getOrNull().isNullOrEmpty()
             if (lobbyResult.isFailure) {
-                binding.textStatus.text = lobbyResult.exceptionOrNull()?.message
+                ui.textStatus.text = lobbyResult.exceptionOrNull()?.message
             }
         }
     }
 
-    private fun friendSecondaryAction(friend: BooxinFriend, selfInRoom: Boolean): String =
-        when {
-            selfInRoom && friend.isOnline && !friend.isInRoom ->
-                getString(R.string.multiplayer_invite_friend)
-            friend.isInRoom && !friend.roomCode.isNullOrBlank() ->
-                getString(R.string.multiplayer_join_friend_room)
-            else -> getString(R.string.multiplayer_remove_friend)
+    /** Friend in a room → prominent one-tap Join (no invite on mobile for now). */
+    private fun friendPrimaryAction(friend: BooxinFriend): String =
+        if (friend.isInRoom) getString(R.string.multiplayer_join_friend_room)
+        else getString(R.string.multiplayer_chat)
+
+    private fun friendSecondaryAction(friend: BooxinFriend): String =
+        if (friend.isInRoom) getString(R.string.multiplayer_chat)
+        else getString(R.string.multiplayer_remove_friend)
+
+    private fun joinFriendRoom(friend: BooxinFriend) {
+        val code = friend.roomCode?.trim().orEmpty()
+        if (code.isBlank()) {
+            Toast.makeText(
+                requireContext(),
+                R.string.multiplayer_friend_room_code_missing,
+                Toast.LENGTH_LONG
+            ).show()
+            refreshFriends()
+            return
         }
+        val b = _binding ?: return
+        b.inputRoomCode.setText(code)
+        b.tabMultiplayer.getTabAt(0)?.select()
+        joinRoom()
+    }
 
     private fun refreshMessages() {
         if (AppContainer.multiplayerAuth.current() == null) return
@@ -764,8 +982,9 @@ class MultiplayerFragment : Fragment() {
                     payload = c
                 )
             }
+            val ui = _binding ?: return@launch
             conversationsAdapter.submit(items)
-            binding.textConversationsEmpty.isVisible = items.isEmpty()
+            ui.textConversationsEmpty.isVisible = items.isEmpty()
         }
     }
 
@@ -777,8 +996,9 @@ class MultiplayerFragment : Fragment() {
         }
         viewLifecycleOwner.lifecycleScope.launch {
             val result = AppContainer.multiplayerAuth.searchUsers(query)
+            val ui = _binding ?: return@launch
             if (result.isFailure) {
-                binding.textStatus.text = result.exceptionOrNull()?.message
+                ui.textStatus.text = result.exceptionOrNull()?.message
                 return@launch
             }
             searchAdapter.submit(
@@ -856,9 +1076,15 @@ class MultiplayerFragment : Fragment() {
             append(" · ")
         }
         append(if (friend.isOnline) getString(R.string.multiplayer_online) else getString(R.string.multiplayer_offline))
-        if (friend.isInRoom && !friend.roomCode.isNullOrBlank()) {
+        if (friend.isInRoom) {
             append(" · ")
-            append(getString(R.string.multiplayer_in_room, friend.roomCode))
+            append(
+                if (!friend.roomCode.isNullOrBlank()) {
+                    getString(R.string.multiplayer_in_room, friend.roomCode)
+                } else {
+                    getString(R.string.multiplayer_in_room_no_code)
+                }
+            )
         }
     }
 
@@ -939,9 +1165,11 @@ class MultiplayerFragment : Fragment() {
             viewLifecycleOwner.lifecycleScope.launch {
                 val result = AppContainer.multiplayerAuth.changePassword(current, next)
                 if (result.isSuccess) {
-                    binding.inputCurrentPassword.setText("")
-                    binding.inputNewPassword.setText("")
+                    val ui = _binding ?: return@launch
+                    ui.inputCurrentPassword.setText("")
+                    ui.inputNewPassword.setText("")
                 }
+                if (!isAdded) return@launch
                 toastResult(result, R.string.multiplayer_password_changed)
             }
         }
@@ -985,6 +1213,7 @@ class MultiplayerFragment : Fragment() {
     }
 
     private fun renderSession(session: BooxinAuthSession?) {
+        val binding = _binding ?: return
         val loggedIn = session != null
         binding.panelLogin.isVisible = !loggedIn
         binding.panelSession.isVisible = loggedIn

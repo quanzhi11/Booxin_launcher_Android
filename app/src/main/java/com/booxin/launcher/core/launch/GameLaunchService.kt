@@ -73,6 +73,7 @@ class GameLaunchService : Service() {
         val uuid = intent?.getStringExtra(EXTRA_UUID)
         val accessToken = intent?.getStringExtra(EXTRA_ACCESS_TOKEN)
         val userType = intent?.getStringExtra(EXTRA_USER_TYPE)
+        val serverAddress = intent?.getStringExtra(EXTRA_SERVER_ADDRESS)?.takeIf { it.isNotBlank() }
         val windowWidth = intent?.getIntExtra(EXTRA_WINDOW_WIDTH, 0) ?: 0
         val windowHeight = intent?.getIntExtra(EXTRA_WINDOW_HEIGHT, 0) ?: 0
         if (versionId.isBlank()) {
@@ -100,7 +101,8 @@ class GameLaunchService : Service() {
                     windowHeight = windowHeight,
                     uuid = uuid,
                     accessToken = accessToken,
-                    userType = userType
+                    userType = userType,
+                    serverAddress = serverAddress
                 )
             } finally {
                 finishAndStop(startId)
@@ -117,7 +119,8 @@ class GameLaunchService : Service() {
         windowHeight: Int,
         uuid: String? = null,
         accessToken: String? = null,
-        userType: String? = null
+        userType: String? = null,
+        serverAddress: String? = null
     ) {
         appendLog("准备 Java 与游戏文件…")
         GameLaunchLogBus.muteUi.set(false)
@@ -133,19 +136,6 @@ class GameLaunchService : Service() {
             return
         }
         appendLog("Java 就绪: ${java.homeDir.absolutePath}")
-
-        if (com.booxin.launcher.core.download.game.VersionJsonMerger.isModLoaderVersion(versionId)) {
-            appendLog("Forge/模组版本：跳过联机模组自动注入（避免 Mixin 冲突）")
-        } else {
-            runCatching {
-                appendLog("检查联机模组（关闭正版验证）…")
-                val lan = com.booxin.launcher.core.multiplayer.LanServerPropertiesInstaller
-                    .ensureInstalled(versionId)
-                appendLog(lan.message)
-            }.onFailure {
-                appendLog("联机模组检查失败（可继续启动）: ${it.message}")
-            }
-        }
 
         AndroidGameRuntime.ensure(this)
 
@@ -177,17 +167,22 @@ class GameLaunchService : Service() {
         }.onFailure {
             appendLog("options.txt 写入失败: ${it.message}")
         }
-        appendLog("构建启动命令…（窗口 ${width}x${height}）")
+        appendLog("构建启动命令…（窗口 ${width}x${height}，内存 ${com.booxin.launcher.core.LauncherPrefs.maxMemoryMb()} MB）")
+        if (!serverAddress.isNullOrBlank()) {
+            appendLog("自动加入服务器: $serverAddress")
+        }
         val command = runCatching {
             LaunchCommandBuilder(this).build(
                 versionId = versionId,
                 username = username,
                 java = java,
+                maxMemoryMb = com.booxin.launcher.core.LauncherPrefs.maxMemoryMb(),
                 windowWidth = width,
                 windowHeight = height,
                 uuid = uuid,
                 accessToken = accessToken,
-                userType = userType
+                userType = userType,
+                serverAddress = serverAddress
             )
         }.getOrElse {
             appendLog("命令构建失败: ${it.message}")
@@ -365,6 +360,7 @@ class GameLaunchService : Service() {
         const val EXTRA_UUID = "uuid"
         const val EXTRA_ACCESS_TOKEN = "access_token"
         const val EXTRA_USER_TYPE = "user_type"
+        const val EXTRA_SERVER_ADDRESS = "server_address"
         const val ACTION_STOP = "com.booxin.launcher.STOP_GAME"
         private const val CHANNEL_ID = "booxin_game"
         private const val NOTIFICATION_ID = 2107
@@ -377,7 +373,8 @@ class GameLaunchService : Service() {
             windowHeight: Int,
             uuid: String? = null,
             accessToken: String? = null,
-            userType: String? = null
+            userType: String? = null,
+            serverAddress: String? = null
         ) {
             val intent = Intent(context, GameLaunchService::class.java).apply {
                 putExtra(EXTRA_VERSION_ID, versionId)
@@ -387,6 +384,7 @@ class GameLaunchService : Service() {
                 uuid?.let { putExtra(EXTRA_UUID, it) }
                 accessToken?.let { putExtra(EXTRA_ACCESS_TOKEN, it) }
                 userType?.let { putExtra(EXTRA_USER_TYPE, it) }
+                serverAddress?.takeIf { it.isNotBlank() }?.let { putExtra(EXTRA_SERVER_ADDRESS, it) }
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)

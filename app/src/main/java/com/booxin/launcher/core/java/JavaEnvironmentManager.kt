@@ -50,6 +50,11 @@ class JavaEnvironmentManager(
         return locateInstalled(componentId, majorFromId(componentId)) != null
     }
 
+    /** True if a runtime directory exists (including incomplete / broken installs). */
+    fun isPresent(componentId: String): Boolean {
+        return LauncherPaths.javaRuntimeDir(componentId).exists()
+    }
+
     fun findInstalled(majorVersion: Int): InstalledJavaRuntime? {
         val id = "java-$majorVersion"
         return locateInstalled(id, majorVersion)
@@ -135,39 +140,56 @@ class JavaEnvironmentManager(
     }
 
     private suspend fun downloadWithFallback(pkg: JavaRuntimePackage, cacheFile: File): File {
-        val primary = downloader.download(pkg.downloadUrl, cacheFile) { downloaded, total ->
-            _progress.value = JavaInstallProgress(
-                componentId = pkg.componentId,
-                state = JavaInstallState.DOWNLOADING,
-                downloadedBytes = downloaded,
-                totalBytes = total,
-                message = "下载 ${pkg.displayName}"
-            )
+        val urls = pkg.downloadUrls.ifEmpty {
+            listOfNotNull(pkg.downloadUrl, pkg.fallbackUrl)
         }
-        if (primary.isSuccess) return primary.getOrThrow()
-
-        val fallbackUrl = pkg.fallbackUrl
-            ?: throw primary.exceptionOrNull() ?: IllegalStateException("下载失败")
-
-        emit(pkg.componentId, JavaInstallState.DOWNLOADING, message = "主源失败，尝试备用源…")
-        val fallbackName = fallbackUrl.substringAfterLast('/')
-        val fallbackFile = File(LauncherPaths.javaCacheDir, fallbackName)
-        return downloader.download(fallbackUrl, fallbackFile) { downloaded, total ->
-            _progress.value = JavaInstallProgress(
-                componentId = pkg.componentId,
-                state = JavaInstallState.DOWNLOADING,
-                downloadedBytes = downloaded,
-                totalBytes = total,
-                message = "备用源下载 ${pkg.displayName}"
-            )
-        }.getOrElse { throw it }
+        var lastError: Throwable? = null
+        for ((index, url) in urls.withIndex()) {
+            val label = when {
+                index == 0 -> "下载 ${pkg.displayName}"
+                url.contains("gitee.com", ignoreCase = true) -> "Gitee 备用源 ${pkg.displayName}"
+                else -> "备用源 ${index + 1} ${pkg.displayName}"
+            }
+            if (index > 0) {
+                emit(pkg.componentId, JavaInstallState.DOWNLOADING, message = "上一源失败，尝试：$label")
+            }
+            val target = if (index == 0) {
+                cacheFile
+            } else {
+                val name = url.substringAfterLast('/').ifBlank { cacheFile.name }
+                File(LauncherPaths.javaCacheDir, name)
+            }
+            val result = downloader.download(url, target) { downloaded, total ->
+                _progress.value = JavaInstallProgress(
+                    componentId = pkg.componentId,
+                    state = JavaInstallState.DOWNLOADING,
+                    downloadedBytes = downloaded,
+                    totalBytes = total,
+                    message = label
+                )
+            }
+            if (result.isSuccess) return result.getOrThrow()
+            lastError = result.exceptionOrNull()
+        }
+        throw lastError ?: IllegalStateException("下载失败：无可用源")
     }
 
     suspend fun delete(componentId: String): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
             val dir = LauncherPaths.javaRuntimeDir(componentId)
-            if (dir.exists()) dir.deleteRecursively()
+            if (dir.exists()) {
+                if (!dir.deleteRecursively()) {
+                    error("删除失败: ${dir.absolutePath}")
+                }
+            }
+            emit(componentId, JavaInstallState.NOT_INSTALLED, message = "已卸载 $componentId")
             Unit
+        }.onFailure { error ->
+            emit(
+                componentId,
+                JavaInstallState.FAILED,
+                message = error.message ?: "卸载失败"
+            )
         }
     }
 
@@ -185,6 +207,8 @@ class JavaEnvironmentManager(
     private fun locateInstalled(componentId: String, majorVersion: Int): InstalledJavaRuntime? {
         val home = LauncherPaths.javaRuntimeDir(componentId)
         if (!home.exists()) return null
+        // Pack200 not finished yet — treat as incomplete so install/finalize can finish it.
+        if (Pack200Unpacker.needsUnpack(home)) return null
         val binary = findJavaBinary(home) ?: return null
         return InstalledJavaRuntime(
             componentId = componentId,

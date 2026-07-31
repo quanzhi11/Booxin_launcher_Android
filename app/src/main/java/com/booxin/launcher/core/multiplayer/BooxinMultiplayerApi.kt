@@ -645,21 +645,39 @@ class BooxinMultiplayerApi {
         return buildList {
             for (i in 0 until arr.length()) {
                 val o = arr.getJSONObject(i)
+                val roomCode = firstNonBlank(
+                    o.optString("roomCode"),
+                    o.optString("RoomCode"),
+                    o.optString("currentRoomCode"),
+                    o.optString("lobbyCode"),
+                    o.optString("room_code")
+                )
+                val inRoom = o.optBoolean("isInRoom", false) ||
+                    o.optBoolean("IsInRoom", false) ||
+                    !roomCode.isNullOrBlank()
                 add(
                     BooxinFriend(
                         userId = o.optString("userId").ifBlank { o.optString("id") },
                         username = o.optString("username"),
                         avatarUrl = o.optString("avatarUrl").ifBlank { null },
                         selectedFrameId = o.optString("selectedFrameId").ifBlank { null },
-                        isOnline = o.optBoolean("isOnline", false),
-                        isInRoom = o.optBoolean("isInRoom", false),
+                        isOnline = o.optBoolean("isOnline", false) || o.optBoolean("IsOnline", false),
+                        isInRoom = inRoom,
                         isAvailableToChat = o.optBoolean("isAvailableToChat", false),
                         relationship = o.optString("relationship").ifBlank { null },
-                        roomCode = o.optString("roomCode").ifBlank { null }
+                        roomCode = roomCode
                     )
                 )
             }
         }
+    }
+
+    private fun firstNonBlank(vararg values: String?): String? {
+        for (v in values) {
+            val t = v?.trim().orEmpty()
+            if (t.isNotEmpty() && t != "null") return t
+        }
+        return null
     }
 
     private fun parseRequestArray(arr: JSONArray?): List<FriendRequest> {

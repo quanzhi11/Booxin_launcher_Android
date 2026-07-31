@@ -1384,6 +1384,17 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_pojav) {
     }
 
     LOGI("Invoking main(%d args)", pa.nGameArgs);
+    /*
+     * FCL/Zalith keep POJAV_RENDERER=opengles* for the whole process.
+     * libpojavexec pojavInit (called from glfwInit on the render thread) does
+     * strncmp(getenv("POJAV_RENDERER"), "opengles", …) with no NULL check —
+     * unsetting it here caused SIGSEGV in __strncmp_aarch64.
+     */
+    if (with_pojav) {
+        const char *renderer = getenv("POJAV_RENDERER");
+        LOGI("POJAV_RENDERER=%s (kept for pojavInit/glfwInit)",
+             renderer && renderer[0] ? renderer : "(unset)");
+    }
     (*jenv)->CallStaticVoidMethod(jenv, mainCls, mainMethod, argsArr);
     if ((*jenv)->ExceptionCheck(jenv)) {
         log_exception(jenv, "main()");

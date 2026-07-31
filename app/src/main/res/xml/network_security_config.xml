@@ -4,5 +4,7 @@
     <!-- Room directory has no HTTPS reverse proxy yet. -->
     <domain-config cleartextTrafficPermitted="true">
         <domain includeSubdomains="false">175.178.174.103</domain>
+        <!-- guanfu.txt still lists some mods as http://www.boonix.art/... -->
+        <domain includeSubdomains="true">boonix.art</domain>
     </domain-config>
 </network-security-config>

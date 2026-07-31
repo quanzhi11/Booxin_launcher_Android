@@ -34,7 +34,9 @@ data class LauncherAccount(
     val xuid: String? = null,
     /** Minecraft --userType: msa / legacy */
     val userType: String = if (type == AccountType.MICROSOFT) "msa" else "legacy",
-    val hasMinecraft: Boolean = type != AccountType.MICROSOFT
+    val hasMinecraft: Boolean = type != AccountType.MICROSOFT,
+    /** Absolute path to imported offline skin PNG, if any. */
+    val skinPath: String? = null
 )
 
 data class LauncherSession(

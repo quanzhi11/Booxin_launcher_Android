@@ -1,6 +1,7 @@
 package com.booxin.launcher.core.multiplayer
 
 import com.booxin.launcher.BooxinApp
+import com.booxin.launcher.core.diag.DiagEventLog
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -209,25 +210,41 @@ class MultiplayerAuthManager(
         val session = _session.value
             ?: return Result.failure(IllegalStateException("请先登录联机账号"))
         return runCatching {
+            DiagEventLog.i(
+                "MultiplayerAuth",
+                "joinRoom start user=${session.user.username} codeLen=${rawCode.trim().length}"
+            )
             val coordinator = RoomJoinCoordinator(
                 context = BooxinApp.getAppContext(),
-                onStatus = { msg -> _joinStatus.value = msg },
+                onStatus = { msg ->
+                    _joinStatus.value = msg
+                    DiagEventLog.i("RoomJoin", msg)
+                },
                 onMembersChanged = { members -> _roomMembers.value = members }
             )
             joinCoordinator?.leave()
             joinCoordinator = coordinator
 
-            val result = coordinator.join(rawCode.trim(), session.user.username)
-            roomApi.joinRoom(session, result.lobby.roomCode, session.user.username)
+            // PC ResolveMultiplayerUserName: Scaffolding name = Minecraft account name,
+            // not the Booxin social username (mismatch breaks offline join / roster).
+            val playerName = resolveMinecraftPlayerName(session.user.username)
+            DiagEventLog.i("MultiplayerAuth", "scaffolding playerName=$playerName")
+            val result = coordinator.join(rawCode.trim(), playerName)
+            roomApi.joinRoom(session, result.lobby.roomCode, playerName)
             bumpPresence(isInRoom = true, roomCode = result.lobby.roomCode)
             _activeLobby.value = result.lobby
             _directConnect.value = result.directConnectAddress
             _roomMembers.value = result.members
             _joinStatus.value =
                 "已加入 · 直连 ${result.directConnectAddress} · 玩家 ${result.members.size}"
+            DiagEventLog.i(
+                "MultiplayerAuth",
+                "joinRoom ok addr=${result.directConnectAddress} players=${result.members.size}"
+            )
             result
         }.onFailure { err ->
             _joinStatus.value = "加入失败：${err.message}"
+            DiagEventLog.e("MultiplayerAuth", "joinRoom failed", err)
             leaveActiveRoom()
         }
     }
@@ -259,5 +276,13 @@ class MultiplayerAuthManager(
         _roomMembers.value = emptyList()
         _joinStatus.value = null
         _rewardProfile.value = null
+    }
+
+    /** Same rule as PC MainWindow.ResolveMultiplayerUserName(). */
+    private fun resolveMinecraftPlayerName(fallback: String): String {
+        val selected = runCatching {
+            com.booxin.launcher.AppContainer.repository.selectedAccount()?.name?.trim()
+        }.getOrNull()
+        return selected?.takeIf { it.isNotBlank() } ?: fallback.trim().ifBlank { "Player" }
     }
 }
