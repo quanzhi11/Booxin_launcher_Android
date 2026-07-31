@@ -23,6 +23,7 @@ class ForgeGameInstaller(
     private val vanillaInstaller: VanillaGameInstaller = VanillaGameInstaller(),
     private val libraryDownloader: LibraryDownloadHelper = LibraryDownloadHelper(),
     private val forgeClient: ForgeVersionClient = ForgeVersionClient(),
+    private val neoForgeClient: NeoForgeVersionClient = NeoForgeVersionClient(),
     private val fileDownloader: FileDownloader = FileDownloader()
 ) {
     private companion object {
@@ -53,9 +54,15 @@ class ForgeGameInstaller(
         mcVersion: String,
         loaderVersion: String,
         versionJsonUrl: String? = null,
-        java: InstalledJavaRuntime
+        java: InstalledJavaRuntime,
+        isNeoForge: Boolean = false
     ): Result<String> = mutex.withLock {
-        val versionId = ForgeVersionClient.forgeVersionId(mcVersion, loaderVersion)
+        val label = if (isNeoForge) "NeoForge" else "Forge"
+        val versionId = if (isNeoForge) {
+            NeoForgeVersionClient.neoForgeVersionId(mcVersion, loaderVersion)
+        } else {
+            ForgeVersionClient.forgeVersionId(mcVersion, loaderVersion)
+        }
         runCatching {
             emitPercent(versionId, GameInstallPhase.MANIFEST, "正在安装基础版本 $mcVersion…", 0)
             coroutineScope {
@@ -88,14 +95,14 @@ class ForgeGameInstaller(
             emitPercent(
                 versionId,
                 GameInstallPhase.MODLOADER,
-                "正在下载 Forge 安装器…",
+                "正在下载 $label 安装器…",
                 BASE_WEIGHT
             )
-            val installerJar = downloadInstaller(mcVersion, loaderVersion)
+            val installerJar = downloadInstaller(mcVersion, loaderVersion, isNeoForge)
             emitPercent(
                 versionId,
                 GameInstallPhase.MODLOADER,
-                "Forge 安装器下载完成",
+                "$label 安装器下载完成",
                 BASE_WEIGHT + INSTALLER_WEIGHT
             )
 
@@ -123,11 +130,11 @@ class ForgeGameInstaller(
                 ForgeInstallerKind.BOOTSTRAP_INJECTOR -> {
                     val injectorJar = downloadInjector()
                     ForgeInstallerRunner.runModernInstaller(java, installerJar, injectorJar).getOrThrow()
-                    ensureForgeVersionJson(versionId, mcVersion, loaderVersion)
+                    ensureForgeVersionJson(versionId, mcVersion, loaderVersion, isNeoForge)
                 }
             }
 
-            emitPercent(versionId, GameInstallPhase.LIBRARIES, "正在下载 Forge 依赖库…", LIBRARY_BASE)
+            emitPercent(versionId, GameInstallPhase.LIBRARIES, "正在下载 $label 依赖库…", LIBRARY_BASE)
             libraryDownloader.downloadVersionLibraries(versionId) { done, total, _ ->
                 val percent = if (total > 0) {
                     LIBRARY_BASE + (done * LIBRARY_WEIGHT / total)
@@ -137,37 +144,47 @@ class ForgeGameInstaller(
                 emitPercent(
                     versionId,
                     GameInstallPhase.LIBRARIES,
-                    "下载 Forge 依赖 $done / $total",
+                    "下载 $label 依赖 $done / $total",
                     percent
                 )
             }
 
-            emitPercent(versionId, GameInstallPhase.DONE, "Forge 安装完成", OVERALL_TOTAL)
+            emitPercent(versionId, GameInstallPhase.DONE, "$label 安装完成", OVERALL_TOTAL)
             versionId
         }.onFailure { error ->
             emit(
                 versionId,
                 GameInstallPhase.FAILED,
-                error.message ?: "Forge 安装失败"
+                error.message ?: "$label 安装失败"
             )
         }
     }
 
-    private suspend fun downloadInstaller(mcVersion: String, loaderVersion: String): File =
-        withContext(Dispatchers.IO) {
-            val cacheDir = File(LauncherPaths.rootDir, "cache/forge").also { it.mkdirs() }
+    private suspend fun downloadInstaller(
+        mcVersion: String,
+        loaderVersion: String,
+        isNeoForge: Boolean
+    ): File = withContext(Dispatchers.IO) {
+            val cacheDirName = if (isNeoForge) "cache/neoforge" else "cache/forge"
+            val cacheDir = File(LauncherPaths.rootDir, cacheDirName).also { it.mkdirs() }
             val destination = File(cacheDir, "installer-$mcVersion-$loaderVersion.jar")
             if (destination.isFile && destination.length() > 1024L) return@withContext destination
 
+            val urls = if (isNeoForge) {
+                neoForgeClient.installerUrls(mcVersion, loaderVersion)
+            } else {
+                forgeClient.installerUrls(mcVersion, loaderVersion)
+            }
+            val label = if (isNeoForge) "NeoForge" else "Forge"
             var lastError: Throwable? = null
-            for (url in forgeClient.installerUrls(mcVersion, loaderVersion)) {
+            for (url in urls) {
                 val result = fileDownloader.download(url, destination)
                 if (result.isSuccess && destination.isFile && destination.length() > 1024L) {
                     return@withContext destination
                 }
                 lastError = result.exceptionOrNull()
             }
-            throw lastError ?: IllegalStateException("Forge 安装器下载失败")
+            throw lastError ?: IllegalStateException("$label 安装器下载失败")
         }
 
     private suspend fun downloadInjector(): File = withContext(Dispatchers.IO) {
@@ -186,13 +203,19 @@ class ForgeGameInstaller(
         throw lastError ?: IllegalStateException("无法下载 Forge 注入器")
     }
 
-    private fun ensureForgeVersionJson(versionId: String, mcVersion: String, loaderVersion: String) {
+    private fun ensureForgeVersionJson(
+        versionId: String,
+        mcVersion: String,
+        loaderVersion: String,
+        isNeoForge: Boolean = false
+    ) {
         if (VersionJsonMerger.versionJsonFile(versionId) != null) return
+        val marker = if (isNeoForge) "neoforge" else "forge"
         val candidates = LauncherPaths.versionsDir.listFiles()
             ?.filter { it.isDirectory }
             ?.filter { dir ->
                 val name = dir.name
-                name.contains("forge", ignoreCase = true) &&
+                name.contains(marker, ignoreCase = true) &&
                     name.contains(mcVersion) &&
                     name.contains(loaderVersion)
             }

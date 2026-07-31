@@ -17,8 +17,11 @@ import com.booxin.launcher.R
 import com.booxin.launcher.core.BooxinGameRuntime
 import com.booxin.launcher.core.download.game.GameInstallPhase
 import com.booxin.launcher.core.download.game.GameInstallProgress
+import com.booxin.launcher.core.download.modloader.ForgeBuild
 import com.booxin.launcher.core.download.modloader.ForgeVersionClient
 import com.booxin.launcher.core.download.modloader.ModLoaderKind
+import com.booxin.launcher.core.download.modloader.NeoForgeBuild
+import com.booxin.launcher.core.download.modloader.NeoForgeVersionClient
 import com.booxin.launcher.core.java.JavaInstallState
 import com.booxin.launcher.data.model.GameVersion
 import com.booxin.launcher.data.model.VersionType
@@ -38,11 +41,13 @@ class DownloadFragment : Fragment() {
     private var allRemote: List<GameVersion> = emptyList()
     private var installing = false
     private val forgeClient = ForgeVersionClient()
+    private val neoForgeClient = NeoForgeVersionClient()
 
     private val adapter = VersionsAdapter(installedMode = false) { version ->
         if (installing) return@VersionsAdapter
         when (loader) {
             ModLoaderKind.FORGE -> pickForgeBuild(version)
+            ModLoaderKind.NEOFORGE -> pickNeoForgeBuild(version)
             ModLoaderKind.VANILLA -> startInstall(version)
         }
     }
@@ -155,19 +160,29 @@ class DownloadFragment : Fragment() {
         binding.chipVanilla.setOnCheckedChangeListener { _, checked ->
             if (checked) loader = ModLoaderKind.VANILLA
         }
-        binding.chipForge.isEnabled = true
-        binding.chipForge.isCheckable = true
-        binding.chipForge.text = getString(R.string.download_loader_forge)
-        binding.chipForge.setOnCheckedChangeListener { _, checked ->
-            if (checked) loader = ModLoaderKind.FORGE
+        enableLoaderChip(binding.chipForge, R.string.download_loader_forge) {
+            loader = ModLoaderKind.FORGE
+        }
+        enableLoaderChip(binding.chipNeoForge, R.string.download_loader_neoforge) {
+            loader = ModLoaderKind.NEOFORGE
         }
         listOf(
-            binding.chipNeoForge to R.string.download_loader_neoforge,
             binding.chipFabric to R.string.download_loader_fabric,
             binding.chipQuilt to R.string.download_loader_quilt,
             binding.chipOptiFine to R.string.download_loader_optifine
         ).forEach { (chip, labelRes) ->
             styleWipChip(chip, getString(labelRes), wip)
+        }
+    }
+
+    private fun enableLoaderChip(chip: Chip, labelRes: Int, onSelected: () -> Unit) {
+        chip.isEnabled = true
+        chip.isCheckable = true
+        chip.alpha = 1f
+        chip.text = getString(labelRes)
+        chip.setOnClickListener(null)
+        chip.setOnCheckedChangeListener { _, checked ->
+            if (checked) onSelected()
         }
     }
 
@@ -265,10 +280,34 @@ class DownloadFragment : Fragment() {
         }
     }
 
-    private fun startForgeInstall(
-        mcVersion: GameVersion,
-        build: com.booxin.launcher.core.download.modloader.ForgeBuild
-    ) {
+    private fun pickNeoForgeBuild(version: GameVersion) {
+        viewLifecycleOwner.lifecycleScope.launch {
+            val result = neoForgeClient.listBuilds(version.id)
+            val builds = result.getOrNull().orEmpty()
+            if (builds.isEmpty()) {
+                Toast.makeText(
+                    requireContext(),
+                    getString(
+                        R.string.download_neoforge_empty,
+                        result.exceptionOrNull()?.message ?: version.id
+                    ),
+                    Toast.LENGTH_LONG
+                ).show()
+                return@launch
+            }
+            val labels = builds.map { build ->
+                build.displayName + if (build.recommended) " ★" else ""
+            }.toTypedArray()
+            MaterialAlertDialogBuilder(requireContext())
+                .setTitle(getString(R.string.download_neoforge_pick, version.id))
+                .setItems(labels) { _, which ->
+                    startNeoForgeInstall(version, builds[which])
+                }
+                .show()
+        }
+    }
+
+    private fun startForgeInstall(mcVersion: GameVersion, build: ForgeBuild) {
         viewLifecycleOwner.lifecycleScope.launch {
             installing = true
             val b = _binding ?: return@launch
@@ -278,26 +317,44 @@ class DownloadFragment : Fragment() {
             b.textProgress.text = getString(R.string.download_forge_installing, build.displayName)
             val runtime = AppContainer.gameRuntime as BooxinGameRuntime
             val result = runtime.prepareForge(mcVersion.id, build.loaderVersion, mcVersion.url)
-            installing = false
-            val end = _binding ?: return@launch
-            val context = context ?: return@launch
-            if (result.isSuccess) {
-                end.progressPanel.isVisible = false
-                Toast.makeText(
-                    context,
-                    getString(R.string.download_install_done, result.getOrThrow()),
-                    Toast.LENGTH_SHORT
-                ).show()
-                adapter.notifyDataSetChanged()
-            } else {
-                val message = result.exceptionOrNull()?.message ?: "unknown"
-                end.textProgress.text = message
-                Toast.makeText(
-                    context,
-                    getString(R.string.download_install_failed, message),
-                    Toast.LENGTH_LONG
-                ).show()
-            }
+            finishLoaderInstall(result)
+        }
+    }
+
+    private fun startNeoForgeInstall(mcVersion: GameVersion, build: NeoForgeBuild) {
+        viewLifecycleOwner.lifecycleScope.launch {
+            installing = true
+            val b = _binding ?: return@launch
+            b.progressPanel.isVisible = true
+            b.progressDownload.isIndeterminate = false
+            b.progressDownload.progress = 0
+            b.textProgress.text = getString(R.string.download_neoforge_installing, build.displayName)
+            val runtime = AppContainer.gameRuntime as BooxinGameRuntime
+            val result = runtime.prepareNeoForge(mcVersion.id, build.loaderVersion, mcVersion.url)
+            finishLoaderInstall(result)
+        }
+    }
+
+    private fun finishLoaderInstall(result: Result<String>) {
+        installing = false
+        val end = _binding ?: return
+        val context = context ?: return
+        if (result.isSuccess) {
+            end.progressPanel.isVisible = false
+            Toast.makeText(
+                context,
+                getString(R.string.download_install_done, result.getOrThrow()),
+                Toast.LENGTH_SHORT
+            ).show()
+            adapter.notifyDataSetChanged()
+        } else {
+            val message = result.exceptionOrNull()?.message ?: "unknown"
+            end.textProgress.text = message
+            Toast.makeText(
+                context,
+                getString(R.string.download_install_failed, message),
+                Toast.LENGTH_LONG
+            ).show()
         }
     }
 

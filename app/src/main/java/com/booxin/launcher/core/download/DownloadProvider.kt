@@ -59,7 +59,10 @@ class BmclApiDownloadProvider(
             "https://resources.download.minecraft.net" to "$DEFAULT_API_ROOT/assets",
             // Forge installer processor deps (asm / trove / fml*) — official Maven often 403 in CN.
             "https://maven.minecraftforge.net" to "$DEFAULT_API_ROOT/maven",
-            "https://files.minecraftforge.net/maven" to "$DEFAULT_API_ROOT/maven"
+            "https://files.minecraftforge.net/maven" to "$DEFAULT_API_ROOT/maven",
+            // NeoForge libs / installer artifacts.
+            "https://maven.neoforged.net/releases" to "$DEFAULT_API_ROOT/maven",
+            "https://maven.neoforged.net" to "$DEFAULT_API_ROOT/maven"
         )
     }
 }
@@ -105,12 +108,20 @@ class CascadeDownloadProvider(
                 rawUrl.removePrefix("https://maven.minecraftforge.net/")
             rawUrl.startsWith("https://files.minecraftforge.net/maven/") ->
                 rawUrl.removePrefix("https://files.minecraftforge.net/maven/")
+            rawUrl.startsWith("https://maven.neoforged.net/releases/") ->
+                rawUrl.removePrefix("https://maven.neoforged.net/releases/")
+            rawUrl.startsWith("https://maven.neoforged.net/") ->
+                rawUrl.removePrefix("https://maven.neoforged.net/")
             rawUrl.startsWith("https://libraries.minecraft.net/") ->
                 rawUrl.removePrefix("https://libraries.minecraft.net/")
             else -> return emptyList()
         }
-        if (path.isBlank() || path.contains("net/minecraftforge/forge/")) {
-            // Forge universal/client jars stay on Forge/BMCL maven, not Maven Central.
+        if (path.isBlank() ||
+            path.contains("net/minecraftforge/forge/") ||
+            path.contains("net/neoforged/neoforge/") ||
+            path.contains("net/neoforged/forge/")
+        ) {
+            // Forge/NeoForge universal/client jars stay on their Maven/BMCL mirrors.
             return emptyList()
         }
         return listOf("https://repo1.maven.org/maven2/$path")
@@ -138,7 +149,8 @@ class CascadeDownloadProvider(
 
     private fun isForgeMavenUrl(rawUrl: String): Boolean =
         rawUrl.startsWith("https://maven.minecraftforge.net/") ||
-            rawUrl.startsWith("https://files.minecraftforge.net/maven/")
+            rawUrl.startsWith("https://files.minecraftforge.net/maven/") ||
+            rawUrl.startsWith("https://maven.neoforged.net/")
 }
 
 object DownloadProviders {

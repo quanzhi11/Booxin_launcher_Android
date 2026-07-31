@@ -173,18 +173,38 @@ class LauncherRepository(
         mcVersion: String,
         loaderVersion: String,
         versionJsonUrl: String? = null,
-        java: InstalledJavaRuntime
+        java: InstalledJavaRuntime,
+        isNeoForge: Boolean = false
     ): Result<String> {
-        val result = forgeInstaller.install(mcVersion, loaderVersion, versionJsonUrl, java)
+        val result = forgeInstaller.install(
+            mcVersion = mcVersion,
+            loaderVersion = loaderVersion,
+            versionJsonUrl = versionJsonUrl,
+            java = java,
+            isNeoForge = isNeoForge
+        )
         if (result.isSuccess) {
             val versionId = result.getOrThrow()
-            // Forge's vanilla base is a dependency only — do not list it as a separate version.
+            // Forge/NeoForge vanilla base is a dependency only — do not list it as a separate version.
             markExplicitVersion(versionId)
             refreshInstalledVersions()
             selectVersion(versionId)
         }
         return result
     }
+
+    suspend fun installNeoForgeVersion(
+        mcVersion: String,
+        loaderVersion: String,
+        versionJsonUrl: String? = null,
+        java: InstalledJavaRuntime
+    ): Result<String> = installForgeVersion(
+        mcVersion = mcVersion,
+        loaderVersion = loaderVersion,
+        versionJsonUrl = versionJsonUrl,
+        java = java,
+        isNeoForge = true
+    )
 
     fun selectVersion(versionId: String) {
         _session.update { it.copy(selectedVersionId = versionId) }
@@ -205,9 +225,19 @@ class LauncherRepository(
     }
 
     private fun clearForgeInstallerCache(versionId: String) {
+        val neoMarker = "-neoforge-"
+        if (versionId.contains(neoMarker, ignoreCase = true)) {
+            val parts = versionId.split(neoMarker, ignoreCase = true, limit = 2)
+            if (parts.size == 2) {
+                File(LauncherPaths.rootDir, "cache/neoforge/installer-${parts[0]}-${parts[1]}.jar")
+                    .takeIf { it.isFile }
+                    ?.delete()
+            }
+            return
+        }
         val marker = "-forge-"
         if (!versionId.contains(marker, ignoreCase = true)) return
-        val parts = versionId.split(marker, limit = 2)
+        val parts = versionId.split(marker, ignoreCase = true, limit = 2)
         if (parts.size != 2) return
         File(LauncherPaths.rootDir, "cache/forge/installer-${parts[0]}-${parts[1]}.jar")
             .takeIf { it.isFile }
