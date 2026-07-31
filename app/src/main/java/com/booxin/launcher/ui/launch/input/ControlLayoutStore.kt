@@ -53,6 +53,11 @@ object ControlLayoutStore {
                     .put("x", b.x.toDouble())
                     .put("y", b.y.toDouble())
                     .put("sizeDp", b.sizeDp)
+                    .also { obj ->
+                        if (b.codes.size >= 2) {
+                            obj.put("codes", JSONArray(b.codes))
+                        }
+                    }
             )
         }
         val json = JSONObject()
@@ -96,14 +101,28 @@ object ControlLayoutStore {
     private fun parseButton(o: JSONObject): ControlButtonSpec? {
         val kindName = o.optString("kind")
         val kind = runCatching { ControlButtonSpec.Kind.valueOf(kindName) }.getOrNull() ?: return null
+        val codesArr = o.optJSONArray("codes")
+        val codes = if (codesArr != null && codesArr.length() >= 2) {
+            buildList {
+                for (i in 0 until codesArr.length()) {
+                    add(codesArr.optInt(i))
+                }
+            }.filter { it != 0 || kind == ControlButtonSpec.Kind.SOFT_KEYBOARD }
+        } else {
+            emptyList()
+        }
+        val code = o.optInt("code").let { primary ->
+            if (primary == 0 && codes.isNotEmpty()) codes.last() else primary
+        }
         return ControlButtonSpec(
             id = o.optString("id").ifBlank { newId() },
             label = o.optString("label").ifBlank { "?" },
             kind = kind,
-            code = o.optInt("code"),
+            code = code,
             x = o.optDouble("x", 0.5).toFloat().coerceIn(0.05f, 0.95f),
             y = o.optDouble("y", 0.5).toFloat().coerceIn(0.05f, 0.95f),
-            sizeDp = o.optInt("sizeDp", 52).coerceIn(36, 96)
+            sizeDp = o.optInt("sizeDp", 52).coerceIn(36, 96),
+            codes = codes
         )
     }
 

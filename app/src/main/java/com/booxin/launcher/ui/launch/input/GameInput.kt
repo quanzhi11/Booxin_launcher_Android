@@ -162,6 +162,26 @@ object GameInput {
         sendKeyEvent(keycode, false)
     }
 
+    /** Press keys in order, then release in reverse (Ctrl+C style). */
+    fun sendComboTap(codes: List<Int>) {
+        if (codes.isEmpty()) return
+        if (codes.size == 1) {
+            sendKeyTap(codes[0])
+            return
+        }
+        for (code in codes) sendKeyEvent(code, true)
+        for (code in codes.asReversed()) sendKeyEvent(code, false)
+    }
+
+    fun sendComboHold(codes: List<Int>, press: Boolean) {
+        if (codes.isEmpty()) return
+        if (press) {
+            for (code in codes) sendKeyEvent(code, true)
+        } else {
+            for (code in codes.asReversed()) sendKeyEvent(code, false)
+        }
+    }
+
     fun sendChar(ch: Char) {
         if (ch.code == 0) return
         CallbackBridge.sendChar(ch)

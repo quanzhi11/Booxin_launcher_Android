@@ -65,6 +65,8 @@ class ControlButtonView(
         layoutParams.width = sizePx
         layoutParams.height = sizePx
         setTextSize(TypedValue.COMPLEX_UNIT_SP, when {
+            newSpec.label.length >= 8 -> 9f
+            newSpec.label.length >= 5 -> 11f
             newSpec.sizeDp >= 60 -> 15f
             newSpec.sizeDp >= 50 -> 13f
             else -> 12f
@@ -91,7 +93,11 @@ class ControlButtonView(
         if (!holding) return
         holding = false
         when (spec.kind) {
-            ControlButtonSpec.Kind.KEY_HOLD -> GameInput.sendKeyEvent(spec.code, false)
+            ControlButtonSpec.Kind.KEY_HOLD -> {
+                val keys = spec.effectiveCodes()
+                if (keys.size >= 2) GameInput.sendComboHold(keys, false)
+                else GameInput.sendKeyEvent(spec.code, false)
+            }
             ControlButtonSpec.Kind.MOUSE_HOLD -> GameInput.sendKeyEvent(mouseVirtualCode(spec.code), false)
             else -> Unit
         }
@@ -117,7 +123,9 @@ class ControlButtonView(
                 isPressed = true
                 when (spec.kind) {
                     ControlButtonSpec.Kind.KEY_HOLD -> {
-                        GameInput.sendKeyEvent(spec.code, true)
+                        val keys = spec.effectiveCodes()
+                        if (keys.size >= 2) GameInput.sendComboHold(keys, true)
+                        else GameInput.sendKeyEvent(spec.code, true)
                         holding = true
                     }
                     ControlButtonSpec.Kind.MOUSE_HOLD -> {
@@ -136,7 +144,11 @@ class ControlButtonView(
                 isPressed = false
                 when (spec.kind) {
                     ControlButtonSpec.Kind.KEY_HOLD, ControlButtonSpec.Kind.MOUSE_HOLD -> releaseHold()
-                    ControlButtonSpec.Kind.KEY_TAP -> GameInput.sendKeyTap(spec.code)
+                    ControlButtonSpec.Kind.KEY_TAP -> {
+                        val keys = spec.effectiveCodes()
+                        if (keys.size >= 2) GameInput.sendComboTap(keys)
+                        else GameInput.sendKeyTap(spec.code)
+                    }
                     ControlButtonSpec.Kind.SCROLL -> {
                         val scroll = if (spec.code >= 0) GameInput.MOUSE_SCROLL_UP else GameInput.MOUSE_SCROLL_DOWN
                         GameInput.sendKeyEvent(scroll, true)

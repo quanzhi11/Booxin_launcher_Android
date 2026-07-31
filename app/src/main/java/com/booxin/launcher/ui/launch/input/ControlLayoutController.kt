@@ -78,25 +78,20 @@ class ControlLayoutController(
 
     fun addButton() {
         if (!editMode) enterEditMode()
-        val labels = ControlCatalog.entries.map { it.label }.toTypedArray()
-        AlertDialog.Builder(context)
-            .setTitle("添加按键")
-            .setItems(labels) { _, which ->
-                val entry = ControlCatalog.entries[which]
-                val spec = ControlButtonSpec(
-                    id = ControlLayoutStore.newId(),
-                    label = entry.label,
-                    kind = entry.kind,
-                    code = entry.code,
-                    x = 0.85f,
-                    y = 0.45f,
-                    sizeDp = entry.sizeDp
-                )
-                attach(spec, select = true)
-                persist()
-            }
-            .setNegativeButton(android.R.string.cancel, null)
-            .show()
+        AddControlKeyDialog.show(context) { picked ->
+            val spec = ControlButtonSpec(
+                id = ControlLayoutStore.newId(),
+                label = picked.label,
+                kind = picked.kind,
+                code = picked.code,
+                x = 0.85f,
+                y = 0.45f,
+                sizeDp = picked.sizeDp,
+                codes = picked.codes
+            )
+            attach(spec, select = true)
+            persist()
+        }
     }
 
     fun deleteSelected() {
