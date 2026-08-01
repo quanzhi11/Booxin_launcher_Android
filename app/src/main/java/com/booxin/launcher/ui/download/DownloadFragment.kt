@@ -17,6 +17,8 @@ import com.booxin.launcher.R
 import com.booxin.launcher.core.BooxinGameRuntime
 import com.booxin.launcher.core.download.game.GameInstallPhase
 import com.booxin.launcher.core.download.game.GameInstallProgress
+import com.booxin.launcher.core.download.modloader.FabricBuild
+import com.booxin.launcher.core.download.modloader.FabricVersionClient
 import com.booxin.launcher.core.download.modloader.ForgeBuild
 import com.booxin.launcher.core.download.modloader.ForgeVersionClient
 import com.booxin.launcher.core.download.modloader.ModLoaderKind
@@ -42,12 +44,14 @@ class DownloadFragment : Fragment() {
     private var installing = false
     private val forgeClient = ForgeVersionClient()
     private val neoForgeClient = NeoForgeVersionClient()
+    private val fabricClient = FabricVersionClient()
 
     private val adapter = VersionsAdapter(installedMode = false) { version ->
         if (installing) return@VersionsAdapter
         when (loader) {
             ModLoaderKind.FORGE -> pickForgeBuild(version)
             ModLoaderKind.NEOFORGE -> pickNeoForgeBuild(version)
+            ModLoaderKind.FABRIC -> pickFabricBuild(version)
             ModLoaderKind.VANILLA -> startInstall(version)
         }
     }
@@ -105,20 +109,12 @@ class DownloadFragment : Fragment() {
                 }
                 launch {
                     AppContainer.repository.forgeInstallProgress.collect { progress ->
-                        val b = _binding ?: return@collect
-                        if (progress == null) return@collect
-                        b.progressPanel.isVisible =
-                            progress.phase != GameInstallPhase.DONE &&
-                                progress.phase != GameInstallPhase.FAILED &&
-                                progress.phase != GameInstallPhase.IDLE
-                        b.textProgress.text = formatProgressText(progress)
-                        val fraction = progress.fraction
-                        if (fraction >= 0f) {
-                            b.progressDownload.isIndeterminate = false
-                            b.progressDownload.progress = (fraction * 100).toInt()
-                        } else {
-                            b.progressDownload.isIndeterminate = true
-                        }
+                        applyLoaderProgress(progress)
+                    }
+                }
+                launch {
+                    AppContainer.repository.fabricInstallProgress.collect { progress ->
+                        applyLoaderProgress(progress)
                     }
                 }
                 launch {
@@ -166,8 +162,10 @@ class DownloadFragment : Fragment() {
         enableLoaderChip(binding.chipNeoForge, R.string.download_loader_neoforge) {
             loader = ModLoaderKind.NEOFORGE
         }
+        enableLoaderChip(binding.chipFabric, R.string.download_loader_fabric) {
+            loader = ModLoaderKind.FABRIC
+        }
         listOf(
-            binding.chipFabric to R.string.download_loader_fabric,
             binding.chipQuilt to R.string.download_loader_quilt,
             binding.chipOptiFine to R.string.download_loader_optifine
         ).forEach { (chip, labelRes) ->
@@ -332,6 +330,64 @@ class DownloadFragment : Fragment() {
             val runtime = AppContainer.gameRuntime as BooxinGameRuntime
             val result = runtime.prepareNeoForge(mcVersion.id, build.loaderVersion, mcVersion.url)
             finishLoaderInstall(result)
+        }
+    }
+
+    private fun pickFabricBuild(version: GameVersion) {
+        viewLifecycleOwner.lifecycleScope.launch {
+            val result = fabricClient.listBuilds(version.id)
+            val builds = result.getOrNull().orEmpty()
+            if (builds.isEmpty()) {
+                Toast.makeText(
+                    requireContext(),
+                    getString(
+                        R.string.download_fabric_empty,
+                        result.exceptionOrNull()?.message ?: version.id
+                    ),
+                    Toast.LENGTH_LONG
+                ).show()
+                return@launch
+            }
+            val labels = builds.map { build ->
+                build.displayName + if (build.recommended) " ★" else ""
+            }.toTypedArray()
+            MaterialAlertDialogBuilder(requireContext())
+                .setTitle(getString(R.string.download_fabric_pick, version.id))
+                .setItems(labels) { _, which ->
+                    startFabricInstall(version, builds[which])
+                }
+                .show()
+        }
+    }
+
+    private fun startFabricInstall(mcVersion: GameVersion, build: FabricBuild) {
+        viewLifecycleOwner.lifecycleScope.launch {
+            installing = true
+            val b = _binding ?: return@launch
+            b.progressPanel.isVisible = true
+            b.progressDownload.isIndeterminate = false
+            b.progressDownload.progress = 0
+            b.textProgress.text = getString(R.string.download_fabric_installing, build.displayName)
+            val runtime = AppContainer.gameRuntime as BooxinGameRuntime
+            val result = runtime.prepareFabric(mcVersion.id, build.loaderVersion, mcVersion.url)
+            finishLoaderInstall(result)
+        }
+    }
+
+    private fun applyLoaderProgress(progress: GameInstallProgress?) {
+        val b = _binding ?: return
+        if (progress == null) return
+        b.progressPanel.isVisible =
+            progress.phase != GameInstallPhase.DONE &&
+                progress.phase != GameInstallPhase.FAILED &&
+                progress.phase != GameInstallPhase.IDLE
+        b.textProgress.text = formatProgressText(progress)
+        val fraction = progress.fraction
+        if (fraction >= 0f) {
+            b.progressDownload.isIndeterminate = false
+            b.progressDownload.progress = (fraction * 100).toInt()
+        } else {
+            b.progressDownload.isIndeterminate = true
         }
     }
 

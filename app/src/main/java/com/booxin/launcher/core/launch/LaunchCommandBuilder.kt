@@ -184,12 +184,27 @@ class LaunchCommandBuilder(
         )
 
         val classpathString = existingClasspath.joinToString(File.pathSeparator) { it.absolutePath }
-        if (isForgeOrLoader) {
+        val isFabric = isFabricMainClass(mainClass)
+        if (isForgeOrLoader && !isFabric) {
             // FCL FCLGameLauncher: disable Forge splash animation.
             disableForgeSplash(gameDir)
         }
-        val jvmArgs = if (isForgeOrLoader) {
-            buildForgeJvmArgs(
+        val jvmArgs = when {
+            isFabric -> buildFabricJvmArgs(
+                jarFile = jarFile,
+                gameDir = gameDir,
+                maxMemoryMb = maxMemoryMb,
+                windowWidth = windowWidth,
+                windowHeight = windowHeight,
+                javaHome = java.homeDir,
+                javaMajor = java.majorVersion,
+                classpath = classpathString,
+                renderer = renderer,
+                versionRoot = root,
+                tokens = tokens,
+                androidLwjgl = androidLwjgl
+            )
+            isForgeOrLoader -> buildForgeJvmArgs(
                 jarFile = jarFile,
                 gameDir = gameDir,
                 maxMemoryMb = maxMemoryMb,
@@ -204,8 +219,7 @@ class LaunchCommandBuilder(
                 tokens = tokens,
                 mcVersionId = mcVersionId
             )
-        } else {
-            buildVanillaJvmArgs(
+            else -> buildVanillaJvmArgs(
                 jarFile = jarFile,
                 gameDir = gameDir,
                 maxMemoryMb = maxMemoryMb,
@@ -294,7 +308,7 @@ class LaunchCommandBuilder(
         )
     }
 
-    /** Vanilla-only JVM args 鈥?no Forge module-path / FCL --add-exports. */
+    /** Vanilla-only JVM args — no Forge module-path / FCL --add-exports. */
     private fun buildVanillaJvmArgs(
         jarFile: File,
         gameDir: File,
@@ -318,6 +332,55 @@ class LaunchCommandBuilder(
             renderer = renderer,
             forgeExtras = false
         )
+    }
+
+    /**
+     * Fabric/Knot: keep Android LWJGL on the app (system) classloader.
+     * HotSpot preinit already System.loads libpojavexec/liblwjgl via AppClassLoader;
+     * if Knot reloads org.lwjgl.* it hits "already loaded in another classloader".
+     */
+    private fun buildFabricJvmArgs(
+        jarFile: File,
+        gameDir: File,
+        maxMemoryMb: Int,
+        windowWidth: Int,
+        windowHeight: Int,
+        javaHome: File,
+        javaMajor: Int,
+        classpath: String,
+        renderer: GlRendererKind,
+        versionRoot: JSONObject,
+        tokens: Map<String, String>,
+        androidLwjgl: File
+    ): List<String> {
+        val nativeDir = AndroidGameRuntime.nativesDir().absolutePath
+        val versionJvm = parseVersionJvmArgs(versionRoot, tokens, nativeDir)
+        return buildList {
+            addAll(
+                buildCommonAndroidJvmArgs(
+                    jarFile = jarFile,
+                    gameDir = gameDir,
+                    maxMemoryMb = maxMemoryMb,
+                    windowWidth = windowWidth,
+                    windowHeight = windowHeight,
+                    javaHome = javaHome,
+                    javaMajor = javaMajor,
+                    classpath = classpath,
+                    renderer = renderer,
+                    forgeExtras = false
+                )
+            )
+            addAll(versionJvm)
+            add("-Dfabric.systemLibraries=${androidLwjgl.absolutePath}")
+            add("-Dfabric.noGui=true")
+        }
+    }
+
+    private fun isFabricMainClass(mainClass: String): Boolean {
+        val lowered = mainClass.lowercase()
+        return "knotclient" in lowered ||
+            "fabricmc.loader" in lowered ||
+            "net.fabricmc" in lowered
     }
 
     /**

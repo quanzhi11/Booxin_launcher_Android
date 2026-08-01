@@ -57,6 +57,17 @@ class BooxinGameRuntime(
         return repository.installNeoForgeVersion(mcVersion, loaderVersion, versionJsonUrl, java)
     }
 
+    suspend fun prepareFabric(
+        mcVersion: String,
+        loaderVersion: String,
+        versionJsonUrl: String? = null
+    ): Result<String> {
+        javaEnvironment.ensureForMinecraft(mcVersion).getOrElse {
+            return Result.failure(it)
+        }
+        return repository.installFabricVersion(mcVersion, loaderVersion, versionJsonUrl)
+    }
+
     override suspend fun launch(
         context: Context,
         versionId: String,

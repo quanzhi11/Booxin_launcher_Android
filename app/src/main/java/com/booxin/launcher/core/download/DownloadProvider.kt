@@ -62,7 +62,10 @@ class BmclApiDownloadProvider(
             "https://files.minecraftforge.net/maven" to "$DEFAULT_API_ROOT/maven",
             // NeoForge libs / installer artifacts.
             "https://maven.neoforged.net/releases" to "$DEFAULT_API_ROOT/maven",
-            "https://maven.neoforged.net" to "$DEFAULT_API_ROOT/maven"
+            "https://maven.neoforged.net" to "$DEFAULT_API_ROOT/maven",
+            // Fabric loader / intermediary / mixin (profile libraries use this base).
+            "https://maven.fabricmc.net/" to "$DEFAULT_API_ROOT/maven/",
+            "https://maven.fabricmc.net" to "$DEFAULT_API_ROOT/maven"
         )
     }
 }
@@ -112,6 +115,8 @@ class CascadeDownloadProvider(
                 rawUrl.removePrefix("https://maven.neoforged.net/releases/")
             rawUrl.startsWith("https://maven.neoforged.net/") ->
                 rawUrl.removePrefix("https://maven.neoforged.net/")
+            rawUrl.startsWith("https://maven.fabricmc.net/") ->
+                rawUrl.removePrefix("https://maven.fabricmc.net/")
             rawUrl.startsWith("https://libraries.minecraft.net/") ->
                 rawUrl.removePrefix("https://libraries.minecraft.net/")
             else -> return emptyList()
@@ -119,9 +124,10 @@ class CascadeDownloadProvider(
         if (path.isBlank() ||
             path.contains("net/minecraftforge/forge/") ||
             path.contains("net/neoforged/neoforge/") ||
-            path.contains("net/neoforged/forge/")
+            path.contains("net/neoforged/forge/") ||
+            path.contains("net/fabricmc/")
         ) {
-            // Forge/NeoForge universal/client jars stay on their Maven/BMCL mirrors.
+            // Forge/NeoForge/Fabric artifacts stay on their Maven/BMCL mirrors.
             return emptyList()
         }
         return listOf("https://repo1.maven.org/maven2/$path")
@@ -150,7 +156,8 @@ class CascadeDownloadProvider(
     private fun isForgeMavenUrl(rawUrl: String): Boolean =
         rawUrl.startsWith("https://maven.minecraftforge.net/") ||
             rawUrl.startsWith("https://files.minecraftforge.net/maven/") ||
-            rawUrl.startsWith("https://maven.neoforged.net/")
+            rawUrl.startsWith("https://maven.neoforged.net/") ||
+            rawUrl.startsWith("https://maven.fabricmc.net/")
 }
 
 object DownloadProviders {

@@ -5,6 +5,7 @@ import com.booxin.launcher.core.LauncherPaths
 import com.booxin.launcher.core.download.game.VanillaGameInstaller
 import com.booxin.launcher.core.download.game.VersionJsonMerger
 import com.booxin.launcher.core.download.game.VersionManifestClient
+import com.booxin.launcher.core.download.modloader.FabricGameInstaller
 import com.booxin.launcher.core.download.modloader.ForgeGameInstaller
 import com.booxin.launcher.core.java.InstalledJavaRuntime
 import com.booxin.launcher.data.model.AccountType
@@ -27,7 +28,8 @@ class LauncherRepository(
     private val appContext: Context,
     private val manifestClient: VersionManifestClient = VersionManifestClient(),
     private val gameInstaller: VanillaGameInstaller = VanillaGameInstaller(),
-    private val forgeInstaller: ForgeGameInstaller = ForgeGameInstaller()
+    private val forgeInstaller: ForgeGameInstaller = ForgeGameInstaller(),
+    private val fabricInstaller: FabricGameInstaller = FabricGameInstaller()
 ) {
 
     private val prefs by lazy {
@@ -51,6 +53,7 @@ class LauncherRepository(
 
     val installProgress = gameInstaller.progress
     val forgeInstallProgress = forgeInstaller.progress
+    val fabricInstallProgress = fabricInstaller.progress
 
     init {
         loadAccounts()
@@ -63,7 +66,9 @@ class LauncherRepository(
             .orEmpty()
         val allInstalled = dirs.mapNotNull { dir ->
             val id = dir.name
-            val installed = gameInstaller.isInstalled(id) || forgeInstaller.isInstalled(id)
+            val installed = gameInstaller.isInstalled(id) ||
+                forgeInstaller.isInstalled(id) ||
+                fabricInstaller.isInstalled(id)
             if (!installed) return@mapNotNull null
             val remote = _remoteVersions.value.firstOrNull { it.id == id }
             GameVersion(
@@ -149,7 +154,10 @@ class LauncherRepository(
      * re-installed via the vanilla installer (their ids are not Mojang versions).
      */
     suspend fun ensureVersionReady(versionId: String): Result<Unit> {
-        if (forgeInstaller.isInstalled(versionId) || VersionJsonMerger.isModLoaderVersion(versionId)) {
+        if (forgeInstaller.isInstalled(versionId) ||
+            fabricInstaller.isInstalled(versionId) ||
+            VersionJsonMerger.isModLoaderVersion(versionId)
+        ) {
             val parent = VersionJsonMerger.resolveMinecraftVersionId(versionId)
             if (parent != versionId && !gameInstaller.isInstalled(parent)) {
                 val remote = _remoteVersions.value.firstOrNull { it.id == parent }
@@ -157,7 +165,10 @@ class LauncherRepository(
                     return Result.failure(it)
                 }
             }
-            if (!forgeInstaller.isInstalled(versionId) && VersionJsonMerger.versionJsonFile(versionId) == null) {
+            val ready = forgeInstaller.isInstalled(versionId) ||
+                fabricInstaller.isInstalled(versionId) ||
+                VersionJsonMerger.versionJsonFile(versionId) != null
+            if (!ready) {
                 return Result.failure(IllegalStateException("模组加载器版本未安装: $versionId"))
             }
             refreshInstalledVersions()
@@ -205,6 +216,21 @@ class LauncherRepository(
         java = java,
         isNeoForge = true
     )
+
+    suspend fun installFabricVersion(
+        mcVersion: String,
+        loaderVersion: String,
+        versionJsonUrl: String? = null
+    ): Result<String> {
+        val result = fabricInstaller.install(mcVersion, loaderVersion, versionJsonUrl)
+        if (result.isSuccess) {
+            val versionId = result.getOrThrow()
+            markExplicitVersion(versionId)
+            refreshInstalledVersions()
+            selectVersion(versionId)
+        }
+        return result
+    }
 
     fun selectVersion(versionId: String) {
         _session.update { it.copy(selectedVersionId = versionId) }

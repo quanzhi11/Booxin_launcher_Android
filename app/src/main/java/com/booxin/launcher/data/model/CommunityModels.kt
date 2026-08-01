@@ -22,8 +22,8 @@ enum class CommunityLoader(val apiValue: String?) {
             return when {
                 "-neoforge-" in lowered -> NEOFORGE
                 "-forge-" in lowered -> FORGE
-                "-fabric-" in lowered -> FABRIC
-                "-quilt-" in lowered -> QUILT
+                "-fabric-" in lowered || lowered.startsWith("fabric-loader-") -> FABRIC
+                "-quilt-" in lowered || lowered.startsWith("quilt-loader-") -> QUILT
                 else -> ANY
             }
         }

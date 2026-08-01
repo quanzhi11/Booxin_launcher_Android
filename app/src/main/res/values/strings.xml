@@ -114,6 +114,9 @@
     <string name="download_neoforge_pick">选择 %1$s 的 NeoForge 版本</string>
     <string name="download_neoforge_empty">未获取到 NeoForge 版本：%1$s</string>
     <string name="download_neoforge_installing">正在安装 %1$s…</string>
+    <string name="download_fabric_pick">选择 %1$s 的 Fabric Loader 版本</string>
+    <string name="download_fabric_empty">未获取到 Fabric 版本：%1$s</string>
+    <string name="download_fabric_installing">正在安装 %1$s…</string>
     <string name="forge_processor_fg_channel">Forge 安装</string>
     <string name="forge_processor_fg_title">正在安装 Forge</string>
     <string name="forge_processor_fg_text">正在运行 Forge 安装工具，请勿关闭</string>
