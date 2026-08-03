@@ -12,12 +12,11 @@ import android.view.Choreographer;
 import dalvik.annotation.optimization.CriticalNative;
 
 /**
- * Android-side GLFW bridge for libpojavexec.so (FCL-compatible).
- * Must live in the app dex so {@link com.booxin.launcher.core.launch.GameSurfaceBridge}
- * can call setupBridgeWindow before the JVM starts.
- *
- * Touch / key events are injected from ART via {@code nativeSend*}; grab-state changes
- * are delivered back to ART through {@link #onGrabStateChanged(boolean)}.
+ * HotSpot / JNI ABI class required by the transitional exec native.
+ * <p>
+ * ART and UI code must use {@link com.booxin.runtime.BooxinBridge} instead.
+ * This class remains under {@code org.lwjgl.glfw} because the native RegisterNatives
+ * table and LWJGL bridge patch look up that exact name.
  */
 public class CallbackBridge {
     private static final String TAG = "BooxinInput";
@@ -278,8 +277,9 @@ public class CallbackBridge {
      * Called from libpojavexec (Dalvik JNI) when GLFW grab state changes.
      * Timing matches FCL: Choreographer delay 16ms before notifying UI.
      */
+    /** Invoked from native bridge when GLFW grab state changes. */
     @SuppressWarnings("unused")
-    private static void onGrabStateChanged(final boolean grabbing) {
+    public static void onGrabStateChanged(final boolean grabbing) {
         isGrabbing = grabbing;
         Log.i(TAG, "onGrabStateChanged grabbing=" + grabbing);
         final GrabListener listener = grabListener;

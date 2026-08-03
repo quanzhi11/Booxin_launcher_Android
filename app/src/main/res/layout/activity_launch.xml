@@ -20,6 +20,7 @@
         android:visibility="gone"
         android:clickable="false"
         android:focusable="false"
+        android:splitMotionEvents="true"
         android:clipChildren="false">
 
         <com.booxin.launcher.ui.launch.input.GameTouchPad
@@ -45,6 +46,7 @@
             android:layout_height="match_parent"
             android:clickable="false"
             android:focusable="false"
+            android:splitMotionEvents="true"
             android:clipChildren="false" />
 
         <com.booxin.launcher.ui.launch.input.VirtualJoystick

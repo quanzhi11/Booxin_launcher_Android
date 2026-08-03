@@ -23,8 +23,11 @@ import com.booxin.launcher.databinding.FragmentCommunityProjectDetailBinding
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import java.text.NumberFormat
 import java.util.Locale
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class CommunityProjectDetailFragment : Fragment() {
 
@@ -98,12 +101,14 @@ class CommunityProjectDetailFragment : Fragment() {
         loadJob?.cancel()
         loadJob = viewLifecycleOwner.lifecycleScope.launch {
             showLoading(getString(R.string.community_loading_detail))
-            val projectResult = AppContainer.communityRepository.getProject(projectId)
-            val versionsResult = AppContainer.communityRepository.getProjectVersions(projectId)
-            if (_binding == null) return@launch
-            hideLoading()
+            val repo = AppContainer.communityRepository
+            // Fetch project + versions in parallel; paint project as soon as it arrives.
+            val projectDeferred = async { repo.getProject(projectId) }
+            val versionsDeferred = async { repo.getProjectVersions(projectId) }
 
-            val loadedProject = projectResult.getOrElse { err ->
+            val loadedProject = projectDeferred.await().getOrElse { err ->
+                if (_binding == null) return@launch
+                hideLoading()
                 if (isAdded) {
                     Toast.makeText(
                         requireContext(),
@@ -114,7 +119,21 @@ class CommunityProjectDetailFragment : Fragment() {
                 }
                 return@launch
             }
-            val loadedVersions = versionsResult.getOrElse { err ->
+            if (_binding == null) return@launch
+            project = loadedProject
+            bindProject(loadedProject)
+            // Keep a light versions placeholder while the (often larger) versions call finishes.
+            binding.textVersionsEmpty.isVisible = true
+            binding.textVersionsEmpty.text = getString(R.string.community_loading_versions)
+            versionAdapter.submit(emptyList(), null)
+            hideLoading()
+
+            val loadedVersions = versionsDeferred.await().getOrElse { err ->
+                if (_binding == null) return@launch
+                binding.textVersionsEmpty.text = getString(
+                    R.string.community_versions_failed,
+                    err.message ?: "unknown"
+                )
                 if (isAdded) {
                     Toast.makeText(
                         requireContext(),
@@ -125,11 +144,18 @@ class CommunityProjectDetailFragment : Fragment() {
                 emptyList()
             }
             if (_binding == null) return@launch
-            project = loadedProject
-            versions = sortVersions(loadedVersions)
+            binding.textVersionsEmpty.text = getString(R.string.community_versions_empty)
+            val prepared = withContext(Dispatchers.Default) {
+                prepareVersionRows(loadedVersions)
+            }
+            if (_binding == null) return@launch
+            versions = prepared.map { it.first }
             selectedVersion = versions.firstOrNull()
-            bindProject(loadedProject)
-            bindVersions()
+            bindVersionRows(
+                prepared.map { (version, targetId) ->
+                    version to targetId?.let { getString(R.string.community_recommended_short, it) }
+                }
+            )
             refreshDependencies()
         }
     }
@@ -175,25 +201,26 @@ class CommunityProjectDetailFragment : Fragment() {
         applyDescriptionState()
     }
 
-    private fun sortVersions(list: List<ModrinthProjectVersion>): List<ModrinthProjectVersion> {
+    /** Returns version → recommended install target id (not display text). */
+    private fun prepareVersionRows(
+        list: List<ModrinthProjectVersion>
+    ): List<Pair<ModrinthProjectVersion, String?>> {
         val selected = AppContainer.repository.session.value.selectedVersionId
-        return list.sortedWith(
+        val labels = AppContainer.communityRepository.recommendLabels(contentType, list)
+        val sorted = list.sortedWith(
             compareByDescending<ModrinthProjectVersion> {
-                selected != null && AppContainer.communityRepository.recommendTargets(contentType, it)
-                    .any { target -> target.versionId == selected }
+                selected != null && labels[it.id] == selected
             }.thenByDescending { it.datePublished.orEmpty() }
         )
+        // Cap UI list — full Modrinth history is huge and rarely needed for install.
+        return sorted.take(MAX_VERSIONS_SHOWN).map { version ->
+            version to labels[version.id]
+        }
     }
 
-    private fun bindVersions() {
+    private fun bindVersionRows(rows: List<Pair<ModrinthProjectVersion, String?>>) {
         val b = _binding ?: return
-        b.textVersionsEmpty.isVisible = versions.isEmpty()
-        val rows = versions.map { version ->
-            val recommend = AppContainer.communityRepository.recommendTargets(contentType, version)
-                .firstOrNull { it.recommended }
-                ?.let { getString(R.string.community_recommended_short, it.versionId) }
-            version to recommend
-        }
+        b.textVersionsEmpty.isVisible = rows.isEmpty()
         versionAdapter.submit(rows, selectedVersion?.id)
     }
 
@@ -361,5 +388,6 @@ class CommunityProjectDetailFragment : Fragment() {
     companion object {
         const val ARG_PROJECT_ID = "projectId"
         const val ARG_CONTENT_TYPE = "contentType"
+        private const val MAX_VERSIONS_SHOWN = 40
     }
 }

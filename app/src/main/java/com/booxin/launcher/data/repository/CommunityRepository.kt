@@ -13,6 +13,8 @@ import com.booxin.launcher.data.model.ModrinthProjectVersion
 import com.booxin.launcher.data.model.ModrinthResolvedDependency
 import com.booxin.launcher.data.model.ModrinthSearchPage
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -25,6 +27,11 @@ class CommunityRepository(
     private val client: ModrinthClient = ModrinthClient(),
     private val downloader: FileDownloader = FileDownloader()
 ) {
+    private val cacheMutex = Mutex()
+    private val projectCache = mutableMapOf<String, TimedCache<ModrinthProject>>()
+    private val versionsCache = mutableMapOf<String, TimedCache<List<ModrinthProjectVersion>>>()
+    private val mcVersionCache = mutableMapOf<String, String>()
+
     suspend fun searchProjects(
         query: String,
         contentType: CommunityContentType,
@@ -38,11 +45,42 @@ class CommunityRepository(
     }
 
     suspend fun getProject(projectId: String): Result<ModrinthProject> {
-        return client.getProject(projectId)
+        cacheMutex.withLock {
+            projectCache[projectId]?.takeIf { !it.expired }?.let { return Result.success(it.value) }
+        }
+        return client.getProject(projectId).onSuccess { project ->
+            cacheMutex.withLock {
+                projectCache[projectId] = TimedCache(project)
+            }
+        }
     }
 
+    /**
+     * Prefer versions matching installed MC versions (smaller Modrinth payload).
+     * Falls back to unfiltered if the filtered list is empty.
+     */
     suspend fun getProjectVersions(projectId: String): Result<List<ModrinthProjectVersion>> {
-        return client.getProjectVersions(projectId)
+        val gameVersions = installedMinecraftVersions()
+        val cacheKey = "$projectId|${gameVersions.sorted().joinToString(",")}"
+        cacheMutex.withLock {
+            versionsCache[cacheKey]?.takeIf { !it.expired }?.let { return Result.success(it.value) }
+        }
+
+        val filtered = if (gameVersions.isNotEmpty()) {
+            client.getProjectVersions(projectId, gameVersions = gameVersions)
+        } else {
+            Result.success(emptyList())
+        }
+        val result = filtered.getOrNull()
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { Result.success(it) }
+            ?: client.getProjectVersions(projectId)
+
+        return result.onSuccess { versions ->
+            cacheMutex.withLock {
+                versionsCache[cacheKey] = TimedCache(versions)
+            }
+        }
     }
 
     suspend fun resolveRequiredDependencies(
@@ -73,18 +111,37 @@ class CommunityRepository(
         version: ModrinthProjectVersion
     ): List<InstallTargetRecommendation> {
         val selectedId = launcherRepository.session.value.selectedVersionId
-        val installed = launcherRepository.installedVersions.value
-        val compatible = installed.filter { installedVersion ->
-            isVersionCompatible(installedVersion.id, contentType, version)
+        val profiles = installedProfiles()
+        val compatible = profiles.filter { profile ->
+            isProfileCompatible(profile, contentType, version)
         }
-        return compatible.mapIndexed { index, item ->
+        return compatible.mapIndexed { index, profile ->
             InstallTargetRecommendation(
-                versionId = item.id,
-                reason = buildTargetReason(item.id, version),
-                recommended = item.id == selectedId || (selectedId == null && index == 0)
+                versionId = profile.versionId,
+                reason = buildTargetReason(profile, version),
+                recommended = profile.versionId == selectedId || (selectedId == null && index == 0)
             )
         }.sortedWith(compareByDescending<InstallTargetRecommendation> { it.recommended }
             .thenBy { it.versionId })
+    }
+
+    /** One-shot recommend labels for many versions (avoids re-reading version.json per call). */
+    fun recommendLabels(
+        contentType: CommunityContentType,
+        versions: List<ModrinthProjectVersion>
+    ): Map<String, String?> {
+        val selectedId = launcherRepository.session.value.selectedVersionId
+        val profiles = installedProfiles()
+        return versions.associate { version ->
+            val compatible = profiles.filter { isProfileCompatible(it, contentType, version) }
+            val pick = when {
+                compatible.isEmpty() -> null
+                selectedId != null ->
+                    compatible.firstOrNull { it.versionId == selectedId } ?: compatible.first()
+                else -> compatible.first()
+            }
+            version.id to pick?.versionId
+        }
     }
 
     suspend fun installVersionFile(
@@ -168,22 +225,20 @@ class CommunityRepository(
         }
     }
 
-    private fun isVersionCompatible(
-        installedVersionId: String,
+    private fun isProfileCompatible(
+        profile: InstalledProfile,
         contentType: CommunityContentType,
         version: ModrinthProjectVersion
     ): Boolean {
-        val installedMc = resolveMinecraftVersionId(installedVersionId)
-        if (version.gameVersions.isNotEmpty() && installedMc !in version.gameVersions) return false
+        if (version.gameVersions.isNotEmpty() && profile.minecraftId !in version.gameVersions) return false
         if (contentType == CommunityContentType.RESOURCE_PACK) return true
         if (contentType == CommunityContentType.MODPACK) {
             val forgeDep = version.loaders.firstOrNull { it.equals("forge", ignoreCase = true) }
-            return forgeDep == null || CommunityLoader.fromVersionId(installedVersionId) == CommunityLoader.FORGE
+            return forgeDep == null || profile.loader == CommunityLoader.FORGE
         }
-        val installedLoader = CommunityLoader.fromVersionId(installedVersionId)
         val normalizedLoaders = version.loaders.map { it.lowercase() }
         if (normalizedLoaders.isEmpty()) return true
-        return when (installedLoader) {
+        return when (profile.loader) {
             CommunityLoader.FORGE -> "forge" in normalizedLoaders
             CommunityLoader.NEOFORGE -> "neoforge" in normalizedLoaders
             CommunityLoader.FABRIC -> "fabric" in normalizedLoaders
@@ -192,23 +247,50 @@ class CommunityRepository(
         }
     }
 
-    private fun buildTargetReason(versionId: String, version: ModrinthProjectVersion): String {
-        val parent = resolveMinecraftVersionId(versionId)
-        val loader = CommunityLoader.fromVersionId(versionId)
-        val loaderText = when (loader) {
+    private fun buildTargetReason(profile: InstalledProfile, version: ModrinthProjectVersion): String {
+        val loaderText = when (profile.loader) {
             CommunityLoader.ANY -> "原版"
             CommunityLoader.FORGE -> "Forge"
             CommunityLoader.NEOFORGE -> "NeoForge"
             CommunityLoader.FABRIC -> "Fabric"
             CommunityLoader.QUILT -> "Quilt"
         }
-        val selected = launcherRepository.session.value.selectedVersionId == versionId
+        val selected = launcherRepository.session.value.selectedVersionId == profile.versionId
         val recommend = if (selected) "当前已选" else "兼容"
-        return "$recommend · MC $parent · $loaderText · ${version.name}"
+        return "$recommend · MC ${profile.minecraftId} · $loaderText · ${version.name}"
+    }
+
+    private fun installedProfiles(): List<InstalledProfile> {
+        return launcherRepository.installedVersions.value.map { item ->
+            InstalledProfile(
+                versionId = item.id,
+                minecraftId = resolveMinecraftVersionId(item.id),
+                loader = CommunityLoader.fromVersionId(item.id)
+            )
+        }
+    }
+
+    private fun installedMinecraftVersions(): List<String> {
+        return installedProfiles().map { it.minecraftId }.filter { it.isNotBlank() }.distinct()
     }
 
     private fun resolveMinecraftVersionId(versionId: String): String {
-        return VersionJsonMerger.resolveMinecraftVersionId(versionId)
+        return mcVersionCache.getOrPut(versionId) {
+            VersionJsonMerger.resolveMinecraftVersionId(versionId)
+        }
+    }
+
+    private data class InstalledProfile(
+        val versionId: String,
+        val minecraftId: String,
+        val loader: CommunityLoader
+    )
+
+    private data class TimedCache<T>(
+        val value: T,
+        val atMs: Long = System.currentTimeMillis()
+    ) {
+        val expired: Boolean get() = System.currentTimeMillis() - atMs > CACHE_TTL_MS
     }
 
     private fun readModpackManifest(archive: File): ModpackManifest {
@@ -270,4 +352,8 @@ class CommunityRepository(
         val dependencies: JSONObject,
         val files: JSONArray
     )
+
+    companion object {
+        private const val CACHE_TTL_MS = 5 * 60 * 1000L
+    }
 }

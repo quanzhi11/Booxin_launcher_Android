@@ -21,8 +21,11 @@ enum class JavaPackageKind {
     /** Single jreN-{abi}-*.tar.xz (or zip) that already contains a full JRE tree. */
     WHOLE_ARCHIVE,
 
-    /** FCL/Pojav split zip: universal.tar.xz + bin-{abi}.tar.xz (+ version). */
-    POJAV_SPLIT_ZIP
+    /**
+     * Split zip layout used by Android OpenJDK multiarch packages:
+     * `universal.tar.xz` + `bin-{abi}.tar.xz` (+ optional `version`).
+     */
+    SPLIT_ZIP
 }
 
 enum class JavaInstallState {

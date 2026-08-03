@@ -150,6 +150,11 @@ class FabricGameInstaller(
         if (profile.optString("inheritsFrom").isBlank()) {
             profile.put("inheritsFrom", mcVersion)
         }
+        // Point at parent vanilla client jar so launchers resolve the real game jar
+        // (avoids Knot "couldn't locate the game" when fabric-* folder has no .jar).
+        if (profile.optString("jar").isBlank()) {
+            profile.put("jar", mcVersion)
+        }
         val dir = File(LauncherPaths.versionsDir, versionId).also { it.mkdirs() }
         File(dir, "$versionId.json").writeText(profile.toString(2))
     }

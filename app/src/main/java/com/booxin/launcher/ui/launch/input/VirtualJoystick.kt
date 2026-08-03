@@ -82,6 +82,7 @@ class VirtualJoystick @JvmOverloads constructor(
     private var keyS = false
     private var keyD = false
     private var active = false
+    private var pointerId = -1
 
     private var downRawX = 0f
     private var downRawY = 0f
@@ -133,12 +134,15 @@ class VirtualJoystick @JvmOverloads constructor(
         val cx = width / 2f
         val cy = height / 2f
         val radius = min(cx, cy) * 0.92f
+        fillPaint.color = if (active) 0x661B6CA8 else 0x33000000
+        ringPaint.color = if (active) 0xCCFFFFFF.toInt() else 0x88FFFFFF.toInt()
         canvas.drawCircle(cx, cy, radius, fillPaint)
         canvas.drawCircle(cx, cy, radius, ringPaint)
         canvas.drawCircle(cx, cy, radius * 0.42f, crossPaint)
         canvas.drawLine(cx - radius * 0.72f, cy, cx + radius * 0.72f, cy, crossPaint)
         canvas.drawLine(cx, cy - radius * 0.72f, cx, cy + radius * 0.72f, crossPaint)
-        val kr = if (active) radius * 0.36f else radius * 0.32f
+        val kr = if (active) radius * 0.38f else radius * 0.32f
+        knobPaint.color = if (active) 0xFFFFFFFF.toInt() else 0xCCFFFFFF.toInt()
         canvas.drawCircle(knob.x, knob.y, kr, knobPaint)
         canvas.drawCircle(knob.x, knob.y, kr, knobRing)
         if (editMode && editSelected) {
@@ -157,28 +161,48 @@ class VirtualJoystick @JvmOverloads constructor(
         val cy = height / 2f
         val maxR = min(cx, cy) * 0.92f
         when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
-                active = true
-                val dx = event.x - cx
-                val dy = event.y - cy
-                val dist = hypot(dx, dy)
-                if (dist <= maxR) {
-                    knob.set(event.x, event.y)
-                } else {
-                    val s = maxR / dist
-                    knob.set(cx + dx * s, cy + dy * s)
+            MotionEvent.ACTION_DOWN -> {
+                pointerId = event.getPointerId(0)
+                applyStick(event.getX(0), event.getY(0), cx, cy, maxR)
+            }
+            MotionEvent.ACTION_MOVE -> {
+                val idx = event.findPointerIndex(pointerId)
+                if (idx < 0) return true
+                applyStick(event.getX(idx), event.getY(idx), cx, cy, maxR)
+            }
+            MotionEvent.ACTION_POINTER_UP -> {
+                if (event.getPointerId(event.actionIndex) == pointerId) {
+                    resetStick(cx, cy)
                 }
-                updateKeys(dx / maxR, dy / maxR)
-                invalidate()
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                active = false
-                knob.set(cx, cy)
-                releaseAll()
-                invalidate()
+                resetStick(cx, cy)
             }
         }
         return true
+    }
+
+    private fun applyStick(x: Float, y: Float, cx: Float, cy: Float, maxR: Float) {
+        active = true
+        val dx = x - cx
+        val dy = y - cy
+        val dist = hypot(dx, dy)
+        if (dist <= maxR) {
+            knob.set(x, y)
+        } else {
+            val s = maxR / dist
+            knob.set(cx + dx * s, cy + dy * s)
+        }
+        updateKeys(dx / maxR, dy / maxR)
+        invalidate()
+    }
+
+    private fun resetStick(cx: Float, cy: Float) {
+        pointerId = -1
+        active = false
+        knob.set(cx, cy)
+        releaseAll()
+        invalidate()
     }
 
     private fun handleEdit(event: MotionEvent): Boolean {
@@ -268,6 +292,7 @@ class VirtualJoystick @JvmOverloads constructor(
     }
 
     fun releaseKeys() {
+        pointerId = -1
         releaseAll()
         active = false
         if (width > 0 && height > 0) {

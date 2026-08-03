@@ -1,14 +1,15 @@
 package com.booxin.launcher.core.launch
 
 import android.view.Surface
+import com.booxin.launcher.core.runtime.GameRuntimeBackends
+import com.booxin.runtime.BooxinBridge
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.withTimeout
-import org.lwjgl.glfw.CallbackBridge
 
 /**
  * Shares the Android [Surface] between [com.booxin.launcher.ui.launch.LaunchActivity]
- * and the JVM in the same `:game` process. pojavexec needs setupBridgeWindow() before GLFW
- * creates a window (otherwise ANativeWindow_acquire SIGSEGV).
+ * and the JVM in the same `:game` process. The exec bridge needs setupBridgeWindow()
+ * before GLFW creates a window (otherwise ANativeWindow_acquire SIGSEGV).
  */
 object GameSurfaceBridge {
 
@@ -36,11 +37,8 @@ object GameSurfaceBridge {
         if (w <= 0 || h <= 0) return
         width = w
         height = h
-        CallbackBridge.windowWidth = w
-        CallbackBridge.windowHeight = h
-        CallbackBridge.physicalWidth = w
-        CallbackBridge.physicalHeight = h
-        runCatching { CallbackBridge.sendUpdateWindowSize(w, h) }
+        BooxinBridge.setWindowSize(w, h)
+        runCatching { BooxinBridge.sendUpdateWindowSize(w, h) }
     }
 
     fun onSurfaceDestroyed() {
@@ -55,7 +53,8 @@ object GameSurfaceBridge {
     }
 
     fun attachToGlfw(surface: Surface) {
-        if (!NativeJvmLauncher.setupBridgeWindow(surface)) {
+        val backend = GameRuntimeBackends.current()
+        if (!backend.attachSurface(surface)) {
             error("native setupBridgeWindow failed")
         }
         if (width > 0 && height > 0) {

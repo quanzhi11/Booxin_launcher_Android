@@ -1,7 +1,9 @@
 package com.booxin.launcher.core.version
 
 import com.booxin.launcher.core.LauncherPaths
+import com.booxin.launcher.core.net.FileDownloader
 import java.io.File
+import java.net.URI
 
 data class VersionModFile(
     val file: File,
@@ -10,8 +12,11 @@ data class VersionModFile(
 )
 
 object VersionModsManager {
+    fun modsDir(versionId: String): File =
+        File(LauncherPaths.versionsDir, "$versionId/mods").also { it.mkdirs() }
+
     fun list(versionId: String): List<VersionModFile> {
-        val modsDir = File(LauncherPaths.versionsDir, "$versionId/mods")
+        val modsDir = modsDir(versionId)
         if (!modsDir.isDirectory) return emptyList()
         return modsDir.listFiles()
             ?.filter { it.isFile }
@@ -33,6 +38,38 @@ object VersionModsManager {
             }
             ?.sortedBy { it.displayName.lowercase() }
             .orEmpty()
+    }
+
+    /** Download a remote jar/zip into this version's mods folder. */
+    suspend fun downloadFromUrl(
+        versionId: String,
+        url: String,
+        downloader: FileDownloader = FileDownloader(),
+        onProgress: (downloaded: Long, total: Long) -> Unit = { _, _ -> }
+    ): Result<File> {
+        val trimmed = url.trim()
+        if (!trimmed.startsWith("http://", ignoreCase = true) &&
+            !trimmed.startsWith("https://", ignoreCase = true)
+        ) {
+            return Result.failure(IllegalArgumentException("URL 必须以 http:// 或 https:// 开头"))
+        }
+        val fileName = fileNameFromUrl(trimmed)
+        val dest = File(modsDir(versionId), fileName)
+        return downloader.download(trimmed, dest, onProgress)
+    }
+
+    fun fileNameFromUrl(url: String): String {
+        val path = runCatching { URI(url).path }.getOrNull().orEmpty()
+            .substringBefore('?')
+            .substringAfterLast('/')
+            .trim()
+        val decoded = path.ifBlank { "mod-${System.currentTimeMillis()}.jar" }
+        val safe = decoded.replace(Regex("[\\\\/:*?\"<>|]"), "_")
+        return when {
+            safe.endsWith(".jar", ignoreCase = true) -> safe
+            safe.endsWith(".zip", ignoreCase = true) -> safe
+            else -> "$safe.jar"
+        }
     }
 
     fun toggle(mod: VersionModFile): Result<Unit> = runCatching {

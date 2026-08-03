@@ -1,12 +1,15 @@
 package com.booxin.launcher.ui.versions.manage
 
 import android.os.Bundle
+import android.text.InputType
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.core.view.isVisible
 import androidx.fragment.app.Fragment
+import androidx.lifecycle.lifecycleScope
 import androidx.navigation.fragment.findNavController
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.booxin.launcher.R
@@ -16,6 +19,9 @@ import com.booxin.launcher.core.version.VersionModFile
 import com.booxin.launcher.core.version.VersionModsManager
 import com.booxin.launcher.databinding.FragmentVersionManageBinding
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.google.android.material.textfield.TextInputEditText
+import com.google.android.material.textfield.TextInputLayout
+import kotlinx.coroutines.launch
 import org.json.JSONObject
 import java.io.File
 
@@ -25,6 +31,7 @@ class VersionManageFragment : Fragment() {
     private val binding get() = _binding!!
     private lateinit var versionId: String
     private lateinit var adapter: VersionModsAdapter
+    private var downloadDialog: AlertDialog? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -48,6 +55,7 @@ class VersionManageFragment : Fragment() {
 
         setupTabs()
         setupModsList()
+        binding.buttonDownloadUrl.setOnClickListener { showUrlDownloadDialog() }
         bindDetails()
         refreshMods()
     }
@@ -103,6 +111,8 @@ class VersionManageFragment : Fragment() {
 
     private fun refreshMods() {
         val isModded = VersionJsonMerger.isModLoaderVersion(versionId)
+        binding.buttonDownloadUrl.isEnabled = isModded
+        binding.buttonDownloadUrl.alpha = if (isModded) 1f else 0.45f
         if (!isModded) {
             adapter.submit(emptyList())
             binding.recyclerMods.isVisible = false
@@ -115,6 +125,78 @@ class VersionManageFragment : Fragment() {
         binding.recyclerMods.isVisible = true
         binding.textVanillaHint.isVisible = false
         binding.textModsEmpty.isVisible = list.isEmpty()
+    }
+
+    private fun showUrlDownloadDialog() {
+        if (!VersionJsonMerger.isModLoaderVersion(versionId)) {
+            Toast.makeText(requireContext(), R.string.version_manage_vanilla_no_mods, Toast.LENGTH_SHORT).show()
+            return
+        }
+        val density = resources.displayMetrics.density
+        val pad = (20 * density).toInt()
+        val inputLayout = TextInputLayout(requireContext()).apply {
+            hint = getString(R.string.version_manage_download_url_hint)
+            setPadding(pad, pad / 2, pad, 0)
+        }
+        val edit = TextInputEditText(inputLayout.context).apply {
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            maxLines = 3
+            setTextIsSelectable(true)
+        }
+        inputLayout.addView(edit)
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle(R.string.version_manage_download_url_title)
+            .setView(inputLayout)
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(R.string.version_manage_download_url_start) { _, _ ->
+                downloadModFromUrl(edit.text?.toString().orEmpty().trim())
+            }
+            .show()
+        edit.requestFocus()
+    }
+
+    private fun downloadModFromUrl(url: String) {
+        if (url.isBlank() ||
+            (!url.startsWith("http://", ignoreCase = true) &&
+                !url.startsWith("https://", ignoreCase = true))
+        ) {
+            Toast.makeText(requireContext(), R.string.version_manage_download_url_invalid, Toast.LENGTH_SHORT).show()
+            return
+        }
+        downloadDialog?.dismiss()
+        downloadDialog = MaterialAlertDialogBuilder(requireContext())
+            .setTitle(R.string.version_manage_download_url)
+            .setMessage(R.string.version_manage_download_url_progress)
+            .setCancelable(false)
+            .create()
+            .also { it.show() }
+
+        viewLifecycleOwner.lifecycleScope.launch {
+            val result = VersionModsManager.downloadFromUrl(versionId, url)
+            downloadDialog?.dismiss()
+            downloadDialog = null
+            if (_binding == null) return@launch
+            result.fold(
+                onSuccess = { file ->
+                    refreshMods()
+                    Toast.makeText(
+                        requireContext(),
+                        getString(R.string.version_manage_download_url_done, file.name),
+                        Toast.LENGTH_SHORT
+                    ).show()
+                },
+                onFailure = { err ->
+                    Toast.makeText(
+                        requireContext(),
+                        getString(
+                            R.string.version_manage_download_url_failed,
+                            err.message ?: "unknown"
+                        ),
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            )
+        }
     }
 
     private fun toggleMod(mod: VersionModFile) {
@@ -166,6 +248,8 @@ class VersionManageFragment : Fragment() {
     }
 
     override fun onDestroyView() {
+        downloadDialog?.dismiss()
+        downloadDialog = null
         super.onDestroyView()
         _binding = null
     }

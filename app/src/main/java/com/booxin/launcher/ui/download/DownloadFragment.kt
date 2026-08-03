@@ -24,6 +24,10 @@ import com.booxin.launcher.core.download.modloader.ForgeVersionClient
 import com.booxin.launcher.core.download.modloader.ModLoaderKind
 import com.booxin.launcher.core.download.modloader.NeoForgeBuild
 import com.booxin.launcher.core.download.modloader.NeoForgeVersionClient
+import com.booxin.launcher.core.download.modloader.OptiFineBuild
+import com.booxin.launcher.core.download.modloader.OptiFineVersionClient
+import com.booxin.launcher.core.download.modloader.QuiltBuild
+import com.booxin.launcher.core.download.modloader.QuiltVersionClient
 import com.booxin.launcher.core.java.JavaInstallState
 import com.booxin.launcher.data.model.GameVersion
 import com.booxin.launcher.data.model.VersionType
@@ -45,6 +49,8 @@ class DownloadFragment : Fragment() {
     private val forgeClient = ForgeVersionClient()
     private val neoForgeClient = NeoForgeVersionClient()
     private val fabricClient = FabricVersionClient()
+    private val quiltClient = QuiltVersionClient()
+    private val optiFineClient = OptiFineVersionClient()
 
     private val adapter = VersionsAdapter(installedMode = false) { version ->
         if (installing) return@VersionsAdapter
@@ -52,6 +58,8 @@ class DownloadFragment : Fragment() {
             ModLoaderKind.FORGE -> pickForgeBuild(version)
             ModLoaderKind.NEOFORGE -> pickNeoForgeBuild(version)
             ModLoaderKind.FABRIC -> pickFabricBuild(version)
+            ModLoaderKind.QUILT -> pickQuiltBuild(version)
+            ModLoaderKind.OPTIFINE -> pickOptiFineBuild(version)
             ModLoaderKind.VANILLA -> startInstall(version)
         }
     }
@@ -118,6 +126,16 @@ class DownloadFragment : Fragment() {
                     }
                 }
                 launch {
+                    AppContainer.repository.quiltInstallProgress.collect { progress ->
+                        applyLoaderProgress(progress)
+                    }
+                }
+                launch {
+                    AppContainer.repository.optiFineInstallProgress.collect { progress ->
+                        applyLoaderProgress(progress)
+                    }
+                }
+                launch {
                     AppContainer.javaEnvironment.progress.collect { progress ->
                         val b = _binding ?: return@collect
                         if (!installing || progress == null) return@collect
@@ -151,7 +169,6 @@ class DownloadFragment : Fragment() {
     }
 
     private fun setupLoaderChips() {
-        val wip = getString(R.string.download_loader_wip)
         binding.chipVanilla.isChecked = true
         binding.chipVanilla.setOnCheckedChangeListener { _, checked ->
             if (checked) loader = ModLoaderKind.VANILLA
@@ -165,11 +182,11 @@ class DownloadFragment : Fragment() {
         enableLoaderChip(binding.chipFabric, R.string.download_loader_fabric) {
             loader = ModLoaderKind.FABRIC
         }
-        listOf(
-            binding.chipQuilt to R.string.download_loader_quilt,
-            binding.chipOptiFine to R.string.download_loader_optifine
-        ).forEach { (chip, labelRes) ->
-            styleWipChip(chip, getString(labelRes), wip)
+        enableLoaderChip(binding.chipQuilt, R.string.download_loader_quilt) {
+            loader = ModLoaderKind.QUILT
+        }
+        enableLoaderChip(binding.chipOptiFine, R.string.download_loader_optifine) {
+            loader = ModLoaderKind.OPTIFINE
         }
     }
 
@@ -181,16 +198,6 @@ class DownloadFragment : Fragment() {
         chip.setOnClickListener(null)
         chip.setOnCheckedChangeListener { _, checked ->
             if (checked) onSelected()
-        }
-    }
-
-    private fun styleWipChip(chip: Chip, name: String, wip: String) {
-        chip.isCheckable = false
-        chip.isClickable = true
-        chip.alpha = 0.45f
-        chip.text = "$name · $wip"
-        chip.setOnClickListener {
-            Toast.makeText(requireContext(), "$name $wip", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -370,6 +377,93 @@ class DownloadFragment : Fragment() {
             b.textProgress.text = getString(R.string.download_fabric_installing, build.displayName)
             val runtime = AppContainer.gameRuntime as BooxinGameRuntime
             val result = runtime.prepareFabric(mcVersion.id, build.loaderVersion, mcVersion.url)
+            finishLoaderInstall(result)
+        }
+    }
+
+    private fun pickQuiltBuild(version: GameVersion) {
+        viewLifecycleOwner.lifecycleScope.launch {
+            val result = quiltClient.listBuilds(version.id)
+            val builds = result.getOrNull().orEmpty()
+            if (builds.isEmpty()) {
+                Toast.makeText(
+                    requireContext(),
+                    getString(
+                        R.string.download_quilt_empty,
+                        result.exceptionOrNull()?.message ?: version.id
+                    ),
+                    Toast.LENGTH_LONG
+                ).show()
+                return@launch
+            }
+            val labels = builds.map { build ->
+                build.displayName + if (build.recommended) " ★" else ""
+            }.toTypedArray()
+            MaterialAlertDialogBuilder(requireContext())
+                .setTitle(getString(R.string.download_quilt_pick, version.id))
+                .setItems(labels) { _, which ->
+                    startQuiltInstall(version, builds[which])
+                }
+                .show()
+        }
+    }
+
+    private fun startQuiltInstall(mcVersion: GameVersion, build: QuiltBuild) {
+        viewLifecycleOwner.lifecycleScope.launch {
+            installing = true
+            val b = _binding ?: return@launch
+            b.progressPanel.isVisible = true
+            b.progressDownload.isIndeterminate = false
+            b.progressDownload.progress = 0
+            b.textProgress.text = getString(R.string.download_quilt_installing, build.displayName)
+            val runtime = AppContainer.gameRuntime as BooxinGameRuntime
+            val result = runtime.prepareQuilt(mcVersion.id, build.loaderVersion, mcVersion.url)
+            finishLoaderInstall(result)
+        }
+    }
+
+    private fun pickOptiFineBuild(version: GameVersion) {
+        viewLifecycleOwner.lifecycleScope.launch {
+            val result = optiFineClient.listBuilds(version.id)
+            val builds = result.getOrNull().orEmpty()
+            if (builds.isEmpty()) {
+                Toast.makeText(
+                    requireContext(),
+                    getString(
+                        R.string.download_optifine_empty,
+                        result.exceptionOrNull()?.message ?: version.id
+                    ),
+                    Toast.LENGTH_LONG
+                ).show()
+                return@launch
+            }
+            val labels = builds.map { build ->
+                build.displayName + if (build.recommended) " ★" else ""
+            }.toTypedArray()
+            MaterialAlertDialogBuilder(requireContext())
+                .setTitle(getString(R.string.download_optifine_pick, version.id))
+                .setItems(labels) { _, which ->
+                    startOptiFineInstall(version, builds[which])
+                }
+                .show()
+        }
+    }
+
+    private fun startOptiFineInstall(mcVersion: GameVersion, build: OptiFineBuild) {
+        viewLifecycleOwner.lifecycleScope.launch {
+            installing = true
+            val b = _binding ?: return@launch
+            b.progressPanel.isVisible = true
+            b.progressDownload.isIndeterminate = false
+            b.progressDownload.progress = 0
+            b.textProgress.text = getString(R.string.download_optifine_installing, build.displayName)
+            val runtime = AppContainer.gameRuntime as BooxinGameRuntime
+            val result = runtime.prepareOptiFine(
+                mcVersion.id,
+                build.type,
+                build.patch,
+                mcVersion.url
+            )
             finishLoaderInstall(result)
         }
     }

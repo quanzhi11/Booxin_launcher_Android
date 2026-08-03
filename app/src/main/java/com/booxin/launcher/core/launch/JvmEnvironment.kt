@@ -6,8 +6,8 @@ import com.booxin.launcher.core.java.InstalledJavaRuntime
 import java.io.File
 
 /**
- * Prepares LD_LIBRARY_PATH and preloads JRE shared libraries before JLI_Launch.
- * Mirrors the Pojav/FCL approach: dlopen from app data instead of exec(bin/java).
+ * Prepares LD_LIBRARY_PATH and preloads JRE shared libraries before JNI_CreateJavaVM.
+ * Loads natives from app data (no exec of bin/java on Android).
  */
 object JvmEnvironment {
 
@@ -29,8 +29,9 @@ object JvmEnvironment {
             "PATH" to "${File(javaHome, "bin").absolutePath}:${Os.getenv("PATH").orEmpty()}",
             "HOME" to javaHome.absolutePath,
             "TMPDIR" to context.cacheDir.absolutePath,
-            "POJAV_NATIVEDIR" to stagedNatives,
-            "FCL_NATIVEDIR" to stagedNatives,
+            com.booxin.launcher.core.runtime.RuntimeEnv.NATIVEDIR to stagedNatives,
+            com.booxin.launcher.core.runtime.RuntimeEnv.LEGACY_POJAV_NATIVEDIR to stagedNatives,
+            com.booxin.launcher.core.runtime.RuntimeEnv.LEGACY_FCL_NATIVEDIR to stagedNatives,
             "_JAVA_VERSION_SET" to "true"
         )
         env.putAll(extraEnv)
@@ -76,11 +77,10 @@ object JvmEnvironment {
     }
 
     /**
-     * Pojav loads the GLES translator before pojavexec hooks so LIBGL_ES is honored at init.
+     * GLES translator is loaded by LWJGL via libname — do not early-dlopen here.
      */
     fun loadGraphicsLibrary(stagedNatives: String) {
-        // Never preload the GLES translator early. MobileGlues constructors fight ART,
-        // and libgl4es_114.so may be a MobileGlues disguise. LWJGL loads via libname.
+        // MobileGlues constructors fight ART; gl4es may be disguised. Leave to LWJGL.
         return
     }
 
@@ -111,17 +111,9 @@ object JvmEnvironment {
         ).forEach { name ->
             findLibrary(javaHome, name)?.let { candidates += it.absolutePath }
         }
-        // pojavexec is loaded via System.loadLibrary in PojavExecLoader (clean hook path).
-        // Do NOT preload LWJGL/game native libs here. Forge 1.21+ creates a secure
-        // module layer classloader and will load liblwjgl.so itself; preloading it in
-        // AppClassLoader causes "already loaded in another classloader".
-        listOf(
-            "libc++_shared.so",
-            "libbytehook.so",
-            "liblinkerhook.so",
-            "libdriver_helper.so",
-            "libfcl.so"
-        ).forEach { name ->
+        // Exec bridge is loaded via ExecBridgeLoader (single staged copy).
+        // Do NOT preload LWJGL here — Forge 1.21+ secure module layer loads it itself.
+        listOf("libc++_shared.so").forEach { name ->
             File(nativeLibDir, name).takeIf { it.isFile }?.let { candidates += it.absolutePath }
         }
 

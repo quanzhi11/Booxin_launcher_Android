@@ -15,7 +15,7 @@ import androidx.core.app.ServiceCompat
 import com.booxin.launcher.AppContainer
 import com.booxin.launcher.R
 import com.booxin.launcher.core.LauncherPaths
-import com.booxin.launcher.core.launch.FclJavaRuntimeSetup
+import com.booxin.launcher.core.launch.ToolJvmEnvironment
 import com.booxin.launcher.core.launch.NativeJvmLauncher
 import java.io.File
 import java.net.DatagramPacket
@@ -111,7 +111,7 @@ class ForgeProcessorService : Service() {
             val java = AppContainer.javaEnvironment.findInstalled(javaMajor)
                 ?: error("Java $javaMajor 未安装")
             val tmpDir = File(LauncherPaths.rootDir, "cache/forge/tmp").also { it.mkdirs() }
-            FclJavaRuntimeSetup.apply(this, java, tmpDir)
+            ToolJvmEnvironment.apply(this, java, tmpDir)
             if (!NativeJvmLauncher.chdir(workingDir)) {
                 Log.w(TAG, "chdir failed: $workingDir")
             }

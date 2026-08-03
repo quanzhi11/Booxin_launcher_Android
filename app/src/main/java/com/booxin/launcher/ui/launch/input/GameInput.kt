@@ -6,7 +6,7 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.widget.ImageView
-import org.lwjgl.glfw.CallbackBridge
+import com.booxin.runtime.BooxinBridge
 import kotlin.math.abs
 
 /**
@@ -32,7 +32,7 @@ object GameInput {
     @Volatile
     var cursorView: ImageView? = null
 
-    /** FCL AndroidUtils.getScreenWidth/Height â€” stable, never 0 after init. */
+    /** FCL AndroidUtils.getScreenWidth/Height â€?stable, never 0 after init. */
     @Volatile
     private var screenWidth = 1
     @Volatile
@@ -50,7 +50,7 @@ object GameInput {
     var pointerY: Int = 0
         private set
 
-    /** Cached density for cursor hotspot â€” avoid displayMetrics lookup every MOVE. */
+    /** Cached density for cursor hotspot â€?avoid displayMetrics lookup every MOVE. */
     @Volatile
     private var cursorHotspot = 3f
 
@@ -79,7 +79,7 @@ object GameInput {
      */
     fun scaleFactor(): Double {
         val sw = screenWidth.coerceAtLeast(1)
-        val gw = CallbackBridge.windowWidth
+        val gw = BooxinBridge.getWindowWidth()
         if (gw <= 1) return 1.0
         val scale = gw.toDouble() / sw.toDouble()
         if (scale < 0.05 || scale > 4.0) return 1.0
@@ -102,16 +102,16 @@ object GameInput {
 
     fun refreshCursorVisibility() {
         val cursor = cursorView ?: return
-        cursor.visibility = if (CallbackBridge.isGrabbing()) View.GONE else View.VISIBLE
+        cursor.visibility = if (BooxinBridge.isGrabbing()) View.GONE else View.VISIBLE
     }
 
-    /** FCL FCLInput.setPointer â€” view/screen space, then Ã— scaleFactor into GLFW. */
+    /** FCL FCLInput.setPointer â€?view/screen space, then Ã— scaleFactor into GLFW. */
     fun setPointer(x: Int, y: Int) {
         val sw = screenWidth.coerceAtLeast(1)
         val sh = screenHeight.coerceAtLeast(1)
         val vx: Int
         val vy: Int
-        if (CallbackBridge.isGrabbing()) {
+        if (BooxinBridge.isGrabbing()) {
             vx = x
             vy = y
         } else {
@@ -122,12 +122,12 @@ object GameInput {
         pointerY = vy
 
         // FCL updates overlay cursor immediately (no Choreographer defer / bringToFront).
-        if (!CallbackBridge.isGrabbing()) {
+        if (!BooxinBridge.isGrabbing()) {
             applyCursorView(vx, vy)
         }
 
         val scale = scaleFactor()
-        CallbackBridge.sendCursorPos((vx * scale).toFloat(), (vy * scale).toFloat())
+        BooxinBridge.sendCursorPos((vx * scale).toFloat(), (vy * scale).toFloat())
     }
 
     fun setPointer(x: Float, y: Float) {
@@ -136,7 +136,7 @@ object GameInput {
 
     private fun applyCursorView(viewX: Int, viewY: Int) {
         val cursor = cursorView ?: return
-        if (CallbackBridge.isGrabbing()) {
+        if (BooxinBridge.isGrabbing()) {
             cursor.visibility = View.GONE
             return
         }
@@ -150,10 +150,10 @@ object GameInput {
     fun sendKeyEvent(keycode: Int, press: Boolean) {
         val mouseBtn = MOUSE_MAP[keycode]
         when {
-            mouseBtn != null -> CallbackBridge.sendMouseButton(mouseBtn, press)
-            keycode == MOUSE_SCROLL_UP -> if (press) CallbackBridge.sendScroll(0.0, 1.0)
-            keycode == MOUSE_SCROLL_DOWN -> if (press) CallbackBridge.sendScroll(0.0, -1.0)
-            else -> CallbackBridge.sendKey(keycode, press)
+            mouseBtn != null -> BooxinBridge.sendMouseButton(mouseBtn, press)
+            keycode == MOUSE_SCROLL_UP -> if (press) BooxinBridge.sendScroll(0.0, 1.0)
+            keycode == MOUSE_SCROLL_DOWN -> if (press) BooxinBridge.sendScroll(0.0, -1.0)
+            else -> BooxinBridge.sendKey(keycode, press)
         }
     }
 
@@ -184,7 +184,7 @@ object GameInput {
 
     fun sendChar(ch: Char) {
         if (ch.code == 0) return
-        CallbackBridge.sendChar(ch)
+        BooxinBridge.sendChar(ch)
     }
 
     fun sendBackspace() {
@@ -200,9 +200,9 @@ object GameInput {
     }
 
     fun releaseAllMouseButtons() {
-        CallbackBridge.sendMouseButton(GlfwKeys.MOUSE_LEFT, false)
-        CallbackBridge.sendMouseButton(GlfwKeys.MOUSE_RIGHT, false)
-        CallbackBridge.sendMouseButton(GlfwKeys.MOUSE_MIDDLE, false)
+        BooxinBridge.sendMouseButton(GlfwKeys.MOUSE_LEFT, false)
+        BooxinBridge.sendMouseButton(GlfwKeys.MOUSE_RIGHT, false)
+        BooxinBridge.sendMouseButton(GlfwKeys.MOUSE_MIDDLE, false)
     }
 
     fun handleExternalMouseEvent(event: MotionEvent): Boolean {
@@ -227,7 +227,7 @@ object GameInput {
 
     /**
      * FCL GameMenu TouchPad OnGenericMotionListener path:
-     * HOVER_MOVE â†’ setPointer; BUTTON_PRESS/SCROLL â†’ handleExternalMouseEvent.
+     * HOVER_MOVE â†?setPointer; BUTTON_PRESS/SCROLL â†?handleExternalMouseEvent.
      */
     fun handleGenericMotion(event: MotionEvent): Boolean {
         if (!event.isFromSource(InputDevice.SOURCE_MOUSE) &&
@@ -237,7 +237,7 @@ object GameInput {
         }
         when (event.actionMasked) {
             MotionEvent.ACTION_HOVER_MOVE, MotionEvent.ACTION_HOVER_ENTER -> {
-                if (!CallbackBridge.isGrabbing()) {
+                if (!BooxinBridge.isGrabbing()) {
                     setPointer(event.rawX.toInt(), event.rawY.toInt())
                 }
                 return true
@@ -249,7 +249,7 @@ object GameInput {
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
-                if (CallbackBridge.isGrabbing()) {
+                if (BooxinBridge.isGrabbing()) {
                     setPointer(pointerX + event.x.toInt(), pointerY + event.y.toInt())
                 } else {
                     setPointer(event.x.toInt(), event.y.toInt())

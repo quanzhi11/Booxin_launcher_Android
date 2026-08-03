@@ -46,7 +46,7 @@ object VersionJsonMerger {
     fun resolveClientJar(versionId: String): File? {
         val self = File(LauncherPaths.versionsDir, "$versionId/$versionId.jar")
         if (self.isFile && self.length() > 0L) return self
-        // Forge may set "jar": "1.21.11" pointing at parent client jar name.
+        // Forge/Fabric may set "jar": "1.21.11" pointing at parent client jar name.
         readVersionJson(versionId)?.optString("jar")?.ifBlank { null }?.let { jarId ->
             val named = File(LauncherPaths.versionsDir, "$jarId/$jarId.jar")
             if (named.isFile && named.length() > 0L) return named
@@ -60,6 +60,19 @@ object VersionJsonMerger {
             current = parent
         }
         return null
+    }
+
+    /**
+     * For already-installed Fabric/Quilt profiles missing `"jar"`, write the
+     * parent Minecraft id so later tools resolve the vanilla client jar.
+     */
+    fun ensureInheritedJarField(versionId: String) {
+        val file = versionJsonFile(versionId) ?: return
+        val root = runCatching { JSONObject(file.readText()) }.getOrNull() ?: return
+        if (root.optString("jar").isNotBlank()) return
+        val parent = root.optString("inheritsFrom").ifBlank { null } ?: return
+        root.put("jar", parent)
+        runCatching { file.writeText(root.toString(2)) }
     }
 
     fun isModLoaderVersion(versionId: String): Boolean {

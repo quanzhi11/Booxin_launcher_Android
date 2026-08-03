@@ -4,7 +4,7 @@ import android.annotation.SuppressLint
 import android.view.MotionEvent
 import android.view.View
 import android.widget.TextView
-import org.lwjgl.glfw.CallbackBridge
+import com.booxin.runtime.BooxinBridge
 
 /**
  * Binds on-screen TextViews as hold / tap GLFW keys or mouse buttons.
@@ -13,25 +13,25 @@ object ControlButtonBinder {
 
     fun bindHoldKey(view: View, key: Int) {
         view.setOnTouchListener(holdListener { pressed ->
-            CallbackBridge.sendKey(key, pressed)
+            BooxinBridge.sendKey(key, pressed)
         })
     }
 
     fun bindTapKey(view: View, key: Int) {
         view.setOnClickListener {
-            CallbackBridge.sendKeyTap(key)
+            BooxinBridge.sendKeyTap(key)
         }
     }
 
     fun bindHoldMouse(view: View, button: Int) {
         view.setOnTouchListener(holdListener { pressed ->
-            CallbackBridge.sendMouseButton(button, pressed)
+            BooxinBridge.sendMouseButton(button, pressed)
         })
     }
 
     fun bindScroll(view: View, yOffset: Double) {
         view.setOnClickListener {
-            CallbackBridge.sendScroll(0.0, yOffset)
+            BooxinBridge.sendScroll(0.0, yOffset)
         }
     }
 

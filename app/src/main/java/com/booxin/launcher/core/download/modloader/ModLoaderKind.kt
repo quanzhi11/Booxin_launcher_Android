@@ -4,5 +4,7 @@ enum class ModLoaderKind {
     VANILLA,
     FORGE,
     NEOFORGE,
-    FABRIC
+    FABRIC,
+    QUILT,
+    OPTIFINE
 }

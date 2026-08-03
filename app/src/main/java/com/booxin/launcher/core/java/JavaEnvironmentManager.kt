@@ -16,7 +16,7 @@ import java.security.MessageDigest
 /**
  * Owns Java environment discovery, download, extract, and selection.
  *
- * Layout mirrors FCL runtime java roots:
+ * Booxin JRE layout:
  * ```
  * filesDir/minecraft/java/
  *   java-8/
@@ -24,7 +24,7 @@ import java.security.MessageDigest
  *   java-21/
  *   java-25/
  * filesDir/minecraft/cache/java/
- *   jreN-pojav.zip
+ *   jreN-*.zip  (upstream filename may still say pojav)
  * ```
  */
 class JavaEnvironmentManager(
@@ -113,8 +113,8 @@ class JavaEnvironmentManager(
             val targetDir = LauncherPaths.javaRuntimeDir(pkg.componentId)
             val lowerName = archive.name.lowercase()
             when {
-                lowerName.endsWith(".zip") && pkg.packageKind == JavaPackageKind.POJAV_SPLIT_ZIP ->
-                    ArchiveExtractor.installPojavSplit(archive, targetDir, pkg.abi)
+                lowerName.endsWith(".zip") && pkg.packageKind == JavaPackageKind.SPLIT_ZIP ->
+                    ArchiveExtractor.installSplitRuntime(archive, targetDir, pkg.abi)
                 else -> ArchiveExtractor.extract(archive, targetDir)
             }
 

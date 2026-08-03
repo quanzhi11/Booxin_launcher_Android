@@ -33,12 +33,12 @@ import com.booxin.launcher.ui.launch.input.ControlLayoutController
 import com.booxin.launcher.ui.launch.input.GameInput
 import com.booxin.launcher.ui.launch.input.GestureMode
 import com.booxin.launcher.ui.launch.input.MouseMoveMode
-import org.lwjgl.glfw.CallbackBridge
+import com.booxin.runtime.BooxinBridge
 import kotlin.math.abs
 
 /**
- * Runs in `:game` with [SurfaceView] + JVM so pojavexec can bind ANativeWindow.
- * Touch / virtual controls inject GLFW events via [CallbackBridge].
+ * Runs in `:game` with [SurfaceView] + JVM so the exec bridge can bind ANativeWindow.
+ * Touch / virtual controls inject GLFW events via [BooxinBridge].
  */
 class LaunchActivity : AppCompatActivity() {
 
@@ -64,13 +64,17 @@ class LaunchActivity : AppCompatActivity() {
     private var inputArmRetries = 0
     private val inputArmRunnable = object : Runnable {
         override fun run() {
-            CallbackBridge.enableAndroidInput()
-            // Dump only while arming — dumpInputBridge walks native state and logs.
-            if (inputReady || inputArmRetries >= 6) {
+            BooxinBridge.enableAndroidInput()
+            if (inputReady) return
+            // After a few retries, force-arm UI even if mouseCb/showing lag behind
+            // (callbacks are set after MC creates the window; touch must still queue).
+            if (inputArmRetries >= 3) {
+                enableGameInputForced()
                 return
             }
             val dump = getInputBridgeDump()
-            if (isInputBridgeReady(dump)) {
+            if (isInputBridgeReady(dump) || isInputBridgeMinimallyReady(dump)) {
+                enableGameInputForced()
                 return
             }
             inputArmRetries++
@@ -98,8 +102,8 @@ class LaunchActivity : AppCompatActivity() {
         "准备 Java" to 12,
         "Java 就绪" to 18,
         "构建启动命令" to 22,
-        "配置 Pojav" to 28,
-        "初始化 pojavexec" to 35,
+        "配置运行时" to 28,
+        "初始化 exec bridge" to 35,
         "输入桥已就绪" to 40,
         "GLFW 窗口已绑定" to 48,
         "探测 Java" to 52,
@@ -174,7 +178,7 @@ class LaunchActivity : AppCompatActivity() {
 
         // Manual dismiss only after game is far enough that Surface isn't pure black.
         binding.panelOverlay.setOnClickListener {
-            if (loadingPercent >= 70 || CallbackBridge.areNativesLinked()) {
+            if (loadingPercent >= 70 || BooxinBridge.areNativesLinked()) {
                 hideOverlayIfNeeded(force = true)
             } else {
                 appendLog("仍在加载（${loadingPercent}%），请稍候再点进入")
@@ -243,7 +247,7 @@ class LaunchActivity : AppCompatActivity() {
         binding.cursorView.visibility = View.VISIBLE
         binding.touchPad.addOnLayoutChangeListener { v, _, _, _, _, _, _, _, _ ->
             GameInput.bindCursor(binding.cursorView, v.width, v.height)
-            if (!CallbackBridge.isGrabbing() && GameInput.pointerX == 0 && GameInput.pointerY == 0) {
+            if (!BooxinBridge.isGrabbing() && GameInput.pointerX == 0 && GameInput.pointerY == 0) {
                 binding.touchPad.syncCursorToCenter()
             }
         }
@@ -263,7 +267,7 @@ class LaunchActivity : AppCompatActivity() {
 
         // Grab sync fires immediately on register (often grabbing=false) — must not
         // hide the loading cover there. Only a later grab=true means the game is up.
-        CallbackBridge.setGrabListener { grabbing ->
+        BooxinBridge.setGrabListener { grabbing ->
             Log.i(TAG, "grabListener grabbing=$grabbing overlayHidden=$overlayHidden")
             if (!overlayHidden) {
                 if (grabbing) {
@@ -284,7 +288,7 @@ class LaunchActivity : AppCompatActivity() {
             }
             binding.joystickMove.releaseKeys()
             // Re-arm stack-queue after GLFW grab transitions.
-            CallbackBridge.enableAndroidInput()
+            BooxinBridge.enableAndroidInput()
         }
     }
 
@@ -355,7 +359,10 @@ class LaunchActivity : AppCompatActivity() {
         if (overlayHidden) return
         if (!force) return
         val dump = getInputBridgeDump()
-        if (!isInputBridgeReady(dump) && !CallbackBridge.isGrabbing()) {
+        if (!isInputBridgeReady(dump) &&
+            !isInputBridgeMinimallyReady(dump) &&
+            !BooxinBridge.isGrabbing()
+        ) {
             appendLog("输入桥尚未完全就绪，继续等待游戏窗口/回调…")
             Log.i(TAG, "skip hideOverlay; bridge not ready: $dump")
             scheduleInputArmRetries()
@@ -518,19 +525,30 @@ class LaunchActivity : AppCompatActivity() {
     private fun enableGameInput() {
         if (inputReady) {
             // Already armed — do not re-dump / re-schedule (was waking UI every call).
-            CallbackBridge.enableAndroidInput()
+            BooxinBridge.enableAndroidInput()
             return
         }
         val dump = getInputBridgeDump()
-        if (!isInputBridgeReady(dump) && !CallbackBridge.isGrabbing()) {
-            CallbackBridge.enableAndroidInput()
+        val ready = isInputBridgeReady(dump) ||
+            isInputBridgeMinimallyReady(dump) ||
+            BooxinBridge.isGrabbing()
+        if (!ready) {
+            BooxinBridge.enableAndroidInput()
             appendLog("等待输入桥完全就绪（window/callback）…")
             Log.i(TAG, "delay enableGameInput; bridge not ready: $dump")
             scheduleInputArmRetries()
             return
         }
+        enableGameInputForced()
+    }
+
+    private fun enableGameInputForced() {
+        if (inputReady) {
+            BooxinBridge.enableAndroidInput()
+            return
+        }
         inputReady = true
-        val ok = CallbackBridge.enableAndroidInput()
+        val ok = BooxinBridge.enableAndroidInput()
         binding.panelControls.visibility = View.VISIBLE
         binding.touchPad.visibility = View.VISIBLE
         binding.touchPad.isEnabled = true
@@ -538,19 +556,18 @@ class LaunchActivity : AppCompatActivity() {
         GameInput.refreshCursorVisibility()
         binding.cursorView.visibility = View.VISIBLE
         binding.cursorView.bringToFront()
-        // Always place overlay cursor at screen center when enabling input.
         binding.touchPad.post {
             binding.touchPad.syncCursorToCenter()
             GameInput.refreshCursorVisibility()
             binding.cursorView.visibility =
-                if (CallbackBridge.isGrabbing()) View.GONE else View.VISIBLE
+                if (BooxinBridge.isGrabbing()) View.GONE else View.VISIBLE
         }
         setControlsVisible(true)
         refreshMoveVisibility()
-        Log.i(TAG, "enableGameInput ok=$ok w=${CallbackBridge.windowWidth} h=${CallbackBridge.windowHeight}")
+        Log.i(TAG, "enableGameInput ok=$ok w=${BooxinBridge.getWindowWidth()} h=${BooxinBridge.getWindowHeight()}")
         appendLog(
             if (ok) "触控已启用：屏幕触摸 = 鼠标"
-            else "触控 UI 已显示，等待 pojavexec 输入桥…"
+            else "触控 UI 已显示，等待输入桥…"
         )
         logInputBridgeStatus("enableGameInput")
         scheduleInputArmRetries()
@@ -565,6 +582,13 @@ class LaunchActivity : AppCompatActivity() {
             !dump.contains("showing=0") &&
             !dump.contains("mouseCb=0x0") && !dump.contains("mouseCb=0 ") &&
             !dump.contains("cursorCb=0x0") && !dump.contains("cursorCb=0 ")
+    }
+
+    /** ready + buffers: enough to queue touch; callbacks may appear a bit later. */
+    private fun isInputBridgeMinimallyReady(dump: String): Boolean {
+        return dump.contains("ready=1") &&
+            dump.contains("stackQ=1") &&
+            !dump.contains("mouseBuf=0x0") && !dump.contains("mouseBuf=0 ")
     }
 
     /** Surface bridge dump in UI so diagnosis works without adb. */
@@ -585,9 +609,9 @@ class LaunchActivity : AppCompatActivity() {
         mainHandler.removeCallbacks(inputArmRunnable)
         inputArmRetries = 0
         mainHandler.postDelayed(inputArmRunnable, 500L)
-        mainHandler.postDelayed({ CallbackBridge.enableAndroidInput() }, 1_500L)
-        mainHandler.postDelayed({ CallbackBridge.enableAndroidInput() }, 4_000L)
-        mainHandler.postDelayed({ CallbackBridge.enableAndroidInput() }, 8_000L)
+        mainHandler.postDelayed({ BooxinBridge.enableAndroidInput() }, 1_500L)
+        mainHandler.postDelayed({ BooxinBridge.enableAndroidInput() }, 4_000L)
+        mainHandler.postDelayed({ BooxinBridge.enableAndroidInput() }, 8_000L)
     }
 
     override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
@@ -674,7 +698,7 @@ class LaunchActivity : AppCompatActivity() {
     override fun onDestroy() {
         overlayHideTimeout?.let { mainHandler.removeCallbacks(it) }
         mainHandler.removeCallbacks(inputArmRunnable)
-        CallbackBridge.setGrabListener(null)
+        BooxinBridge.setGrabListener(null)
         if (::controlLayout.isInitialized) {
             controlLayout.releaseAllHolds()
         }

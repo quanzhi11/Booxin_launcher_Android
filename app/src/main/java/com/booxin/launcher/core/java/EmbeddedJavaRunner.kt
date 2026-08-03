@@ -10,7 +10,7 @@ import com.booxin.launcher.BooxinApp
 import com.booxin.launcher.core.LauncherPaths
 import com.booxin.launcher.core.download.modloader.ForgeInstallSocketServer
 import com.booxin.launcher.core.download.modloader.ForgeProcessorService
-import com.booxin.launcher.core.launch.FclJavaRuntimeSetup
+import com.booxin.launcher.core.launch.ToolJvmEnvironment
 import com.booxin.launcher.core.launch.NativeJvmLauncher
 import java.io.File
 import java.net.DatagramPacket
@@ -207,7 +207,7 @@ object EmbeddedJavaRunner {
         return try {
             Log.w(TAG, "running processor in-process java=${java.majorVersion}")
             val tmpDir = File(LauncherPaths.rootDir, "cache/forge/tmp").also { it.mkdirs() }
-            FclJavaRuntimeSetup.apply(BooxinApp.getAppContext(), java, tmpDir)
+            ToolJvmEnvironment.apply(BooxinApp.getAppContext(), java, tmpDir)
             if (!NativeJvmLauncher.chdir(workingDir.absolutePath)) {
                 Log.w(TAG, "chdir failed: ${workingDir.absolutePath}")
             }

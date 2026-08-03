@@ -1,17 +1,23 @@
 # 当前交接入口
 
-**已实现加载器：Forge / NeoForge / Fabric。**
+**下载页加载器已齐：Forge / NeoForge / Fabric / Quilt / OptiFine。**
 
-- NeoForge：见 [HANDOFF_NEOFORGE.md](./HANDOFF_NEOFORGE.md)
-- Fabric：下载页可选 → fabric-meta profile JSON → `{mc}-fabric-{loader}` → 下 libraries
+| 加载器 | 安装方式 | 版本 id |
+|--------|----------|---------|
+| Forge / NeoForge | installer processors（`:forge`） | `{mc}-forge-{ver}` / `{mc}-neoforge-{ver}` |
+| Fabric | fabric-meta profile JSON | `{mc}-fabric-{loader}` |
+| Quilt | quilt-meta profile JSON | `{mc}-quilt-{loader}` |
+| OptiFine | BMCL 下载 + 静默 `optifine.Installer` | `{mc}-optifine-{type}_{patch}` |
+
+详情：NeoForge 见 [HANDOFF_NEOFORGE.md](./HANDOFF_NEOFORGE.md)。
 
 ---
 
 ## 下一步（建议）
 
-1. Quilt（下载页仍 WIP；可仿 Fabric profile）
-2. OptiFine
-3. 真机验收 Fabric / NeoForge（进标题屏 + 放模组）
+1. 真机验收 Quilt / OptiFine（进标题屏）
+2. Forge+OptiFine（装完 OptiFine 后把 jar 当模组丢进 Forge `mods/`，可选）
+3. 联机 Tab 大改（低优先级，另开任务）
 
 ---
 

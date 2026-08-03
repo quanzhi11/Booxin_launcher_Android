@@ -15,6 +15,8 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import com.booxin.launcher.AppContainer
 import com.booxin.launcher.R
+import com.booxin.launcher.core.runtime.GameRuntimeBackends
+import com.booxin.launcher.core.runtime.RuntimeEnv
 import com.booxin.launcher.ui.launch.LaunchActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -22,7 +24,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
-import org.lwjgl.glfw.CallbackBridge
 import java.io.File
 
 /**
@@ -130,6 +131,7 @@ class GameLaunchService : Service() {
             appendLog("准备失败: ${prepare.exceptionOrNull()?.message}")
             return
         }
+        SodiumPodiumInstaller.ensure(this, versionId)?.let { appendLog(it) }
 
         val java = AppContainer.javaEnvironment.ensureForMinecraft(versionId).getOrElse {
             appendLog("Java 不可用: ${it.message}")
@@ -137,9 +139,11 @@ class GameLaunchService : Service() {
         }
         appendLog("Java 就绪: ${java.homeDir.absolutePath}")
 
-        AndroidGameRuntime.ensure(this)
+        val backend = GameRuntimeBackends.current()
+        backend.prepare(this)
+        appendLog("运行时后端: ${backend.id}")
 
-        // Prefer real Surface size (FCL writes options after TextureView is ready).
+        // Prefer real Surface size (written after TextureView is ready).
         appendLog("等待游戏 Surface…")
         val surface = runCatching { GameSurfaceBridge.awaitSurface() }.getOrElse {
             appendLog("Surface 超时: ${it.message}")
@@ -156,7 +160,6 @@ class GameLaunchService : Service() {
             else -> resources.displayMetrics.heightPixels
         }
         GameSurfaceBridge.onSurfaceSizeChanged(width, height)
-        // FCL JVMActivity: options.txt fullscreen=false + overrideWidth/Height before JVM.
         runCatching {
             val gameDir = File(
                 com.booxin.launcher.core.LauncherPaths.versionsDir,
@@ -189,43 +192,57 @@ class GameLaunchService : Service() {
             return
         }
 
-        appendLog("配置 Pojav 环境…")
-        JvmEnvironment.apply(this, java, command.env)
+        appendLog("配置运行时环境…")
+        backend.applyJvmEnvironment(this, java, command.env)
         appendLog(
-            "渲染环境: POJAV_RENDERER=${command.env["POJAV_RENDERER"]} " +
+            "渲染环境: ${RuntimeEnv.RENDERER}=${command.env[RuntimeEnv.RENDERER]} " +
                 "LIBGL_STRING=${command.env["LIBGL_STRING"]} " +
-                "POJAVEXEC_EGL=${command.env["POJAVEXEC_EGL"]} " +
+                "${RuntimeEnv.EGL}=${command.env[RuntimeEnv.EGL]} " +
                 "libname=${command.jvmArgs.firstOrNull { it.startsWith("-Dorg.lwjgl.opengl.libname=") }}"
             )
 
-        val isForgeOrLoader =
-            com.booxin.launcher.core.download.game.VersionJsonMerger.isModLoaderVersion(versionId)
-        if (isForgeOrLoader) {
-            appendLog("Forge/模组版本：跳过 ART 侧 pojavexec 预加载")
+        // Forge/NeoForge: ART-side exec preload races HotSpot securejarhandler.
+        // Fabric/Quilt/vanilla NEED preload so stack-queue + setupBridgeWindow work
+        // before KnotClient starts.
+        val skipArtPreload = shouldSkipArtExecPreload(versionId, command.mainClass)
+        if (skipArtPreload) {
+            appendLog("Forge/NeoForge：跳过 ART 侧 exec bridge 预加载")
         } else {
-            appendLog("初始化 pojavexec（ART hooks）…")
-            runCatching { PojavExecLoader.ensureLoaded() }.onFailure { err ->
-                appendLog("pojavexec 初始化失败: ${err.message}")
+            appendLog("初始化 exec bridge（ART hooks）…")
+            backend.ensureExecBridgeLoaded(skipArtPreload = false).onFailure { err ->
+                appendLog("exec bridge 初始化失败: ${err.message}")
                 return
             }
         }
-        // FCL: nativeSetUseInputStackQueue before JVM so ART touch reaches GLFW safely.
-        val inputOk = CallbackBridge.enableAndroidInput()
+        val inputOk = backend.enableInput()
         appendLog(
             if (inputOk) "输入桥已就绪（stack queue=ON）"
             else "输入桥警告：stack queue 未确认，触控可能卡死"
         )
 
         appendLog("绑定 GLFW 窗口…")
-        runCatching { GameSurfaceBridge.attachToGlfw(surface) }.onFailure { err ->
+        runCatching {
+            if (!backend.attachSurface(surface)) {
+                error("native setupBridgeWindow failed")
+            }
+            if (GameSurfaceBridge.width > 0 && GameSurfaceBridge.height > 0) {
+                GameSurfaceBridge.onSurfaceSizeChanged(GameSurfaceBridge.width, GameSurfaceBridge.height)
+            }
+        }.onFailure { err ->
             appendLog("setupBridgeWindow 失败: ${err.javaClass.simpleName}: ${err.message}")
             err.cause?.let { appendLog("  cause: ${it.message}") }
             return
         }
         appendLog("GLFW 窗口已绑定")
+        runCatching {
+            if (NativeJvmLauncher.initializeHooks()) {
+                appendLog("ART CriticalNative send_* 已注册")
+            } else {
+                appendLog("警告：initializeHooks 失败，触控可能无效")
+            }
+        }.onFailure { appendLog("initializeHooks: ${it.message}") }
 
-        // Re-arm after bridge (FCL also sets ready on first glfwPollEvents).
-        val again = CallbackBridge.enableAndroidInput()
+        val again = backend.enableInput()
         appendLog("输入桥绑定后确认: stackQueue=$again")
 
         appendLog("探测 Java 运行时…")
@@ -401,5 +418,24 @@ class GameLaunchService : Service() {
             // (FGS already running) so we don't re-trigger FGS start contract.
             context.startService(intent)
         }
+    }
+
+    /**
+     * True only for Forge/NeoForge ModLauncher. Fabric/Quilt Knot must preload
+     * the exec bridge on ART so input stack-queue is armed before HotSpot starts.
+     */
+    private fun shouldSkipArtExecPreload(versionId: String, mainClass: String): Boolean {
+        val id = versionId.lowercase()
+        val main = mainClass.lowercase()
+        if ("knotclient" in main || "fabricmc.loader" in main || "quiltmc.loader" in main) {
+            return false
+        }
+        return "neoforge" in id ||
+            id.contains("-forge-") ||
+            id.endsWith("-forge") ||
+            "bootstraplauncher" in main ||
+            "modlauncher" in main ||
+            "cpw.mods" in main ||
+            "neoforgesdk" in main
     }
 }

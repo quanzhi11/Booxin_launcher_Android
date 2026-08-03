@@ -45,6 +45,14 @@
     <string name="launch_loading_status_fmt">%1$s</string>
     <string name="control_floating_ball">控</string>
     <string name="control_menu_edit">自定义布局</string>
+    <string name="control_menu_gesture_build">建造模式（点按=右键）</string>
+    <string name="control_menu_gesture_fight">战斗模式（点按=左键）</string>
+    <string name="control_menu_gesture_build_current">✓ 建造模式（点按=右键）</string>
+    <string name="control_menu_gesture_fight_current">✓ 战斗模式（点按=左键）</string>
+    <string name="control_toast_gesture_build">已切换：建造模式（点按屏幕=右键）</string>
+    <string name="control_toast_gesture_fight">已切换：战斗模式（点按屏幕=左键）</string>
+    <string name="control_floating_ball_build">建</string>
+    <string name="control_floating_ball_fight">战</string>
     <string name="control_menu_hide">隐藏按键</string>
     <string name="control_menu_show">显示按键</string>
     <string name="control_menu_exit">退出游戏</string>
@@ -80,6 +88,14 @@
     <string name="version_manage_loader_modded">模组加载器版本</string>
     <string name="version_manage_vanilla_no_mods">该版本无法下载模组</string>
     <string name="version_manage_mods_empty">当前没有已安装模组</string>
+    <string name="version_manage_download_url">URL 下载</string>
+    <string name="version_manage_download_url_title">从 URL 下载模组</string>
+    <string name="version_manage_download_url_hint">粘贴模组直链（http/https，.jar）</string>
+    <string name="version_manage_download_url_start">开始下载</string>
+    <string name="version_manage_download_url_invalid">请输入有效的 http/https 链接</string>
+    <string name="version_manage_download_url_progress">正在下载模组…</string>
+    <string name="version_manage_download_url_done">已下载：%1$s</string>
+    <string name="version_manage_download_url_failed">下载失败：%1$s</string>
     <string name="version_manage_mod_enabled">已启用</string>
     <string name="version_manage_mod_disabled">已禁用</string>
     <string name="version_manage_mod_disable">禁用</string>
@@ -117,6 +133,12 @@
     <string name="download_fabric_pick">选择 %1$s 的 Fabric Loader 版本</string>
     <string name="download_fabric_empty">未获取到 Fabric 版本：%1$s</string>
     <string name="download_fabric_installing">正在安装 %1$s…</string>
+    <string name="download_quilt_pick">选择 %1$s 的 Quilt Loader 版本</string>
+    <string name="download_quilt_empty">未获取到 Quilt 版本：%1$s</string>
+    <string name="download_quilt_installing">正在安装 %1$s…</string>
+    <string name="download_optifine_pick">选择 %1$s 的 OptiFine 版本</string>
+    <string name="download_optifine_empty">未获取到 OptiFine 版本：%1$s</string>
+    <string name="download_optifine_installing">正在安装 %1$s…</string>
     <string name="forge_processor_fg_channel">Forge 安装</string>
     <string name="forge_processor_fg_title">正在安装 Forge</string>
     <string name="forge_processor_fg_text">正在运行 Forge 安装工具，请勿关闭</string>
@@ -222,6 +244,7 @@
     <string name="settings_java_ready">已安装</string>
     <string name="settings_java_failed">Java 安装失败：%1$s</string>
     <string name="settings_about">关于 Booxin</string>
+    <string name="settings_third_party">第三方组件说明见 assets/app_runtime/THIRD_PARTY_NOTICES.md</string>
     <string name="settings_version">版本 %1$s</string>
     <string name="settings_check_update">检查更新</string>
 

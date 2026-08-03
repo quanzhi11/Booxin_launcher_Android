@@ -7,6 +7,8 @@ import com.booxin.launcher.core.download.game.VersionJsonMerger
 import com.booxin.launcher.core.download.game.VersionManifestClient
 import com.booxin.launcher.core.download.modloader.FabricGameInstaller
 import com.booxin.launcher.core.download.modloader.ForgeGameInstaller
+import com.booxin.launcher.core.download.modloader.OptiFineGameInstaller
+import com.booxin.launcher.core.download.modloader.QuiltGameInstaller
 import com.booxin.launcher.core.java.InstalledJavaRuntime
 import com.booxin.launcher.data.model.AccountType
 import com.booxin.launcher.data.model.GameVersion
@@ -29,7 +31,9 @@ class LauncherRepository(
     private val manifestClient: VersionManifestClient = VersionManifestClient(),
     private val gameInstaller: VanillaGameInstaller = VanillaGameInstaller(),
     private val forgeInstaller: ForgeGameInstaller = ForgeGameInstaller(),
-    private val fabricInstaller: FabricGameInstaller = FabricGameInstaller()
+    private val fabricInstaller: FabricGameInstaller = FabricGameInstaller(),
+    private val quiltInstaller: QuiltGameInstaller = QuiltGameInstaller(),
+    private val optiFineInstaller: OptiFineGameInstaller = OptiFineGameInstaller()
 ) {
 
     private val prefs by lazy {
@@ -54,6 +58,8 @@ class LauncherRepository(
     val installProgress = gameInstaller.progress
     val forgeInstallProgress = forgeInstaller.progress
     val fabricInstallProgress = fabricInstaller.progress
+    val quiltInstallProgress = quiltInstaller.progress
+    val optiFineInstallProgress = optiFineInstaller.progress
 
     init {
         loadAccounts()
@@ -68,7 +74,9 @@ class LauncherRepository(
             val id = dir.name
             val installed = gameInstaller.isInstalled(id) ||
                 forgeInstaller.isInstalled(id) ||
-                fabricInstaller.isInstalled(id)
+                fabricInstaller.isInstalled(id) ||
+                quiltInstaller.isInstalled(id) ||
+                optiFineInstaller.isInstalled(id)
             if (!installed) return@mapNotNull null
             val remote = _remoteVersions.value.firstOrNull { it.id == id }
             GameVersion(
@@ -156,6 +164,8 @@ class LauncherRepository(
     suspend fun ensureVersionReady(versionId: String): Result<Unit> {
         if (forgeInstaller.isInstalled(versionId) ||
             fabricInstaller.isInstalled(versionId) ||
+            quiltInstaller.isInstalled(versionId) ||
+            optiFineInstaller.isInstalled(versionId) ||
             VersionJsonMerger.isModLoaderVersion(versionId)
         ) {
             val parent = VersionJsonMerger.resolveMinecraftVersionId(versionId)
@@ -167,6 +177,8 @@ class LauncherRepository(
             }
             val ready = forgeInstaller.isInstalled(versionId) ||
                 fabricInstaller.isInstalled(versionId) ||
+                quiltInstaller.isInstalled(versionId) ||
+                optiFineInstaller.isInstalled(versionId) ||
                 VersionJsonMerger.versionJsonFile(versionId) != null
             if (!ready) {
                 return Result.failure(IllegalStateException("模组加载器版本未安装: $versionId"))
@@ -223,6 +235,38 @@ class LauncherRepository(
         versionJsonUrl: String? = null
     ): Result<String> {
         val result = fabricInstaller.install(mcVersion, loaderVersion, versionJsonUrl)
+        if (result.isSuccess) {
+            val versionId = result.getOrThrow()
+            markExplicitVersion(versionId)
+            refreshInstalledVersions()
+            selectVersion(versionId)
+        }
+        return result
+    }
+
+    suspend fun installQuiltVersion(
+        mcVersion: String,
+        loaderVersion: String,
+        versionJsonUrl: String? = null
+    ): Result<String> {
+        val result = quiltInstaller.install(mcVersion, loaderVersion, versionJsonUrl)
+        if (result.isSuccess) {
+            val versionId = result.getOrThrow()
+            markExplicitVersion(versionId)
+            refreshInstalledVersions()
+            selectVersion(versionId)
+        }
+        return result
+    }
+
+    suspend fun installOptiFineVersion(
+        mcVersion: String,
+        type: String,
+        patch: String,
+        versionJsonUrl: String? = null,
+        java: InstalledJavaRuntime
+    ): Result<String> {
+        val result = optiFineInstaller.install(mcVersion, type, patch, versionJsonUrl, java)
         if (result.isSuccess) {
             val versionId = result.getOrThrow()
             markExplicitVersion(versionId)

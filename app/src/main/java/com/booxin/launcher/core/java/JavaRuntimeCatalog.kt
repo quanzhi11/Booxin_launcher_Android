@@ -1,21 +1,22 @@
 package com.booxin.launcher.core.java
 
 /**
- * Built-in Android OpenJDK package catalog.
+ * Built-in Android OpenJDK package catalog for Booxin.
  *
- * Primary: Coze share links (CN-friendly CDN, redirect to jreN-pojav.zip).
+ * Primary: Coze share links (CN-friendly CDN).
  * Fallback: MojoLauncher GitHub rolling + optional arm64 whole packages.
+ * Package filenames may still say `jreN-pojav.zip` (upstream naming); layout is [JavaPackageKind.SPLIT_ZIP].
  */
 object JavaRuntimeCatalog {
 
     /**
-     * Rolling multi-ABI packages from MojoLauncher (Pojav/FCL split format).
+     * Rolling multi-ABI packages (split zip: universal + bin-{abi}).
      * https://github.com/MojoLauncher/android-openjdk-build-multiarch/releases/tag/rolling
      */
     private const val MOJO_ROLLING_BASE =
         "https://github.com/MojoLauncher/android-openjdk-build-multiarch/releases/download/rolling"
 
-    private const val FCL_JAVA_BASE =
+    private const val JAVA_WHOLE_FALLBACK_BASE =
         "https://github.com/FCL-Team/FoldCraftLauncher/releases/download/java"
 
     private const val AAAAPAI_BASE =
@@ -63,7 +64,7 @@ object JavaRuntimeCatalog {
             downloadUrl = urls.first(),
             downloadUrls = urls,
             fileName = fileName,
-            packageKind = JavaPackageKind.POJAV_SPLIT_ZIP,
+            packageKind = JavaPackageKind.SPLIT_ZIP,
             fallbackUrl = urls.getOrNull(1)
         )
     }
@@ -72,7 +73,7 @@ object JavaRuntimeCatalog {
         if (abi != JavaAbi.ARM64) return emptyList()
         return when (major) {
             21 -> listOf("$AAAAPAI_BASE/jre21-arm64-20260223-release.tar.xz")
-            25 -> listOf("$FCL_JAVA_BASE/jre25-arm64-20251205-release.tar.xz")
+            25 -> listOf("$JAVA_WHOLE_FALLBACK_BASE/jre25-arm64-20251205-release.tar.xz")
             else -> emptyList()
         }
     }

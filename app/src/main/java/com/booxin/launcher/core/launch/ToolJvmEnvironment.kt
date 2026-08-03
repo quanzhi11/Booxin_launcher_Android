@@ -4,32 +4,32 @@ import android.content.Context
 import android.os.Build
 import android.system.Os
 import com.booxin.launcher.core.java.InstalledJavaRuntime
+import com.booxin.launcher.core.runtime.RuntimeEnv
 import java.io.File
 
 /**
- * FCL FCLauncher.setUpJavaRuntime + getLibraryPath for API Installer (ProcessService).
- * No pojavexec / GLFW / renderer — only JRE native libs.
+ * Headless tool JVM env (Forge processors / installers): JRE natives only, no game bridge.
  */
-object FclJavaRuntimeSetup {
+object ToolJvmEnvironment {
 
     fun apply(context: Context, java: InstalledJavaRuntime, tmpDir: File) {
         val javaPath = java.homeDir.absolutePath
         val ldPath = buildLibraryPath(context, java.homeDir)
+        val nativeDir = context.applicationInfo.nativeLibraryDir
         Os.setenv("JAVA_HOME", javaPath, true)
         Os.setenv("HOME", context.cacheDir.absolutePath, true)
         Os.setenv("TMPDIR", tmpDir.absolutePath, true)
         Os.setenv("LD_LIBRARY_PATH", ldPath, true)
         Os.setenv("PATH", "${File(java.homeDir, "bin").absolutePath}:${Os.getenv("PATH").orEmpty()}", true)
-        Os.setenv("FCL_NATIVEDIR", context.applicationInfo.nativeLibraryDir, true)
-        Os.setenv("POJAV_NATIVEDIR", context.applicationInfo.nativeLibraryDir, true)
+        Os.setenv(RuntimeEnv.NATIVEDIR, nativeDir, true)
+        Os.setenv(RuntimeEnv.LEGACY_FCL_NATIVEDIR, nativeDir, true)
+        Os.setenv(RuntimeEnv.LEGACY_POJAV_NATIVEDIR, nativeDir, true)
         Os.setenv("_JAVA_VERSION_SET", "true", true)
         setupJavaRuntime(java.homeDir)
     }
 
-    /** FCL getLibraryPath(context, javaPath, pluginLibPath) */
     fun buildLibraryPath(context: Context, javaHome: File): String {
         val parts = linkedSetOf<String>()
-        val javaPath = javaHome.absolutePath
         val javaLibDir = resolveJavaLibDir(javaHome)
         val jvmSub = resolveJvmSubDir(javaHome, javaLibDir)
         val libRoot = if (isJdk8(javaHome)) {
@@ -47,7 +47,6 @@ object FclJavaRuntimeSetup {
         return parts.joinToString(":")
     }
 
-    /** FCL setUpJavaRuntime */
     private fun setupJavaRuntime(javaHome: File) {
         val javaLibDir = resolveJavaLibDir(javaHome)
         val libRoot = if (isJdk8(javaHome)) {
@@ -131,3 +130,7 @@ object FclJavaRuntimeSetup {
         return File(javaHome, "jre").isDirectory && File(javaHome, "bin/javac").isFile
     }
 }
+
+/** @deprecated Use [ToolJvmEnvironment]. Kept for restore-tree references. */
+@Deprecated("Use ToolJvmEnvironment", ReplaceWith("ToolJvmEnvironment"))
+typealias FclJavaRuntimeSetup = ToolJvmEnvironment

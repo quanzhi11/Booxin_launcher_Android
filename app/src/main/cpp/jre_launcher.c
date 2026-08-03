@@ -500,20 +500,30 @@ static void register_callbackbridge_send_natives(JNIEnv *env) {
 
 typedef jint (*JNI_OnLoad_func)(JavaVM *, void *);
 
-static void *open_pojavexec(void) {
-    /* Prefer the already-loaded handle (staged System.load path). Avoid a second
-     * copy from APK nativeLibraryDir — separate pojav_environ / br_init = crash. */
-    void *lib = dlopen("libpojavexec.so", RTLD_LAZY | RTLD_NOLOAD);
+static void *open_bridge_lib(const char *soname) {
+    void *lib = dlopen(soname, RTLD_LAZY | RTLD_NOLOAD);
     if (lib) return lib;
-    const char *nativeDir = getenv("POJAV_NATIVEDIR");
+    const char *nativeDir = getenv("BOOXIN_NATIVEDIR");
+    if (!nativeDir || !nativeDir[0]) nativeDir = getenv("POJAV_NATIVEDIR");
     if (!nativeDir || !nativeDir[0]) nativeDir = getenv("FCL_NATIVEDIR");
     if (nativeDir && nativeDir[0]) {
         char path[PATH_MAX];
-        snprintf(path, sizeof(path), "%s/libpojavexec.so", nativeDir);
+        snprintf(path, sizeof(path), "%s/%s", nativeDir, soname);
         lib = dlopen(path, RTLD_LAZY | RTLD_GLOBAL);
         if (lib) return lib;
     }
-    return dlopen("libpojavexec.so", RTLD_LAZY | RTLD_GLOBAL);
+    return dlopen(soname, RTLD_LAZY | RTLD_GLOBAL);
+}
+
+static void *open_pojavexec(void) {
+    /*
+     * LWJGL Android jar hardcodes Library.loadNative(..., "libpojavexec.so").
+     * Prefer that soname so ART / HotSpot / GLFW share ONE mapping and ONE environ.
+     * libbooxin_bridge.so is the same binary staged under a Booxin name.
+     */
+    void *lib = open_bridge_lib("libpojavexec.so");
+    if (lib) return lib;
+    return open_bridge_lib("libbooxin_bridge.so");
 }
 
 /* pojavexec JNI_OnLoad must run twice: once on ART (dalvikJavaVMPtr), once on
@@ -540,12 +550,16 @@ static bool call_pojav_jni_onload(JavaVM *vm, JNIEnv *env, const char *label) {
     return true;
 }
 
-/** Absolute path to staged libpojavexec.so (same file ART already mapped). */
+/** Absolute path to staged bridge .so (LWJGL soname first — must be single mapping). */
 static bool pojavexec_staged_path(char *out, size_t outLen) {
-    const char *nativeDir = getenv("POJAV_NATIVEDIR");
+    const char *nativeDir = getenv("BOOXIN_NATIVEDIR");
+    if (!nativeDir || !nativeDir[0]) nativeDir = getenv("POJAV_NATIVEDIR");
     if (!nativeDir || !nativeDir[0]) nativeDir = getenv("FCL_NATIVEDIR");
     if (!nativeDir || !nativeDir[0]) return false;
+    /* Prefer historical filename: GLFW.clinit / loadNative look for this exact name. */
     snprintf(out, outLen, "%s/libpojavexec.so", nativeDir);
+    if (access(out, R_OK) == 0) return true;
+    snprintf(out, outLen, "%s/libbooxin_bridge.so", nativeDir);
     return access(out, R_OK) == 0;
 }
 
@@ -856,9 +870,8 @@ static jlong booxin_glfw_window_jlong(struct booxin_pojav_environ_s *e, void *wi
 }
 
 static void booxin_read_pojav_cursor(struct booxin_pojav_environ_s *e, double *cx, double *cy) {
-    const uint8_t *tail = (const uint8_t *)e + 0x27000;
-    memcpy(cx, tail + 0x140, sizeof(double));
-    memcpy(cy, tail + 0x148, sizeof(double));
+    *cx = e ? e->cursorX : 0;
+    *cy = e ? e->cursorY : 0;
 }
 
 static void *booxin_resolve_window(struct booxin_pojav_environ_s *e, void *window) {
@@ -869,18 +882,10 @@ static void *booxin_resolve_window(struct booxin_pojav_environ_s *e, void *windo
     return NULL;
 }
 
-static void *booxin_tail_ptr(struct booxin_pojav_environ_s *e, size_t off) {
-    void *p = NULL;
-    memcpy(&p, (const uint8_t *)e + 0x27000 + off, sizeof(p));
-    return p;
-}
-
 static void booxin_read_mouse_buttons(struct booxin_pojav_environ_s *e,
                                       int *b0, int *b1, int *b2) {
     *b0 = *b1 = *b2 = 0;
-    /* libpojavexec: mouseDownBuffer pointer lives at environ+0x27000+0x1a0 */
-    jbyte *buf = (jbyte *)booxin_tail_ptr(e, 0x1a0);
-    if (!buf) buf = e->mouseDownBuffer;
+    jbyte *buf = e ? e->mouseDownBuffer : NULL;
     if (!buf) return;
     *b0 = buf[0];
     *b1 = buf[1];
@@ -889,9 +894,6 @@ static void booxin_read_mouse_buttons(struct booxin_pojav_environ_s *e,
 
 /** MC GLFW window — showingWindow, NOT pojavWindow (internal stub). */
 static void *booxin_mc_glfw_window(struct booxin_pojav_environ_s *e, void *window) {
-    long showing = 0;
-    memcpy(&showing, (const uint8_t *)e + 0x27000 + 0x1c8, sizeof(showing));
-    if (showing) return (void *)showing;
     if (e && e->showingWindow) return (void *)(long)e->showingWindow;
     if (e && e->mainWindowBundle) return e->mainWindowBundle;
     if (window) return window;
@@ -901,19 +903,17 @@ static void *booxin_mc_glfw_window(struct booxin_pojav_environ_s *e, void *windo
 
 /**
  * Invoke MC-registered GLFW trampolines on the HotSpot render thread.
- * Callbacks must be read from binary offsets (C struct layout drifts).
- * Button snapshot must be taken BEFORE pojavPumpEvents.
+ * Uses C struct fields (Booxin bridge layout — not legacy 0x27000 offsets).
  */
 static void booxin_deliver_glfw_native(struct booxin_pojav_environ_s *e, void *winPtr,
                                        double cx, double cy, int b0, int b1, int b2) {
     if (!e || !winPtr) return;
-    /* isInputReady at +0x1d0 */
-    if (!((const uint8_t *)e + 0x27000)[0x1d0]) return;
+    if (!e->isInputReady) return;
     booxin_bind_hotspot_jnienv();
 
-    void *enterCb = booxin_tail_ptr(e, 0x1f0);
-    void *posCb = booxin_tail_ptr(e, 0x1f8);
-    void *mouseCb = booxin_tail_ptr(e, 0x210);
+    void *enterCb = e->GLFW_invoke_CursorEnter;
+    void *posCb = e->GLFW_invoke_CursorPos;
+    void *mouseCb = e->GLFW_invoke_MouseButton;
 
     if (!g_fwd_cursor_entered && enterCb) {
         ((booxin_cursor_enter_fn)enterCb)(winPtr, 1);
@@ -948,7 +948,7 @@ static void booxin_forward_input_callbacks(void *window, double cx, double cy,
                                            int b0, int b1, int b2) {
     struct booxin_pojav_environ_s *e = booxin_get_environ();
     if (!e) return;
-    if (!((const uint8_t *)e + 0x27000)[0x1d0]) return;
+    if (!e->isInputReady) return;
 
     int attached = 0;
     JNIEnv *env = booxin_get_hotspot_env(e, &attached);
@@ -1027,6 +1027,17 @@ static void booxin_pump_events(void *window) {
     if (g_pojav_pump_events) g_pojav_pump_events(window);
 }
 
+static bool patch_glfw_fn_field(JNIEnv *env, jclass fnCls, const char *field, void *addr) {
+    if (!addr) return false;
+    jfieldID fid = (*env)->GetStaticFieldID(env, fnCls, field, "J");
+    if (!fid || (*env)->ExceptionCheck(env)) {
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+        return false;
+    }
+    (*env)->SetStaticLongField(env, fnCls, fid, (jlong)(uintptr_t)addr);
+    return true;
+}
+
 static bool patch_hotspot_pump_function_pointers(JNIEnv *env) {
     if (!env) return false;
     jclass fnCls = (*env)->FindClass(env, "org/lwjgl/glfw/GLFW$Functions");
@@ -1034,42 +1045,71 @@ static bool patch_hotspot_pump_function_pointers(JNIEnv *env) {
         log_exception(env, "FindClass GLFW$Functions");
         return false;
     }
+
+    /* Rebind ALL GLFW$Functions to the single loaded bridge (avoid dual-environ). */
+    void *lib = open_pojavexec();
+    if (lib) {
+        struct {
+            const char *field;
+            const char *sym;
+        } map[] = {
+            {"Init", "pojavInit"},
+            {"CreateContext", "pojavCreateContext"},
+            {"GetCurrentContext", "pojavGetCurrentContext"},
+            {"MakeContextCurrent", "pojavMakeCurrent"},
+            {"Terminate", "pojavTerminate"},
+            {"SetWindowHint", "pojavSetWindowHint"},
+            {"SwapBuffers", "pojavSwapBuffers"},
+            {"SwapInterval", "pojavSwapInterval"},
+            {"PumpEvents", "pojavPumpEvents"},
+            {"StartPumping", "pojavStartPumping"},
+            {"StopPumping", "pojavStopPumping"},
+        };
+        for (size_t i = 0; i < sizeof(map) / sizeof(map[0]); i++) {
+            void *addr = dlsym(lib, map[i].sym);
+            if (patch_glfw_fn_field(env, fnCls, map[i].field, addr)) {
+                LOGI("GLFW$Functions.%s -> %s=%p", map[i].field, map[i].sym, addr);
+            } else {
+                LOGW("GLFW$Functions.%s patch skip (sym=%p)", map[i].field, addr);
+            }
+        }
+    }
+
+    /* Pump path: prefer our thin wrappers (same bridge, cheaper than re-dlsym). */
     jfieldID startFid = (*env)->GetStaticFieldID(env, fnCls, "StartPumping", "J");
     jfieldID pumpFid = (*env)->GetStaticFieldID(env, fnCls, "PumpEvents", "J");
     jfieldID stopFid = (*env)->GetStaticFieldID(env, fnCls, "StopPumping", "J");
-    if (!startFid || !pumpFid || !stopFid || (*env)->ExceptionCheck(env)) {
-        log_exception(env, "GLFW$Functions pump fields");
-        return false;
-    }
-    jlong oldPump = (*env)->GetStaticLongField(env, fnCls, pumpFid);
-    jlong newStart = (jlong)(uintptr_t)booxin_start_pumping;
-    jlong newPump = (jlong)(uintptr_t)booxin_pump_events;
-    jlong newStop = (jlong)(uintptr_t)booxin_stop_pumping;
-    (*env)->SetStaticLongField(env, fnCls, startFid, newStart);
-    (*env)->SetStaticLongField(env, fnCls, pumpFid, newPump);
-    (*env)->SetStaticLongField(env, fnCls, stopFid, newStop);
-    jlong checkPump = (*env)->GetStaticLongField(env, fnCls, pumpFid);
-    LOGI("patched GLFW pump fns oldPump=%p newPump=%p checkPump=%p start=%p stop=%p",
-         (void *)(uintptr_t)oldPump, (void *)(uintptr_t)newPump,
-         (void *)(uintptr_t)checkPump,
-         (void *)(uintptr_t)newStart, (void *)(uintptr_t)newStop);
-    if (checkPump != newPump) {
-        LOGW("JNI could not overwrite final PumpEvents — trying Unsafe via Java");
-        jclass loaderCls = (*env)->FindClass(env, "org/lwjgl/glfw/BooxinPojavLoader");
-        if (loaderCls && !(*env)->ExceptionCheck(env)) {
-            jmethodID mid = (*env)->GetStaticMethodID(
-                env, loaderCls, "forcePumpFunctionPointers", "(JJJ)Z");
-            if (mid && !(*env)->ExceptionCheck(env)) {
-                jboolean ok = (*env)->CallStaticBooleanMethod(
-                    env, loaderCls, mid, newStart, newPump, newStop);
-                LOGI("Unsafe pump patch ok=%d", (int)ok);
+    if (startFid && pumpFid && stopFid && !(*env)->ExceptionCheck(env)) {
+        jlong newStart = (jlong)(uintptr_t)booxin_start_pumping;
+        jlong newPump = (jlong)(uintptr_t)booxin_pump_events;
+        jlong newStop = (jlong)(uintptr_t)booxin_stop_pumping;
+        (*env)->SetStaticLongField(env, fnCls, startFid, newStart);
+        (*env)->SetStaticLongField(env, fnCls, pumpFid, newPump);
+        (*env)->SetStaticLongField(env, fnCls, stopFid, newStop);
+        jlong checkPump = (*env)->GetStaticLongField(env, fnCls, pumpFid);
+        LOGI("patched GLFW pump wrappers newPump=%p checkPump=%p",
+             (void *)(uintptr_t)newPump, (void *)(uintptr_t)checkPump);
+        if (checkPump != newPump) {
+            LOGW("JNI could not overwrite final PumpEvents — trying Unsafe via Java");
+            jclass loaderCls = (*env)->FindClass(env, "org/lwjgl/glfw/BooxinPojavLoader");
+            if (loaderCls && !(*env)->ExceptionCheck(env)) {
+                jmethodID mid = (*env)->GetStaticMethodID(
+                    env, loaderCls, "forcePumpFunctionPointers", "(JJJ)Z");
+                if (mid && !(*env)->ExceptionCheck(env)) {
+                    jboolean ok = (*env)->CallStaticBooleanMethod(
+                        env, loaderCls, mid, newStart, newPump, newStop);
+                    LOGI("Unsafe pump patch ok=%d", (int)ok);
+                } else if ((*env)->ExceptionCheck(env)) {
+                    log_exception(env, "forcePumpFunctionPointers mid");
+                }
             } else if ((*env)->ExceptionCheck(env)) {
-                log_exception(env, "forcePumpFunctionPointers mid");
+                log_exception(env, "FindClass BooxinPojavLoader for Unsafe patch");
             }
-        } else if ((*env)->ExceptionCheck(env)) {
-            log_exception(env, "FindClass BooxinPojavLoader for Unsafe patch");
         }
+    } else if ((*env)->ExceptionCheck(env)) {
+        log_exception(env, "GLFW$Functions pump fields");
     }
+
     (*env)->DeleteLocalRef(env, fnCls);
     cache_input_hooks_deliver(env);
     return true;
@@ -1304,6 +1344,20 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_pojav) {
             }
         } else {
             log_pojav_environ("after HotSpot System.load(pojavexec)");
+        }
+        /* Ensure key/mouse DirectByteBuffers are shared with HotSpot GLFW. */
+        {
+            void *lib = open_pojavexec();
+            typedef void (*bind_fn)(JNIEnv *);
+            bind_fn bind = lib
+                ? (bind_fn)dlsym(lib, "booxin_bind_glfw_input_buffers")
+                : NULL;
+            if (bind) {
+                bind(jenv);
+                LOGI("booxin_bind_glfw_input_buffers after HotSpot load");
+            } else {
+                LOGW("booxin_bind_glfw_input_buffers missing — clicks may not poll");
+            }
         }
         force_input_bridge_ready("after HotSpot pojavexec load");
     } else {
@@ -1564,8 +1618,7 @@ Java_com_booxin_launcher_core_launch_NativeJvmLauncher_nativeMarkMousePositionDi
     /* Cached pointer — never dlopen/dlsym on the touch hot path. */
     if (!g_pojav_environ_pp) resolve_pojav_pump_syms();
     if (!g_pojav_environ_pp || !*g_pojav_environ_pp) return;
-    /* shouldUpdateMouse at +0x1d3 — never e->shouldUpdateMouse (struct drifts). */
-    ((uint8_t *)(*g_pojav_environ_pp) + 0x27000)[0x1d3] = 1;
+    (*g_pojav_environ_pp)->shouldUpdateMouse = true;
 }
 
 JNIEXPORT jboolean JNICALL
@@ -1707,28 +1760,19 @@ Java_com_booxin_launcher_core_launch_NativeJvmLauncher_nativeDumpInputBridge(
         return (*env)->NewStringUTF(env, "pojav_environ=null");
     }
     struct booxin_pojav_environ_s *e = *pp;
-    /* libpojavexec (arm64) lays out the post-events fields at a fixed base
-     * offset 0x27000 from pojav_environ — verified via critical_send_cursor_pos /
-     * nglfwGetCursorPos disassembly. Our C struct mirror can drift; dump the
-     * binary offsets so diagnostics match what Minecraft actually reads. */
-    const uint8_t *base = (const uint8_t *)e;
-    const uint8_t *tail = base + 0x27000;
-    double cursorX = 0, cursorY = 0;
-    memcpy(&cursorX, tail + 0x140, sizeof(cursorX));
-    memcpy(&cursorY, tail + 0x148, sizeof(cursorY));
-    int ready = tail[0x1d0];
-    int cursorEnter = tail[0x1d1];
-    int stackQ = tail[0x1d2];
-    int shouldUpdateMouse = tail[0x1d3];
-    long showing = 0;
-    memcpy(&showing, tail + 0x1c8, sizeof(showing));
-    void *mouseCb = NULL, *cursorCb = NULL, *keyCb = NULL;
-    memcpy(&cursorCb, tail + 0x1f8, sizeof(cursorCb));
-    memcpy(&keyCb, tail + 0x208, sizeof(keyCb));
-    memcpy(&mouseCb, tail + 0x210, sizeof(mouseCb));
-    size_t inIdx = 0, outIdx = 0;
-    memcpy(&inIdx, tail + 0x130, sizeof(inIdx));
-    memcpy(&outIdx, tail + 0x120, sizeof(outIdx));
+    /* Booxin bridge: read C struct fields directly (legacy 0x27000 offsets removed). */
+    double cursorX = e->cursorX;
+    double cursorY = e->cursorY;
+    int ready = e->isInputReady ? 1 : 0;
+    int cursorEnter = e->isCursorEntered ? 1 : 0;
+    int stackQ = e->isUseStackQueueCall ? 1 : 0;
+    int shouldUpdateMouse = e->shouldUpdateMouse ? 1 : 0;
+    long showing = e->showingWindow;
+    void *mouseCb = e->GLFW_invoke_MouseButton;
+    void *cursorCb = e->GLFW_invoke_CursorPos;
+    void *keyCb = e->GLFW_invoke_Key;
+    size_t inIdx = e->inEventIndex;
+    size_t outIdx = e->outEventIndex;
     int mouseBtn0 = 0;
     if (e->mouseDownBuffer) mouseBtn0 = e->mouseDownBuffer[0];
     char buf[768];
@@ -1794,6 +1838,9 @@ Java_com_booxin_launcher_core_launch_NativeJvmLauncher_nativeSetupBridgeWindow(
         return JNI_FALSE;
     }
     log_pojav_environ("after ART JNI_OnLoad");
+    /* CriticalNative send_* must be registered on ART — otherwise touch is silent ULE. */
+    register_callbackbridge_send_natives(env);
+    force_input_bridge_ready("after ART setupBridgeWindow");
 
     return call_setup_bridge_window(env, surface) ? JNI_TRUE : JNI_FALSE;
 }

@@ -65,7 +65,12 @@ class BmclApiDownloadProvider(
             "https://maven.neoforged.net" to "$DEFAULT_API_ROOT/maven",
             // Fabric loader / intermediary / mixin (profile libraries use this base).
             "https://maven.fabricmc.net/" to "$DEFAULT_API_ROOT/maven/",
-            "https://maven.fabricmc.net" to "$DEFAULT_API_ROOT/maven"
+            "https://maven.fabricmc.net" to "$DEFAULT_API_ROOT/maven",
+            // Quilt Maven (some artifacts 404 on BMCL — Cascade still falls back to official).
+            "https://maven.quiltmc.org/repository/release/" to "$DEFAULT_API_ROOT/maven/",
+            "https://maven.quiltmc.org/repository/release" to "$DEFAULT_API_ROOT/maven",
+            "https://maven.quiltmc.org/repository/snapshot/" to "$DEFAULT_API_ROOT/maven/",
+            "https://maven.quiltmc.org/repository/snapshot" to "$DEFAULT_API_ROOT/maven"
         )
     }
 }
@@ -117,6 +122,10 @@ class CascadeDownloadProvider(
                 rawUrl.removePrefix("https://maven.neoforged.net/")
             rawUrl.startsWith("https://maven.fabricmc.net/") ->
                 rawUrl.removePrefix("https://maven.fabricmc.net/")
+            rawUrl.startsWith("https://maven.quiltmc.org/repository/release/") ->
+                rawUrl.removePrefix("https://maven.quiltmc.org/repository/release/")
+            rawUrl.startsWith("https://maven.quiltmc.org/repository/snapshot/") ->
+                rawUrl.removePrefix("https://maven.quiltmc.org/repository/snapshot/")
             rawUrl.startsWith("https://libraries.minecraft.net/") ->
                 rawUrl.removePrefix("https://libraries.minecraft.net/")
             else -> return emptyList()
@@ -125,9 +134,10 @@ class CascadeDownloadProvider(
             path.contains("net/minecraftforge/forge/") ||
             path.contains("net/neoforged/neoforge/") ||
             path.contains("net/neoforged/forge/") ||
-            path.contains("net/fabricmc/")
+            path.contains("net/fabricmc/") ||
+            path.contains("org/quiltmc/")
         ) {
-            // Forge/NeoForge/Fabric artifacts stay on their Maven/BMCL mirrors.
+            // Forge/NeoForge/Fabric/Quilt artifacts stay on their Maven/BMCL mirrors.
             return emptyList()
         }
         return listOf("https://repo1.maven.org/maven2/$path")
@@ -157,7 +167,8 @@ class CascadeDownloadProvider(
         rawUrl.startsWith("https://maven.minecraftforge.net/") ||
             rawUrl.startsWith("https://files.minecraftforge.net/maven/") ||
             rawUrl.startsWith("https://maven.neoforged.net/") ||
-            rawUrl.startsWith("https://maven.fabricmc.net/")
+            rawUrl.startsWith("https://maven.fabricmc.net/") ||
+            rawUrl.startsWith("https://maven.quiltmc.org/")
 }
 
 object DownloadProviders {

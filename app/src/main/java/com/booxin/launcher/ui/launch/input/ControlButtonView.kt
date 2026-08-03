@@ -5,6 +5,7 @@ import android.content.Context
 import android.graphics.Typeface
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.ViewGroup
 import android.widget.FrameLayout
@@ -25,7 +26,7 @@ class ControlButtonView(
         set(value) {
             field = value
             if (!value) {
-                isPressed = false
+                setPlayPressed(false)
                 releaseHold()
             }
             refreshChrome()
@@ -108,7 +109,24 @@ class ControlButtonView(
             if (editSelected && editMode) R.drawable.bg_control_round_selected
             else R.drawable.bg_control_round
         )
-        alpha = if (editMode) 0.95f else 0.88f
+        if (!isPressed) {
+            alpha = if (editMode) 0.95f else 0.88f
+            scaleX = 1f
+            scaleY = 1f
+        }
+    }
+
+    private fun setPlayPressed(pressed: Boolean) {
+        isPressed = pressed
+        if (pressed) {
+            alpha = 1f
+            scaleX = 0.90f
+            scaleY = 0.90f
+        } else {
+            alpha = if (editMode) 0.95f else 0.88f
+            scaleX = 1f
+            scaleY = 1f
+        }
     }
 
     @SuppressLint("ClickableViewAccessibility")
@@ -120,7 +138,8 @@ class ControlButtonView(
     private fun handlePlay(event: MotionEvent): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                isPressed = true
+                setPlayPressed(true)
+                performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
                 when (spec.kind) {
                     ControlButtonSpec.Kind.KEY_HOLD -> {
                         val keys = spec.effectiveCodes()
@@ -141,7 +160,7 @@ class ControlButtonView(
                 return true
             }
             MotionEvent.ACTION_UP -> {
-                isPressed = false
+                setPlayPressed(false)
                 when (spec.kind) {
                     ControlButtonSpec.Kind.KEY_HOLD, ControlButtonSpec.Kind.MOUSE_HOLD -> releaseHold()
                     ControlButtonSpec.Kind.KEY_TAP -> {
@@ -158,7 +177,7 @@ class ControlButtonView(
                 return true
             }
             MotionEvent.ACTION_CANCEL -> {
-                isPressed = false
+                setPlayPressed(false)
                 releaseHold()
                 return true
             }

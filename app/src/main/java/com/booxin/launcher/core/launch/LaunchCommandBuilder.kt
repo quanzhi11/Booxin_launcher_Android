@@ -9,6 +9,8 @@ import com.booxin.launcher.core.download.game.LibraryFilter
 import com.booxin.launcher.core.download.game.VersionJsonMerger
 import com.booxin.launcher.core.java.InstalledJavaRuntime
 import com.booxin.launcher.core.java.MinecraftJavaRequirement
+import com.booxin.launcher.core.runtime.RendererBackend
+import com.booxin.launcher.core.runtime.RuntimeEnv
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -43,6 +45,9 @@ data class LaunchCommand(
             appendLine("main=$mainClass")
             appendLine("cp=${classpath.size} jars")
             appendLine("jvm=${jvmArgs.size} args")
+            val clientJar = jvmArgs.firstOrNull { it.startsWith("-Dminecraft.client.jar=") }
+                ?: jvmArgs.firstOrNull { it.startsWith("-Dfabric.gameJarPath=") }
+            appendLine("clientJar=${clientJar ?: "MISSING"}")
             val modulePath = jvmArgs.asSequence()
                 .mapIndexedNotNull { index, arg ->
                     when {
@@ -56,7 +61,8 @@ data class LaunchCommand(
                     }
                 }
                 .firstOrNull()
-            appendLine("modulePath=${modulePath?.let { "yes (${it.split(File.pathSeparator).size} entries)" } ?: "MISSING"}")
+            // Fabric/Quilt normally have no JPMS module-path — MISSING is OK for Knot.
+            appendLine("modulePath=${modulePath?.let { "yes (${it.split(File.pathSeparator).size} entries)" } ?: "n/a"}")
             appendLine("ignoreList=${jvmArgs.firstOrNull { it.startsWith("-DignoreList=") } ?: "default"}")
             appendLine("game=${gameArgs.joinToString(" ")}")
         }
@@ -89,23 +95,26 @@ class LaunchCommandBuilder(
     ): LaunchCommand {
         val versionRoot = File(LauncherPaths.versionsDir, versionId)
         val jsonFile = File(versionRoot, "$versionId.json")
-        require(jsonFile.exists()) { "缂哄皯 version.json: ${jsonFile.absolutePath}" }
+        require(jsonFile.exists()) { "缺少 version.json: ${jsonFile.absolutePath}" }
+
+        // Repair older Fabric/Quilt installs that omit "jar": "<mcVersion>".
+        VersionJsonMerger.ensureInheritedJarField(versionId)
 
         val root = VersionJsonMerger.merge(versionId)
-            ?: error("鏃犳硶鍚堝苟 version.json: $versionId")
+            ?: error("无法合并 version.json: $versionId")
         val jarFile = VersionJsonMerger.resolveClientJar(versionId)
-            ?: error("缂哄皯瀹㈡埛绔?jar: $versionId")
-        require(jarFile.isFile) { "缂哄皯瀹㈡埛绔?jar: ${jarFile.absolutePath}" }
+            ?: error("缺少客户端 jar: $versionId")
+        require(jarFile.isFile) { "缺少客户端 jar: ${jarFile.absolutePath}" }
 
         val mainClass = root.optString("mainClass").ifBlank {
-            error("version.json 缂哄皯 mainClass")
+            error("version.json 缺少 mainClass")
         }
         val mcVersionId = VersionJsonMerger.resolveMinecraftVersionId(versionId)
         val assetIndexId = root.optJSONObject("assetIndex")?.optString("id")
             ?: root.optString("assets").ifBlank { "legacy" }
 
         AndroidGameRuntime.ensure(context)
-        val renderer = GlRendererProfile.forVersion(mcVersionId)
+        val renderer = RendererBackend.kindForVersion(mcVersionId)
         AndroidGameRuntime.applyRenderer(renderer)
         val androidLwjgl = AndroidGameRuntime.lwjglJar()
         require(androidLwjgl.isFile) {
@@ -115,6 +124,7 @@ class LaunchCommandBuilder(
         val isForgeOrLoader = VersionJsonMerger.isModLoaderVersion(versionId)
 
         val classpath = linkedSetOf<File>()
+        val missingLibs = mutableListOf<String>()
         // FCL-style: CallbackBridge / input hooks / RendererInit are merged into a
         // single lwjgl.jar. A separate bridge-patch jar becomes a second module that
         // also exports org.lwjgl.* and ForgeBootstrap fails with ResolutionException.
@@ -134,12 +144,30 @@ class LaunchCommandBuilder(
             val path = artifact?.optString("path")?.ifBlank { null }
                 ?: GameJsonParser.mavenPath(name)
             val file = File(LauncherPaths.librariesDir, path)
-            if (file.exists()) classpath += file
+            if (file.isFile && file.length() > 0L) {
+                classpath += file
+            } else {
+                missingLibs += name
+            }
         }
         classpath += jarFile
-        val existingClasspath = classpath.filter { it.exists() }
-        require(existingClasspath.isNotEmpty()) { "classpath 涓虹┖锛岀己灏戝彲鐢?jar" }
-        require(jarFile.exists()) { "缂哄皯瀹㈡埛绔?jar: ${jarFile.absolutePath}" }
+        val existingClasspath = classpath.filter { it.isFile && it.length() > 0L }
+        require(existingClasspath.isNotEmpty()) { "classpath 为空，缺少可用 jar" }
+        require(jarFile.isFile && jarFile.length() > 0L) {
+            "缺少客户端 jar（Fabric/Forge 需继承原版 jar）: ${jarFile.absolutePath}"
+        }
+        // Fabric Knot fails with "couldn't locate the game" when deps are incomplete.
+        if (missingLibs.isNotEmpty()) {
+            val critical = missingLibs.filter {
+                it.contains("fabric-loader", ignoreCase = true) ||
+                    it.contains("intermediary", ignoreCase = true) ||
+                    it.contains("sponge-mixin", ignoreCase = true) ||
+                    it.contains(":mixin:", ignoreCase = true)
+            }
+            require(critical.isEmpty()) {
+                "缺少关键依赖库，请重新安装该版本: ${critical.take(8).joinToString()}"
+            }
+        }
 
         val gameDir = versionRoot
         val assetsDir = LauncherPaths.assetsDir
@@ -184,13 +212,14 @@ class LaunchCommandBuilder(
         )
 
         val classpathString = existingClasspath.joinToString(File.pathSeparator) { it.absolutePath }
-        val isFabric = isFabricMainClass(mainClass)
-        if (isForgeOrLoader && !isFabric) {
+        val isKnotLoader = isKnotMainClass(mainClass)
+        val isOptiFine = isOptiFineVersion(versionId, mainClass, root)
+        if (isForgeOrLoader && !isKnotLoader && !isOptiFine) {
             // FCL FCLGameLauncher: disable Forge splash animation.
             disableForgeSplash(gameDir)
         }
         val jvmArgs = when {
-            isFabric -> buildFabricJvmArgs(
+            isKnotLoader -> buildKnotJvmArgs(
                 jarFile = jarFile,
                 gameDir = gameDir,
                 maxMemoryMb = maxMemoryMb,
@@ -202,7 +231,21 @@ class LaunchCommandBuilder(
                 renderer = renderer,
                 versionRoot = root,
                 tokens = tokens,
-                androidLwjgl = androidLwjgl
+                androidLwjgl = androidLwjgl,
+                mainClass = mainClass
+            )
+            isOptiFine -> buildOptiFineJvmArgs(
+                jarFile = jarFile,
+                gameDir = gameDir,
+                maxMemoryMb = maxMemoryMb,
+                windowWidth = windowWidth,
+                windowHeight = windowHeight,
+                javaHome = java.homeDir,
+                javaMajor = java.majorVersion,
+                classpath = classpathString,
+                renderer = renderer,
+                versionRoot = root,
+                tokens = tokens
             )
             isForgeOrLoader -> buildForgeJvmArgs(
                 jarFile = jarFile,
@@ -235,66 +278,38 @@ class LaunchCommandBuilder(
         val gameArgs = forceVersionType(buildGameArgs(root, tokens), LAUNCHER_BRAND)
             .let { appendServerArgs(it, serverAddress, mcVersionId) }
 
-        val stagedNatives = AndroidGameRuntime.nativesDir().absolutePath
-        val glLib = when (renderer) {
-            GlRendererKind.GL4ES -> File(stagedNatives, "libgl4es_114.so")
-            GlRendererKind.MOBILE_GLUES -> File(stagedNatives, "libmobileglues.so")
-        }
-        require(glLib.isFile) { "缂哄皯娓叉煋搴? ${glLib.absolutePath}" }
+        val stagedNativesDir = AndroidGameRuntime.nativesDir()
+        val stagedNatives = stagedNativesDir.absolutePath
+        val glLib = RuntimeEnv.glLibraryFile(stagedNativesDir, renderer)
+        require(glLib.isFile) { "缺少渲染库: ${glLib.absolutePath}" }
         val libraryPath = buildLibraryPath(java.homeDir, stagedNatives)
-        // Zalith/FCL: POJAV_RENDERER must stay opengles* or br_init stays NULL.
-        val env = when (renderer) {
-            GlRendererKind.GL4ES -> linkedMapOf(
-                "JAVA_HOME" to java.homeDir.absolutePath,
-                "HOME" to gameDir.absolutePath,
-                "TMPDIR" to context.cacheDir.absolutePath,
-                "PATH" to "${File(java.homeDir, "bin").absolutePath}:${System.getenv("PATH").orEmpty()}",
-                "LD_LIBRARY_PATH" to libraryPath,
-                "POJAV_NATIVEDIR" to stagedNatives,
-                "FCL_NATIVEDIR" to stagedNatives,
-                "POJAV_RENDERER" to "opengles2",
-                "LIBGL_ES" to "2",
-                "LIBGL_NAME" to glLib.absolutePath,
-                "LIBGL_STRING" to "GL4ES",
-                "LIBGL_EGL" to "libEGL.so",
-                "POJAVEXEC_EGL" to "libEGL.so",
-                "LIBGL_NOERROR" to "1",
-                "LIBGL_MIPMAP" to "3",
-                "LIBGL_NOINTOVLHACK" to "1",
-                "LIBGL_NORMALIZE" to "1",
-                "FORCE_VSYNC" to "false",
-                "AWTSTUB_WIDTH" to windowWidth.toString(),
-                "AWTSTUB_HEIGHT" to windowHeight.toString(),
-                "MESA_GLSL_CACHE_DIR" to context.cacheDir.absolutePath
-            )
-            GlRendererKind.MOBILE_GLUES -> linkedMapOf(
-                "JAVA_HOME" to java.homeDir.absolutePath,
-                "HOME" to gameDir.absolutePath,
-                "TMPDIR" to context.cacheDir.absolutePath,
-                "PATH" to "${File(java.homeDir, "bin").absolutePath}:${System.getenv("PATH").orEmpty()}",
-                "LD_LIBRARY_PATH" to libraryPath,
-                "POJAV_NATIVEDIR" to stagedNatives,
-                "FCL_NATIVEDIR" to stagedNatives,
-                "POJAV_RENDERER" to "opengles3",
-                "LIBGL_ES" to "3",
-                "LIBGL_NAME" to glLib.absolutePath,
-                "LIBGL_STRING" to "MobileGlues",
-                "LIBGL_EGL" to "libmobileglues.so",
-                "POJAVEXEC_EGL" to "libmobileglues.so",
-                "LIBGL_NOERROR" to "1",
-                "LIBGL_MIPMAP" to "3",
-                "LIBGL_NOINTOVLHACK" to "1",
-                "LIBGL_NORMALIZE" to "1",
-                "FORCE_VSYNC" to "false",
-                "AWTSTUB_WIDTH" to windowWidth.toString(),
-                "AWTSTUB_HEIGHT" to windowHeight.toString(),
-                "MESA_GLSL_CACHE_DIR" to context.cacheDir.absolutePath,
-                "MG_DIR_PATH" to File(context.filesDir, "MG").absolutePath,
-                "allow_higher_compat_version" to "true",
-                "allow_glsl_extension_directive_midshader" to "true",
-                "force_glsl_extensions_warn" to "true"
-            )
+        // Renderer token must stay opengles* for transitional exec bridge (br_init).
+        val envBase = linkedMapOf(
+            "JAVA_HOME" to java.homeDir.absolutePath,
+            "HOME" to gameDir.absolutePath,
+            "TMPDIR" to context.cacheDir.absolutePath,
+            "PATH" to "${File(java.homeDir, "bin").absolutePath}:${System.getenv("PATH").orEmpty()}",
+            "LD_LIBRARY_PATH" to libraryPath,
+            "LIBGL_ES" to RuntimeEnv.libGlEs(renderer),
+            "LIBGL_NAME" to glLib.absolutePath,
+            "LIBGL_STRING" to RuntimeEnv.libGlString(renderer),
+            "LIBGL_EGL" to RuntimeEnv.eglLib(renderer),
+            "LIBGL_NOERROR" to "1",
+            "LIBGL_MIPMAP" to "3",
+            "LIBGL_NOINTOVLHACK" to "1",
+            "LIBGL_NORMALIZE" to "1",
+            "FORCE_VSYNC" to "false",
+            "AWTSTUB_WIDTH" to windowWidth.toString(),
+            "AWTSTUB_HEIGHT" to windowHeight.toString(),
+            "MESA_GLSL_CACHE_DIR" to context.cacheDir.absolutePath
+        )
+        if (renderer == GlRendererKind.MOBILE_GLUES) {
+            envBase["MG_DIR_PATH"] = File(context.filesDir, "MG").absolutePath
+            envBase["allow_higher_compat_version"] = "true"
+            envBase["allow_glsl_extension_directive_midshader"] = "true"
+            envBase["force_glsl_extensions_warn"] = "true"
         }
+        val env = RuntimeEnv.withNativeAliases(envBase, stagedNatives, renderer)
 
         return LaunchCommand(
             javaBinary = java.javaBinary,
@@ -335,11 +350,13 @@ class LaunchCommandBuilder(
     }
 
     /**
-     * Fabric/Knot: keep Android LWJGL on the app (system) classloader.
+     * Fabric/Quilt Knot: keep Android LWJGL on the app (system) classloader.
      * HotSpot preinit already System.loads libpojavexec/liblwjgl via AppClassLoader;
      * if Knot reloads org.lwjgl.* it hits "already loaded in another classloader".
+     *
+     * Fabric uses `fabric.*` props; Quilt uses `loader.*` — set both for safety.
      */
-    private fun buildFabricJvmArgs(
+    private fun buildKnotJvmArgs(
         jarFile: File,
         gameDir: File,
         maxMemoryMb: Int,
@@ -351,7 +368,8 @@ class LaunchCommandBuilder(
         renderer: GlRendererKind,
         versionRoot: JSONObject,
         tokens: Map<String, String>,
-        androidLwjgl: File
+        androidLwjgl: File,
+        mainClass: String
     ): List<String> {
         val nativeDir = AndroidGameRuntime.nativesDir().absolutePath
         val versionJvm = parseVersionJvmArgs(versionRoot, tokens, nativeDir)
@@ -371,16 +389,78 @@ class LaunchCommandBuilder(
                 )
             )
             addAll(versionJvm)
+            // Point Knot at the real vanilla client jar (often parent of fabric-* id).
+            add("-Dfabric.gameJarPath=${jarFile.absolutePath}")
+            add("-Dloader.gameJarPath=${jarFile.absolutePath}")
+            // Fabric props
             add("-Dfabric.systemLibraries=${androidLwjgl.absolutePath}")
             add("-Dfabric.noGui=true")
+            // Quilt props (Fabric ignores unknown loader.* keys)
+            add("-Dloader.systemLibraries=${androidLwjgl.absolutePath}")
+            add("-Dloader.noGui=true")
         }
     }
 
-    private fun isFabricMainClass(mainClass: String): Boolean {
+    /** OptiFine / LaunchWrapper: vanilla Android args + version jvm (no Forge JPMS). */
+    private fun buildOptiFineJvmArgs(
+        jarFile: File,
+        gameDir: File,
+        maxMemoryMb: Int,
+        windowWidth: Int,
+        windowHeight: Int,
+        javaHome: File,
+        javaMajor: Int,
+        classpath: String,
+        renderer: GlRendererKind,
+        versionRoot: JSONObject,
+        tokens: Map<String, String>
+    ): List<String> {
+        val nativeDir = AndroidGameRuntime.nativesDir().absolutePath
+        val versionJvm = parseVersionJvmArgs(versionRoot, tokens, nativeDir)
+        return buildList {
+            addAll(
+                buildCommonAndroidJvmArgs(
+                    jarFile = jarFile,
+                    gameDir = gameDir,
+                    maxMemoryMb = maxMemoryMb,
+                    windowWidth = windowWidth,
+                    windowHeight = windowHeight,
+                    javaHome = javaHome,
+                    javaMajor = javaMajor,
+                    classpath = classpath,
+                    renderer = renderer,
+                    forgeExtras = false
+                )
+            )
+            addAll(versionJvm)
+        }
+    }
+
+    private fun isKnotMainClass(mainClass: String): Boolean {
         val lowered = mainClass.lowercase()
         return "knotclient" in lowered ||
             "fabricmc.loader" in lowered ||
-            "net.fabricmc" in lowered
+            "net.fabricmc" in lowered ||
+            "org.quiltmc.loader" in lowered ||
+            "quiltmc.loader" in lowered
+    }
+
+    private fun isOptiFineVersion(
+        versionId: String,
+        mainClass: String,
+        root: JSONObject
+    ): Boolean {
+        if ("optifine" in versionId.lowercase()) return true
+        if ("launchwrapper" in mainClass.lowercase()) return true
+        val game = root.optJSONObject("arguments")?.optJSONArray("game")
+        if (game != null) {
+            for (i in 0 until game.length()) {
+                val item = game.opt(i)
+                if (item is String && item.contains("optifine", ignoreCase = true)) return true
+            }
+        }
+        val legacy = root.optString("minecraftArguments")
+        return legacy.contains("OptiFine", ignoreCase = true)
     }
 
     /**
@@ -517,6 +597,10 @@ class LaunchCommandBuilder(
             add("-Dcom.sun.jndi.rmi.object.trustURLCodebase=false")
             add("-Dlog4j2.formatMsgNoLookups=true")
             add("-Dminecraft.client.jar=${jarFile.absolutePath}")
+            // Android uses a patched LWJGL (reports 3.3.6-snapshot). Sodium's
+            // issue#2561 gate expects desktop Mojang LWJGL (e.g. 3.3.3) and aborts
+            // otherwise — same bypass used by Pojav/FCL.
+            add("-Dsodium.checks.issue2561=false")
             if (forgeExtras) {
                 add("-Dfml.ignoreInvalidMinecraftCertificates=true")
                 add("-Dfml.ignorePatchDiscrepancies=true")

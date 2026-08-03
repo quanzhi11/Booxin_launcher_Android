@@ -95,10 +95,29 @@ class ModrinthClient(
             }
         }
 
-    suspend fun getProjectVersions(projectId: String): Result<List<ModrinthProjectVersion>> =
+    /**
+     * @param gameVersions when non-empty, Modrinth filters server-side (much smaller payload).
+     * @param loaders optional loader filter, e.g. `["forge"]`.
+     */
+    suspend fun getProjectVersions(
+        projectId: String,
+        gameVersions: List<String> = emptyList(),
+        loaders: List<String> = emptyList()
+    ): Result<List<ModrinthProjectVersion>> =
         withContext(Dispatchers.IO) {
             runCatching {
-                val url = "$apiRoot/v2/project/$projectId/version"
+                val url = requireNotNull("$apiRoot/v2/project/$projectId/version".toHttpUrlOrNull())
+                    .newBuilder()
+                    .apply {
+                        if (gameVersions.isNotEmpty()) {
+                            addQueryParameter("game_versions", JSONArray(gameVersions.distinct()).toString())
+                        }
+                        if (loaders.isNotEmpty()) {
+                            addQueryParameter("loaders", JSONArray(loaders.distinct()).toString())
+                        }
+                    }
+                    .build()
+                    .toString()
                 val arr = JSONArray(downloader.downloadText(url).getOrThrow())
                 buildList {
                     for (i in 0 until arr.length()) {

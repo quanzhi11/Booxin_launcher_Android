@@ -68,6 +68,29 @@ class BooxinGameRuntime(
         return repository.installFabricVersion(mcVersion, loaderVersion, versionJsonUrl)
     }
 
+    suspend fun prepareQuilt(
+        mcVersion: String,
+        loaderVersion: String,
+        versionJsonUrl: String? = null
+    ): Result<String> {
+        javaEnvironment.ensureForMinecraft(mcVersion).getOrElse {
+            return Result.failure(it)
+        }
+        return repository.installQuiltVersion(mcVersion, loaderVersion, versionJsonUrl)
+    }
+
+    suspend fun prepareOptiFine(
+        mcVersion: String,
+        type: String,
+        patch: String,
+        versionJsonUrl: String? = null
+    ): Result<String> {
+        val java = javaEnvironment.ensureForMinecraft(mcVersion).getOrElse {
+            return Result.failure(it)
+        }
+        return repository.installOptiFineVersion(mcVersion, type, patch, versionJsonUrl, java)
+    }
+
     override suspend fun launch(
         context: Context,
         versionId: String,

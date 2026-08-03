@@ -15,7 +15,7 @@ import kotlin.coroutines.coroutineContext
 
 /**
  * Extracts JRE archives used by Android OpenJDK packages (.tar.xz / .zip),
- * including FCL/Pojav split packages (`universal` + `bin-{abi}`).
+ * including Booxin split packages (`universal` + `bin-{abi}`).
  */
 object ArchiveExtractor {
 
@@ -38,10 +38,10 @@ object ArchiveExtractor {
     }
 
     /**
-     * Install FCL-style split JRE zip into [destinationDir].
+     * Install split JRE zip into [destinationDir].
      * Expected zip entries: version, universal.tar.xz, bin-{abi}.tar.xz
      */
-    suspend fun installPojavSplit(
+    suspend fun installSplitRuntime(
         zipArchive: File,
         destinationDir: File,
         abi: JavaAbi

@@ -23,19 +23,19 @@ object NativeJvmLauncher {
         return nativeLaunchJvm(args, full, dot)
     }
 
-    /** Headless tool JVM (Forge processors). Skips pojavexec/GLFW hooks. */
+    /** Headless tool JVM (Forge processors). Skips exec-bridge/GLFW hooks. */
     fun launchToolJvm(args: Array<String>): Int = nativeLaunchToolJvm(args)
 
     fun chdir(path: String): Boolean = nativeChdir(path)
 
-    /** Snapshot pojav_environ input gates (ready / callbacks / queue). */
+    /** Snapshot transitional exec-bridge input gates (ready / callbacks / queue). */
     fun dumpInputBridge(): String = nativeDumpInputBridge() ?: "null"
 
-    /** Tell libpojavexec the cursor moved; next pump will invoke CursorPos. */
+    /** Tell the exec bridge the cursor moved; next pump will invoke CursorPos. */
     fun markMousePositionDirty() = nativeMarkMousePositionDirty()
 
     /**
-     * Attach to HotSpot and drain pojavexec's input stack queue.
+     * Attach to HotSpot and drain the input stack queue.
      * Used when ART has queued mouse/key events but the render-thread pump
      * is not delivering them to Minecraft.
      */
@@ -43,7 +43,7 @@ object NativeJvmLauncher {
 
     /**
      * Bypass critical_send_* and invoke the current GLFW callbacks directly.
-     * Diagnostic fallback for builds where libpojavexec send_* updates nothing.
+     * Diagnostic fallback when native send_* updates nothing.
      */
     fun invokeCursorPosCallback(x: Float, y: Float): Boolean = nativeInvokeCursorPosCallback(x, y)
 

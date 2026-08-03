@@ -7,8 +7,8 @@ import java.io.File
 import java.util.zip.ZipFile
 
 /**
- * Ensures FCL/Pojav-style Android runtime bits (patched LWJGL jar, optional JNA,
- * and native .so files on a real filesystem path) are available under app storage.
+ * Stages Booxin Android runtime bits (patched LWJGL jar, optional JNA,
+ * and native .so files on a real filesystem path) under app storage.
  *
  * With extractNativeLibs=false, nativeLibraryDir is empty and LWJGL cannot find
  * liblwjgl.so by path — we always stage natives under filesDir.
@@ -27,24 +27,17 @@ object AndroidGameRuntime {
         "liblwjgl_tinyfd.so",
         "liblwjgl_vma.so",
         "liblwjgl_nanovg.so",
-        // MobileGlues (1.17+) and holy gl4es (≤1.16) — keep both as distinct files.
-        // libgl4es_holy.so is created at runtime as a pristine backup (not in APK).
         "libmobileglues.so",
         "libmobileglues_info_getter.so",
         "libgl4es_114.so",
         "libopenal.so",
-        "libpojavexec.so",
-        "libpojavexec_awt.so",
-        "libdriver_helper.so",
+        "libbooxin_bridge.so",
         "libawt_xawt.so",
         "libawt_headless.so",
         "libc++_shared.so",
         "libfreetype.so",
         "libshaderc.so",
         "libspirv-cross-c-shared.so",
-        "libfcl.so",
-        "libbytehook.so",
-        "liblinkerhook.so",
         "libbooxin_jvm.so"
     )
 
@@ -144,17 +137,18 @@ object AndroidGameRuntime {
     fun ensureNatives(context: Context) {
         val dest = nativesDir().also { it.mkdirs() }
         val marker = File(dest, ".ready")
-        val expected = "v7:${NATIVE_NAMES.size}:${preferredAbiFolder()}"
-        val markerOk = marker.isFile && marker.readText().trim().startsWith("v7:")
+        val expected = "v11:${NATIVE_NAMES.size}:${preferredAbiFolder()}"
+        val markerOk = marker.isFile && marker.readText().trim().startsWith("v11:")
         val missingRequired = !File(dest, "liblwjgl.so").isFile ||
+            !File(dest, "libbooxin_bridge.so").isFile ||
             !File(dest, "libpojavexec.so").isFile ||
-            !File(dest, "libdriver_helper.so").isFile ||
             !File(dest, "libmobileglues.so").isFile ||
             !File(dest, "libgl4es_114.so").isFile
         if (markerOk && !missingRequired) {
             // Still fill any newly-added names without wiping existing files.
             syncMissingNatives(context, dest)
             ensureHolyGl4esBackup(context, dest)
+            installBridgeCompatAlias(dest)
             return
         }
 
@@ -176,8 +170,8 @@ object AndroidGameRuntime {
         require(File(dest, "liblwjgl.so").isFile) {
             "无法准备 liblwjgl.so（abi=$abiFolder, copied=$copied, nativeDir=${systemNative.absolutePath}）"
         }
-        require(File(dest, "libdriver_helper.so").isFile) {
-            "无法准备 libdriver_helper.so（pojavexec 依赖）"
+        require(File(dest, "libbooxin_bridge.so").isFile) {
+            "无法准备 libbooxin_bridge.so（自研运行时桥）"
         }
 
         dest.listFiles()?.forEach { f ->
@@ -187,8 +181,37 @@ object AndroidGameRuntime {
             }
         }
         linkNativeAlias(dest, "libspirv-cross-c-shared.so", "libspirv-cross.so")
+        installBridgeCompatAlias(dest)
         ensureHolyGl4esBackup(context, dest)
+        // Drop quarantined transitional natives if staged from older installs.
+        listOf(
+            "libpojavexec.so",
+            "libpojavexec_awt.so",
+            "libfcl.so",
+            "libbytehook.so",
+            "liblinkerhook.so",
+            "libdriver_helper.so"
+        ).forEach { name ->
+            // Keep compat alias created from booxin_bridge; remove only real leftovers later.
+            if (name == "libpojavexec.so") return@forEach
+            File(dest, name).takeIf { it.isFile }?.delete()
+        }
         marker.writeText("$expected:$copied")
+    }
+
+    /**
+     * Some HotSpot / LWJGL paths still dlopen the historical filename.
+     * Point that name at our self-hosted bridge binary (same inode content).
+     */
+    private fun installBridgeCompatAlias(dest: File) {
+        val bridge = File(dest, "libbooxin_bridge.so")
+        if (!bridge.isFile) return
+        val alias = File(dest, "libpojavexec.so")
+        if (!alias.isFile || alias.length() != bridge.length()) {
+            bridge.copyTo(alias, overwrite = true)
+            alias.setReadable(true, false)
+            alias.setExecutable(true, false)
+        }
     }
 
     /**

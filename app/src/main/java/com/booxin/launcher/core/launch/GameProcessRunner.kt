@@ -2,7 +2,7 @@ package com.booxin.launcher.core.launch
 
 import android.content.Context
 import com.booxin.launcher.core.java.InstalledJavaRuntime
-import java.io.File
+import com.booxin.launcher.core.runtime.GameRuntimeBackends
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -42,21 +42,25 @@ class GameProcessRunner(
             emit("==== Launch command ====")
             emit(command.summarize())
             emit("==== JVM start ====")
+            emit("clientJarHint=${command.jvmArgs.firstOrNull { it.startsWith("-Dminecraft.client.jar=") } ?: command.jvmArgs.firstOrNull { it.startsWith("-Dfabric.gameJarPath=") } ?: "MISSING"}")
 
-            JvmEnvironment.apply(context, java, command.env)
+            val backend = GameRuntimeBackends.current()
+            backend.applyJvmEnvironment(context, java, command.env)
             if (!NativeJvmLauncher.chdir(command.workingDir.absolutePath)) {
                 emit("警告: 无法切换工作目录到 ${command.workingDir.absolutePath}")
             }
-
-            val argv = command.asProcessCommand().toMutableList()
-            argv[0] = "java"
 
             val tailer = LogcatTailer { line -> emitBlocking(line) }
             logcatTailer = tailer
             tailer.start()
 
             val code = try {
-                NativeJvmLauncher.launchJvm(argv.toTypedArray(), java.majorVersion)
+                val result = backend.launch(command, java.majorVersion)
+                emit("==== JVM returned: $result ====")
+                result
+            } catch (t: Throwable) {
+                emit("==== JVM native exception: ${t.javaClass.simpleName}: ${t.message} ====")
+                throw t
             } finally {
                 tailer.stop()
                 logcatTailer = null
@@ -69,6 +73,7 @@ class GameProcessRunner(
             running = false
             logcatTailer?.stop()
             logcatTailer = null
+            emitBlocking("==== JVM start failed: ${it.message} ====")
         }
     }
 
