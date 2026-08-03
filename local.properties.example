@@ -1,0 +1,8 @@
+# Copy relevant keys into local.properties (gitignored).
+# sdk.dir is usually written by Android Studio.
+
+# sdk.dir=C:/Users/YOU/AppData/Local/Android/Sdk
+
+# Optional private / self-hosted endpoints (comma-separated). Leave empty for OSS defaults.
+# booxin.roomApiRoots=http://127.0.0.1:5000
+# booxin.easytierRelays=tcp://relay.example.com:8080,tcp://relay.example.com:8081

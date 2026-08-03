@@ -1,0 +1,122 @@
+package com.booxin.launcher.ui.versions
+
+import android.os.Bundle
+import android.view.LayoutInflater
+import android.view.View
+import android.view.ViewGroup
+import android.widget.Toast
+import androidx.core.view.isVisible
+import androidx.fragment.app.Fragment
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.navigation.fragment.findNavController
+import androidx.recyclerview.widget.LinearLayoutManager
+import com.booxin.launcher.AppContainer
+import com.booxin.launcher.R
+import com.booxin.launcher.data.model.GameVersion
+import com.booxin.launcher.databinding.FragmentVersionsBinding
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import kotlinx.coroutines.launch
+
+class VersionsFragment : Fragment() {
+
+    private var _binding: FragmentVersionsBinding? = null
+    private val binding get() = _binding!!
+
+    private lateinit var adapter: VersionsAdapter
+
+    override fun onCreateView(
+        inflater: LayoutInflater,
+        container: ViewGroup?,
+        savedInstanceState: Bundle?
+    ): View {
+        _binding = FragmentVersionsBinding.inflate(inflater, container, false)
+        return binding.root
+    }
+
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+        adapter = VersionsAdapter(
+            selectedIdProvider = { AppContainer.repository.session.value.selectedVersionId },
+            onDelete = { version -> confirmDeleteVersion(version) },
+            onManage = { version -> openVersionManage(version) }
+        ) { version ->
+            AppContainer.repository.selectVersion(version.id)
+            adapter.notifyDataSetChanged()
+            Toast.makeText(
+                requireContext(),
+                getString(R.string.home_switched, version.id),
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+        binding.recyclerVersions.layoutManager = LinearLayoutManager(requireContext())
+        binding.recyclerVersions.adapter = adapter
+
+        binding.buttonDownload.setOnClickListener {
+            findNavController().navigate(R.id.action_versions_to_download)
+        }
+
+        AppContainer.repository.refreshInstalledVersions()
+
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                launch {
+                    AppContainer.repository.installedVersions.collect { list ->
+                        adapter.submit(list)
+                        binding.textEmpty.isVisible = list.isEmpty()
+                    }
+                }
+                launch {
+                    AppContainer.repository.session.collect {
+                        adapter.notifyDataSetChanged()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun openVersionManage(version: GameVersion) {
+        findNavController().navigate(
+            R.id.action_versions_to_version_manage,
+            Bundle().apply { putString("versionId", version.id) }
+        )
+    }
+
+    private fun confirmDeleteVersion(version: GameVersion) {
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle(R.string.versions_delete_title)
+            .setMessage(getString(R.string.versions_delete_confirm, version.id))
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(R.string.versions_delete_action) { _, _ ->
+                val result = AppContainer.repository.deleteInstalledVersion(version.id)
+                if (result.isSuccess) {
+                    Toast.makeText(
+                        requireContext(),
+                        getString(R.string.versions_delete_done, version.id),
+                        Toast.LENGTH_SHORT
+                    ).show()
+                } else {
+                    Toast.makeText(
+                        requireContext(),
+                        getString(
+                            R.string.versions_delete_failed,
+                            result.exceptionOrNull()?.message ?: "unknown"
+                        ),
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+            .show()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        AppContainer.repository.refreshInstalledVersions()
+    }
+
+    override fun onDestroyView() {
+        super.onDestroyView()
+        _binding = null
+    }
+}
