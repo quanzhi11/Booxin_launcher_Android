@@ -25,6 +25,8 @@ booxin.easytierRelays=tcp://relay.example.com:8080
 
 游戏目录在设备上：`filesDir/minecraft/`
 
-## 第三方说明
+## 开源协议
 
-`app/src/main/jniLibs`、`app/src/main/assets/app_runtime` 含原生库与运行时资源，分发前请看 `docs/THIRD_PARTY_NOTICES.md`。
+本项目采用 **[GPL-3.0](LICENSE)**（与 [FoldCraftLauncher](https://github.com/FCL-Team/FoldCraftLauncher) 相同）。
+
+`app/src/main/jniLibs`、`app/src/main/assets/app_runtime` 等第三方组件另见 `docs/THIRD_PARTY_NOTICES.md`。
