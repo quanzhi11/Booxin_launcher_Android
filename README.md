@@ -1,36 +1,30 @@
-# Booxin Launcher (Phone)
+# Booxin Launcher（Android）
 
-Native Android Minecraft launcher (`com.booxin.launcher`).
+手机端 Minecraft 启动器，包名 `com.booxin.launcher`。
 
-Min SDK 26 · Target SDK 35 · Kotlin + ViewBinding + Navigation
+- Min SDK 26 / Target SDK 35
+- Kotlin · ViewBinding · Navigation
+- 支持原版、Forge、NeoForge、Fabric、Quilt、OptiFine
+- 微软账号、离线账号
+- 联机（需自备或配置房间 / 中继服务）
 
-## Open & run
+## 构建
 
-1. Install [Android Studio](https://developer.android.com/studio)
-2. File → Open → select this project root
-3. Let Gradle sync
-4. Run on an emulator or a physical Android phone
+1. Android Studio 打开本仓库根目录
+2. Sync Gradle
+3. Run
 
-## Local configuration (do not commit secrets)
+Release 签名：复制 `keystore.properties.example` → `keystore.properties`，填入你的 jks（不要提交）。
 
-| File | Purpose |
-|------|---------|
-| `local.properties` | Android SDK path + optional private endpoints |
-| `keystore.properties` | Release signing (see `keystore.properties.example`) |
-
-Optional keys in `local.properties` (see `local.properties.example`):
+可选私有服务（写入本机 `local.properties`，不要提交）：
 
 ```properties
 booxin.roomApiRoots=http://127.0.0.1:5000
 booxin.easytierRelays=tcp://relay.example.com:8080
 ```
 
-Signing materials under `signing/` and `keystore.properties` are gitignored.
+游戏目录在设备上：`filesDir/minecraft/`
 
-## Game files
+## 第三方说明
 
-Game files root on device: `filesDir/minecraft/`
-
-## License / third-party
-
-Review bundled native libraries and JARs under `app/src/main/jniLibs` and `app/src/main/assets/app_runtime` before redistributing. See any `THIRD_PARTY_NOTICES` docs in-tree.
+`app/src/main/jniLibs`、`app/src/main/assets/app_runtime` 含原生库与运行时资源，分发前请看 `docs/THIRD_PARTY_NOTICES.md`。
