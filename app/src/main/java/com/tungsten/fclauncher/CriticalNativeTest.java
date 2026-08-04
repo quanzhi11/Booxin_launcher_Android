@@ -2,13 +2,7 @@ package com.tungsten.fclauncher;
 
 import dalvik.annotation.optimization.CriticalNative;
 
-/**
- * ABI probe required by the transitional exec native ({@code libpojavexec.so}).
- * <p>
- * Package name {@code com.tungsten.fclauncher} is hard-coded in that binary's
- * RegisterNatives lookup — do not rename until {@code libbooxin_bridge} replaces it.
- * Not an FCL source dependency; Booxin keeps this stub solely for the transitional ABI.
- */
+/** Tiny native probe; keep this package name — some loaders still look it up. */
 public class CriticalNativeTest {
     @CriticalNative
     public static native void testCriticalNative(int arg0, int arg1);

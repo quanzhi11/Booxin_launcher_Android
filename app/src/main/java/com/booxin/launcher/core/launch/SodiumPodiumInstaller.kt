@@ -5,10 +5,8 @@ import com.booxin.launcher.core.version.VersionModsManager
 import java.io.File
 
 /**
- * Sodium 0.5.13+/0.6.13+ aborts when it thinks the host is Pojav
- * (`PostLaunchChecks.isUsingPojavLauncher`). Community mod [Podium] disables that
- * check (and the LWJGL gate). Inject it while the transitional exec native still
- * looks like Pojav to Sodium; remove once Booxin runtime fingerprint is distinct.
+ * Newer Sodium refuses some Android hosts. Bundle Podium to skip that check
+ * until our runtime fingerprint is distinct enough on its own.
  */
 object SodiumPodiumInstaller {
 

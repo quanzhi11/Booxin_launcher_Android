@@ -5,12 +5,7 @@ import android.view.Choreographer;
 import org.lwjgl.glfw.CallbackBridge;
 
 /**
- * ART-facing input / window bridge API for Booxin.
- * <p>
- * Business and UI code must call this class instead of {@link CallbackBridge}.
- * During the transitional period this delegates to the HotSpot/JNI ABI class
- * {@code org.lwjgl.glfw.CallbackBridge} required by the legacy exec native.
- * A future {@code libbooxin_bridge} can replace the delegate without touching UI.
+ * App-facing input bridge. UI should use this, not {@link CallbackBridge} directly.
  */
 public final class BooxinBridge {
     private BooxinBridge() {}

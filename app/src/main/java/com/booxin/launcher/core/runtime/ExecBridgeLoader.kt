@@ -4,15 +4,13 @@ import com.booxin.launcher.core.launch.AndroidGameRuntime
 import java.io.File
 
 /**
- * Loads the staged Booxin exec/input bridge once.
+ * Loads the staged input/GL bridge once.
  *
- * The Android LWJGL jar hardcodes `libpojavexec.so` in [Library.loadNative].
- * We therefore stage our self-hosted bridge under that historical filename and
- * load THAT path here so ART / HotSpot / GLFW share a single mapping (one environ).
+ * Android LWJGL still asks for `libpojavexec.so`, so we stage our bridge under
+ * that name and load it here — ART and HotSpot must share the same mapping.
  */
 object ExecBridgeLoader {
 
-    /** Historical soname required by patched LWJGL (content is Booxin bridge). */
     private const val LWJGL_SONAME = "libpojavexec.so"
     private const val BOOXIN_SONAME = "libbooxin_bridge.so"
 

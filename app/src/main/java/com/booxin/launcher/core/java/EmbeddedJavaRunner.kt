@@ -22,7 +22,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * FCL ForgeNewInstallTask.runJVMProcess equivalent.
+ * Run a short-lived tool JVM (Forge install processors).
  *
  * Prefers isolated `:forge` process; falls back to in-process tool JVM if the
  * service never comes up (common MIUI / FGS edge cases) so install does not
@@ -33,7 +33,7 @@ object EmbeddedJavaRunner {
     private const val PROCESS_START_GRACE_MS = 8_000L
 
     /**
-     * @param command FCL format: `-cp`, classpath, mainClass, processor args…
+     * @param command `-cp`, classpath, mainClass, then processor args
      */
     fun run(
         java: InstalledJavaRuntime,
@@ -244,20 +244,30 @@ object EmbeddedJavaRunner {
         Thread.sleep(300)
     }
 
-    /** Only wait for :game / :forge siblings — do not block on unrelated package processes. */
+    /**
+     * Clear leftover :forge quickly. Do not block ~60s on :game — that made Forge
+     * install look stuck on the first processor while a zombie game process lingered.
+     */
     private fun waitForSiblingProcesses() {
+        killStaleForgeProcesses()
         val context = BooxinApp.getAppContext()
         val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-        val siblings = setOf(
-            "${context.packageName}:forge",
-            "${context.packageName}:game"
-        )
-        repeat(120) {
-            val busy = am.runningAppProcesses.orEmpty().any { it.processName in siblings }
-            if (!busy) return
-            Thread.sleep(500)
+        val gameName = "${context.packageName}:game"
+        val forgeName = "${context.packageName}:forge"
+        // Short grace only: processors run in :forge and do not need :game gone.
+        repeat(10) {
+            val procs = am.runningAppProcesses.orEmpty()
+            val forgeBusy = procs.any { it.processName == forgeName }
+            if (!forgeBusy) {
+                val gameBusy = procs.any { it.processName == gameName }
+                if (gameBusy) {
+                    Log.w(TAG, ":game still running — continuing Forge processor anyway")
+                }
+                return
+            }
+            Thread.sleep(200)
         }
-        Log.w(TAG, "sibling processes still running after wait — continuing")
+        Log.w(TAG, ":forge still present after grace — force kill and continue")
         killStaleForgeProcesses()
     }
 

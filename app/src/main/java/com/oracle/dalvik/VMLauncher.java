@@ -1,6 +1,6 @@
 package com.oracle.dalvik;
 
-/** JNI entry in libpojavexec.so — FCL/Pojav JVM launcher. */
+/** JNI entry used by the embedded JVM launcher. */
 public final class VMLauncher {
     private VMLauncher() {
     }

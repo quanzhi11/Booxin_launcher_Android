@@ -171,13 +171,10 @@ class CommunityRepository(
             val archive = File(cacheDir, file.filename)
             downloader.download(file.url, archive).getOrThrow()
             val manifest = readModpackManifest(archive)
-            val minecraftVersion = manifest.dependencies.optString("minecraft")
-                .ifBlank { error("整合包缺少 minecraft 依赖") }
-            val forgeVersion = manifest.dependencies.optString("forge").ifBlank { null }
+            val deps = parseModpackDependencies(manifest.dependencies)
             val targetVersionId = resolveOrCreateModpackTarget(
                 requestedTargetVersionId = requestedTargetVersionId,
-                minecraftVersion = minecraftVersion,
-                forgeVersion = forgeVersion
+                deps = deps
             )
             val root = File(LauncherPaths.versionsDir, targetVersionId).also { it.mkdirs() }
             extractOverrides(archive, root)
@@ -190,38 +187,71 @@ class CommunityRepository(
 
     private suspend fun resolveOrCreateModpackTarget(
         requestedTargetVersionId: String?,
-        minecraftVersion: String,
-        forgeVersion: String?
+        deps: ModpackDependencies
     ): String {
         if (requestedTargetVersionId != null) {
-            require(isTargetCompatibleWithDependencies(requestedTargetVersionId, minecraftVersion, forgeVersion)) {
+            require(isTargetCompatibleWithDependencies(requestedTargetVersionId, deps)) {
                 "目标版本与整合包依赖不兼容"
             }
             return requestedTargetVersionId
         }
         val existing = launcherRepository.installedVersions.value.firstOrNull {
-            isTargetCompatibleWithDependencies(it.id, minecraftVersion, forgeVersion)
+            isTargetCompatibleWithDependencies(it.id, deps)
         }?.id
         if (existing != null) return existing
 
-        return if (forgeVersion != null) {
-            val java = javaEnvironment.ensureForMinecraft(minecraftVersion).getOrThrow()
-            launcherRepository.installForgeVersion(minecraftVersion, forgeVersion, null, java).getOrThrow()
-        } else {
-            launcherRepository.installVersion(minecraftVersion).getOrThrow()
-            minecraftVersion
+        val java = javaEnvironment.ensureForMinecraft(deps.minecraft).getOrThrow()
+        return when {
+            deps.neoforge != null ->
+                launcherRepository.installNeoForgeVersion(deps.minecraft, deps.neoforge, null, java)
+                    .getOrThrow()
+            deps.forge != null ->
+                launcherRepository.installForgeVersion(deps.minecraft, deps.forge, null, java)
+                    .getOrThrow()
+            deps.fabricLoader != null ->
+                launcherRepository.installFabricVersion(deps.minecraft, deps.fabricLoader, null)
+                    .getOrThrow()
+            deps.quiltLoader != null ->
+                launcherRepository.installQuiltVersion(deps.minecraft, deps.quiltLoader, null)
+                    .getOrThrow()
+            else -> {
+                launcherRepository.installVersion(deps.minecraft).getOrThrow()
+                deps.minecraft
+            }
         }
+    }
+
+    private fun parseModpackDependencies(raw: JSONObject): ModpackDependencies {
+        val minecraft = raw.optString("minecraft").ifBlank { error("整合包缺少 minecraft 依赖") }
+        return ModpackDependencies(
+            minecraft = minecraft,
+            forge = raw.optString("forge").ifBlank { null },
+            neoforge = raw.optString("neoforge").ifBlank { null },
+            fabricLoader = raw.optString("fabric-loader").ifBlank { null },
+            quiltLoader = raw.optString("quilt-loader").ifBlank { null }
+        )
     }
 
     private fun isTargetCompatibleWithDependencies(
         versionId: String,
-        minecraftVersion: String,
-        forgeVersion: String?
+        deps: ModpackDependencies
     ): Boolean {
-        if (resolveMinecraftVersionId(versionId) != minecraftVersion) return false
+        if (resolveMinecraftVersionId(versionId) != deps.minecraft) return false
+        val loader = CommunityLoader.fromVersionId(versionId)
         return when {
-            forgeVersion == null -> true
-            else -> versionId.equals("$minecraftVersion-forge-$forgeVersion", ignoreCase = true)
+            deps.neoforge != null ->
+                loader == CommunityLoader.NEOFORGE &&
+                    versionId.equals("${deps.minecraft}-neoforge-${deps.neoforge}", ignoreCase = true)
+            deps.forge != null ->
+                loader == CommunityLoader.FORGE &&
+                    versionId.equals("${deps.minecraft}-forge-${deps.forge}", ignoreCase = true)
+            deps.fabricLoader != null ->
+                loader == CommunityLoader.FABRIC &&
+                    versionId.equals("${deps.minecraft}-fabric-${deps.fabricLoader}", ignoreCase = true)
+            deps.quiltLoader != null ->
+                loader == CommunityLoader.QUILT &&
+                    versionId.equals("${deps.minecraft}-quilt-${deps.quiltLoader}", ignoreCase = true)
+            else -> loader == CommunityLoader.ANY
         }
     }
 
@@ -232,11 +262,18 @@ class CommunityRepository(
     ): Boolean {
         if (version.gameVersions.isNotEmpty() && profile.minecraftId !in version.gameVersions) return false
         if (contentType == CommunityContentType.RESOURCE_PACK) return true
-        if (contentType == CommunityContentType.MODPACK) {
-            val forgeDep = version.loaders.firstOrNull { it.equals("forge", ignoreCase = true) }
-            return forgeDep == null || profile.loader == CommunityLoader.FORGE
-        }
         val normalizedLoaders = version.loaders.map { it.lowercase() }
+        if (contentType == CommunityContentType.MODPACK) {
+            if (normalizedLoaders.isEmpty()) return true
+            return when (profile.loader) {
+                CommunityLoader.FORGE -> "forge" in normalizedLoaders
+                CommunityLoader.NEOFORGE -> "neoforge" in normalizedLoaders
+                CommunityLoader.FABRIC -> "fabric" in normalizedLoaders
+                CommunityLoader.QUILT -> "quilt" in normalizedLoaders
+                CommunityLoader.ANY ->
+                    normalizedLoaders.none { it in setOf("forge", "neoforge", "fabric", "quilt") }
+            }
+        }
         if (normalizedLoaders.isEmpty()) return true
         return when (profile.loader) {
             CommunityLoader.FORGE -> "forge" in normalizedLoaders
@@ -351,6 +388,14 @@ class CommunityRepository(
     private data class ModpackManifest(
         val dependencies: JSONObject,
         val files: JSONArray
+    )
+
+    private data class ModpackDependencies(
+        val minecraft: String,
+        val forge: String?,
+        val neoforge: String?,
+        val fabricLoader: String?,
+        val quiltLoader: String?
     )
 
     companion object {

@@ -52,6 +52,66 @@ class BooxinRoomApi {
         }
     }
 
+    suspend fun createRoom(
+        roomCode: String,
+        hostId: String,
+        hostName: String,
+        motd: String,
+        remark: String? = null,
+        port: Int,
+        maxPlayers: Int = 8,
+        isPublic: Boolean = true,
+        version: String = "1.20.1",
+        modpackUrl: String? = null,
+        modpackGameVersion: String? = null,
+        modpackLoader: String? = null
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            firstRoot { root ->
+                val body = JSONObject()
+                    .put("RoomCode", roomCode)
+                    .put("HostId", hostId)
+                    .put("HostName", hostName)
+                    .put("Motd", motd)
+                    .put("Remark", remark.orEmpty())
+                    .put("Port", port)
+                    .put("MaxPlayers", maxPlayers)
+                    .put("IsPublic", isPublic)
+                    .put("Version", version)
+                    .put("ModpackUrl", modpackUrl)
+                    .put("ModpackGameVersion", modpackGameVersion)
+                    .put("ModpackLoader", modpackLoader)
+                    .toString()
+                    .toRequestBody(JSON)
+                execute(
+                    Request.Builder()
+                        .url("$root/api/rooms")
+                        .post(body)
+                        .header("User-Agent", HttpClients.USER_AGENT)
+                        .header("Accept", "application/json")
+                        .build()
+                )
+                Unit
+            }
+        }
+    }
+
+    suspend fun deleteRoom(roomCode: String): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            firstRoot { root ->
+                execute(
+                    Request.Builder()
+                        .url("$root/api/rooms/${roomCode.trim()}")
+                        .delete()
+                        .header("User-Agent", HttpClients.USER_AGENT)
+                        .header("Accept", "application/json")
+                        .build()
+                )
+                Unit
+            }
+        }
+    }
+
     suspend fun joinRoom(
         session: BooxinAuthSession,
         roomCode: String,

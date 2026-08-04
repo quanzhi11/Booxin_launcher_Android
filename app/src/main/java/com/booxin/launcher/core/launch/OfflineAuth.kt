@@ -5,7 +5,7 @@ import java.security.MessageDigest
 import java.util.UUID
 
 /**
- * Offline account helpers aligned with HMCL/FCL / Java UUID.nameUUIDFromBytes rules.
+ * Offline account helpers (UUID.nameUUIDFromBytes rules).
  */
 object OfflineAuth {
 

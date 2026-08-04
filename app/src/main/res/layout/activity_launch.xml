@@ -47,14 +47,16 @@
             android:clickable="false"
             android:focusable="false"
             android:splitMotionEvents="true"
-            android:clipChildren="false" />
+            android:clipChildren="false">
 
-        <com.booxin.launcher.ui.launch.input.VirtualJoystick
-            android:id="@+id/joystickMove"
-            android:layout_width="160dp"
-            android:layout_height="160dp"
-            android:layout_gravity="top|start"
-            android:elevation="4dp" />
+            <!-- Joystick inside passthrough so hold-key + move stick + look can coexist -->
+            <com.booxin.launcher.ui.launch.input.VirtualJoystick
+                android:id="@+id/joystickMove"
+                android:layout_width="160dp"
+                android:layout_height="160dp"
+                android:layout_gravity="top|start"
+                android:elevation="4dp" />
+        </com.booxin.launcher.ui.launch.input.TouchPassthroughLayout>
 
         <!-- FCL TouchCharInput: 1px focus target for system IME -->
         <com.booxin.launcher.ui.launch.input.TouchCharInput

@@ -6,11 +6,7 @@ import com.booxin.runtime.BooxinBridge
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.withTimeout
 
-/**
- * Shares the Android [Surface] between [com.booxin.launcher.ui.launch.LaunchActivity]
- * and the JVM in the same `:game` process. The exec bridge needs setupBridgeWindow()
- * before GLFW creates a window (otherwise ANativeWindow_acquire SIGSEGV).
- */
+/** Surface for the :game process — bind before GLFW or ANativeWindow_acquire crashes. */
 object GameSurfaceBridge {
 
     @Volatile

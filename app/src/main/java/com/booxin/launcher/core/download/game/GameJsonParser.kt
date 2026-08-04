@@ -166,7 +166,7 @@ object GameJsonParser {
 
     private fun appliesToCurrentEnvironment(rules: JSONArray?): Boolean {
         if (rules == null || rules.length() == 0) return true
-        // FCL Android specialization: OSRestriction.allow() is always false.
+        // Android: OSRestriction.allow() is always false.
         // Rules that only allow a desktop OS will disallow; allow-without-os still works.
         var allowed = false
         for (i in 0 until rules.length()) {

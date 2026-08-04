@@ -41,6 +41,8 @@ class ForgeGameInstaller(
     val progress: StateFlow<GameInstallProgress?> = _progress.asStateFlow()
 
     fun isInstalled(versionId: String): Boolean {
+        if (!versionId.contains('-') && !versionId.contains('_')) return false
+        VersionJsonMerger.resolveInheritsFrom(versionId) ?: return false
         VersionJsonMerger.versionJsonFile(versionId) ?: return false
         val merged = VersionJsonMerger.merge(versionId) ?: return false
         if (merged.optString("mainClass").isBlank()) return false

@@ -5,8 +5,10 @@ import java.io.InputStreamReader
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Tails **this process only**. Never mirror the whole-device logcat — that floods
- * Binder + the LaunchActivity TextView and stalls touch (~1s lag / heat).
+ * Tails **this process only**.
+ *
+ * Default: a few Booxin tags (avoids Binder flood / touch lag).
+ * When [RealtimeLaunchLog] is enabled: full pid logcat with threadtime for diagnostics.
  */
 class LogcatTailer(
     private val onLine: (String) -> Unit
@@ -19,18 +21,33 @@ class LogcatTailer(
         if (!running.compareAndSet(false, true)) return
         runCatching {
             val pid = android.os.Process.myPid()
-            // Own PID + our tags only. Minecraft INFO still arrives via BooxinJvm.
-            val started = ProcessBuilder(
-                "logcat",
-                "--pid=$pid",
-                "-v", "brief",
-                "-T", "1",
-                "BooxinJvm:I",
-                "BooxinInput:I",
-                "LaunchActivity:I",
-                "GameLaunchService:I",
-                "*:S"
-            ).redirectErrorStream(true).start()
+            val verbose = RealtimeLaunchLog.isEnabled()
+            val cmd = if (verbose) {
+                // Full process stream — only while user opted into realtime capture.
+                listOf(
+                    "logcat",
+                    "--pid=$pid",
+                    "-v", "threadtime",
+                    "-T", "1"
+                )
+            } else {
+                listOf(
+                    "logcat",
+                    "--pid=$pid",
+                    "-v", "brief",
+                    "-T", "1",
+                    "BooxinJvm:I",
+                    "BooxinInput:I",
+                    "LaunchActivity:I",
+                    "GameLaunchService:I",
+                    "*:S"
+                )
+            }
+            onLine(
+                if (verbose) "logcat: realtime FULL pid=$pid"
+                else "logcat: filtered tags pid=$pid"
+            )
+            val started = ProcessBuilder(cmd).redirectErrorStream(true).start()
             proc = started
             thread = Thread {
                 BufferedReader(InputStreamReader(started.inputStream)).use { reader ->

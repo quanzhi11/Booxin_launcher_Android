@@ -23,7 +23,7 @@ import java.net.DatagramSocket
 import java.net.InetSocketAddress
 
 /**
- * FCL ProcessService equivalent: run Forge processors in an isolated process.
+ * Run Forge processors in an isolated process.
  *
  * Job is passed via files (not large Intent extras) to avoid binder limits and
  * lost UDP races — exit code is written to a file and also sent over UDP.

@@ -81,7 +81,7 @@ public class CallbackBridge {
     }
 
     /**
-     * FCL putMouseEventWithCoords: move cursor then click; auto-release after 33ms.
+     * Move cursor, press, auto-release after 33ms.
      * @param button GLFW mouse button (0=LMB, 1=RMB, 2=MMB)
      * @param x game/GLFW X
      * @param y game/GLFW Y
@@ -97,13 +97,11 @@ public class CallbackBridge {
         sendMouseButton(button, isDown);
     }
 
-    /** FCL CallbackBridge.sendCursorPos — coordinates are GLFW window space. */
+    /** GLFW window-space cursor. */
     public static void sendCursorPos(float x, float y) {
         mouseX = x;
         mouseY = y;
         try {
-            // FCL: only CriticalNative queue write. pojavStartPumping detects
-            // cursorX/Y changes and sets shouldUpdateMouse — no extra JNI.
             nativeSendCursorPos(x, y);
             nativesLinked = true;
         } catch (UnsatisfiedLinkError | Exception e) {
@@ -111,7 +109,6 @@ public class CallbackBridge {
         }
     }
 
-    /** FCL CallbackBridge.sendMouseButton */
     public static void sendMouseButton(int button, boolean pressed) {
         try {
             nativeSendMouseButton(button, pressed ? 1 : 0, 0);
@@ -140,7 +137,6 @@ public class CallbackBridge {
         sendKey(key, false);
     }
 
-    /** FCL / GLFW char event for soft-keyboard text. */
     public static void sendChar(char codepoint) {
         try {
             nativeSendChar(codepoint);
@@ -160,7 +156,6 @@ public class CallbackBridge {
         }
     }
 
-    /** FCL CallbackBridge.sendUpdateWindowSize */
     public static void sendUpdateWindowSize(int w, int h) {
         try {
             nativeSendScreenSize(w, h);
@@ -174,18 +169,11 @@ public class CallbackBridge {
         try {
             nativeSetInputReady(ready);
         } catch (UnsatisfiedLinkError | Exception ignored) {
-            // pojavexec may not be loaded yet during early Surface setup.
+            // Bridge may not be loaded yet.
         }
     }
 
-    /**
-     * Arm the pojavexec input bridge.
-     * Stack-queue is required: libpojavexec only persists cursorX/Y for
-     * glfwGetCursorPos when isUseStackQueueCall is true. Direct delivery
-     * fires CursorPos callbacks but leaves hover/hit-testing at (0,0).
-     *
-     * @return true if natives were armed successfully
-     */
+    /** Turn on stack-queue input (needed so glfwGetCursorPos sees moves). */
     public static boolean enableAndroidInput() {
         try {
             nativeSetUseInputStackQueue(true);
@@ -214,24 +202,21 @@ public class CallbackBridge {
 
     private static void logLinkOnce(String where, Throwable e) {
         if (linkErrorLogged) return;
-        // Only sticky-log hard failures after natives were never linked.
-        // Early "library not loaded" should not silence later real errors forever.
+        // Don't stick on early "library not loaded" — wait for a real failure.
         if (!(e instanceof UnsatisfiedLinkError) || nativesLinked) {
             linkErrorLogged = true;
         }
-        Log.e(TAG, where + " failed (pojavexec not ready?): " + e.getMessage());
+        Log.e(TAG, where + " failed (bridge not ready?): " + e.getMessage());
     }
 
     private static void maybeSwitchToDirectMousePath() {
-        // Intentionally disabled: switching off stack-queue breaks cursorX/Y
-        // persistence in libpojavexec (glfwGetCursorPos stays at 0,0).
+        // Off: without stack-queue, cursor pos stays at 0,0.
     }
 
     private static void maybePumpReadyBridge(boolean fromButton) {
-        // Events are drained on MC's render-thread GLFW pump; do not forcePump from ART.
+        // Pump runs on the game render thread.
     }
 
-    /** Called from libpojavexec during JNI_OnLoad. */
     @SuppressWarnings("unused")
     public static String accessAndroidClipboard(int type, String copy) {
         Context context = com.booxin.launcher.BooxinApp.getAppContext();
@@ -273,11 +258,7 @@ public class CallbackBridge {
         }
     }
 
-    /**
-     * Called from libpojavexec (Dalvik JNI) when GLFW grab state changes.
-     * Timing matches FCL: Choreographer delay 16ms before notifying UI.
-     */
-    /** Invoked from native bridge when GLFW grab state changes. */
+    /** Native → UI grab change (slight delay so UI doesn't thrash). */
     @SuppressWarnings("unused")
     public static void onGrabStateChanged(final boolean grabbing) {
         isGrabbing = grabbing;
@@ -299,11 +280,7 @@ public class CallbackBridge {
     public static native String nativeClipboard(int action, byte[] copy);
     public static native void nativeSetGrabbing(boolean grab);
 
-    /**
-     * Must match libpojavexec critical RegisterNatives table (FCL).
-     * Methods are private + @CriticalNative exactly like FCL CallbackBridge —
-     * otherwise ART uses the JNI ABI and touch events are silently corrupted.
-     */
+    // @CriticalNative: wrong ABI = broken touch. Keep private.
     @CriticalNative
     private static native void nativeSetUseInputStackQueue(boolean useInputStackQueue);
 

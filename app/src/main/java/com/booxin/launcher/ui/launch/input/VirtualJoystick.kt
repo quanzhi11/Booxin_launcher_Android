@@ -239,7 +239,7 @@ class VirtualJoystick @JvmOverloads constructor(
     }
 
     private fun updateKeys(nx: Float, ny: Float) {
-        // FCL ControlDirection: atan2(dy, dx) mapped to 0..360, 8 sectors of 45°.
+        // atan2(dy, dx) → 0..360, eight 45° sectors.
         val dead = 0.28f
         val mag = hypot(nx, ny)
         var w = false

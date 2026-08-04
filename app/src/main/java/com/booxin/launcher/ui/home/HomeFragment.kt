@@ -66,11 +66,13 @@ class HomeFragment : Fragment() {
                 val account = prepareLaunchAccount() ?: return@launch
                 val result = AppContainer.gameRuntime.launch(ctx, version.id, account)
                 if (result.isFailure) {
+                    val err = result.exceptionOrNull()
+                    if (err is kotlinx.coroutines.CancellationException) return@launch
                     Toast.makeText(
                         ctx,
                         getString(
                             R.string.home_launch_failed,
-                            result.exceptionOrNull()?.message ?: "unknown"
+                            err?.message ?: "unknown"
                         ),
                         Toast.LENGTH_LONG
                     ).show()

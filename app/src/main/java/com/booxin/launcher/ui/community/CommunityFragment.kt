@@ -14,7 +14,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.navigation.fragment.findNavController
-import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.GridLayoutManager
 import com.booxin.launcher.AppContainer
 import com.booxin.launcher.R
 import com.booxin.launcher.core.community.ModrinthClient
@@ -48,7 +48,14 @@ class CommunityFragment : Fragment() {
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
-        binding.recyclerProjects.layoutManager = LinearLayoutManager(requireContext())
+        val span = if (resources.configuration.orientation ==
+            android.content.res.Configuration.ORIENTATION_LANDSCAPE
+        ) {
+            2
+        } else {
+            1
+        }
+        binding.recyclerProjects.layoutManager = GridLayoutManager(requireContext(), span)
         binding.recyclerProjects.adapter = adapter
 
         setupChips()
@@ -139,7 +146,8 @@ class CommunityFragment : Fragment() {
     private fun refreshLoaderVisibility() {
         val b = _binding ?: return
         val show = contentType == CommunityContentType.MOD
-        b.scrollLoaders.isVisible = show
+        b.chipLoaders.isVisible = show
+        b.loaderDivider.isVisible = show
         b.textHint.text = when (contentType) {
             CommunityContentType.MOD ->
                 getString(R.string.community_hint_mods)
@@ -186,6 +194,7 @@ class CommunityFragment : Fragment() {
             ui.textEmpty.isVisible = page.projects.isEmpty()
             updatePagination(page)
             if (page.projects.isNotEmpty()) {
+                ui.filterAppBar.setExpanded(true, false)
                 ui.recyclerProjects.scrollToPosition(0)
             }
         }

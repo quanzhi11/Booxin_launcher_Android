@@ -2,6 +2,7 @@ package com.booxin.launcher.ui.launch.input
 
 import android.content.Context
 import android.util.AttributeSet
+import android.view.Choreographer
 import android.view.InputDevice
 import android.view.MotionEvent
 import android.view.View
@@ -9,13 +10,13 @@ import com.booxin.runtime.BooxinBridge
 import kotlin.math.abs
 
 /**
- * Full-screen touch â†?mouse, matching FCL [TouchPad] behavior.
+ * Full-screen touch to mouse.
  *
- * Grabbed (in-world): drag looks; stationary release clicks by [gestureMode]
- * (BUILD = RMB, FIGHT = LMB). No long-press gesture.
+ * Grabbed: drag looks; tap clicks by [gestureMode] (BUILD = RMB, FIGHT = LMB).
+ * Second finger can look while a virtual key is held.
  *
- * Supports starting look on [MotionEvent.ACTION_POINTER_DOWN] so a second finger
- * can rotate the camera while a virtual key is held on [TouchPassthroughLayout].
+ * GUI clicks are frame-scheduled so cursor is committed before button down,
+ * and pending up/down never cancel each other (stuck LMB / missed clicks).
  */
 class GameTouchPad @JvmOverloads constructor(
     context: Context,
@@ -37,27 +38,90 @@ class GameTouchPad @JvmOverloads constructor(
     private var downTime = 0L
     private var pointerId = -1
     private var shouldBeDown = false
-    /** Finger position at look start â€?used to decide tap vs look. */
+    /** Finger position at look start â€” used to decide tap vs look. */
     private var tapAnchorX = 0
     private var tapAnchorY = 0
     private var tapCancelled = false
 
-    /** FCL: schedule down and up independently with the same 33ms delay. */
+    /** True after DOWN callback posted, until it fires or is flushed. */
+    private var clickDownPending = false
+    /** True while LMB is logically held from GUI click scheduling. */
+    private var guiLmbHeld = false
+    /** Pending grabbed-mode tap release (BUILD/FIGHT). */
+    private var grabbedTapUp: Choreographer.FrameCallback? = null
+    private var grabbedTapButton: Int = -1
+
+    private val choreographer: Choreographer get() = BooxinBridge.sChoreographer
+
+    private val clickDownFrame: Choreographer.FrameCallback = Choreographer.FrameCallback {
+        clickDownPending = false
+        GameInput.sendKeyEvent(GameInput.MOUSE_LEFT, true)
+        guiLmbHeld = true
+    }
+
+    private val clickUpFrame: Choreographer.FrameCallback = object : Choreographer.FrameCallback {
+        override fun doFrame(frameTimeNanos: Long) {
+            // Fast tap: UP arrived before delayed DOWN â€” force DOWN then release next frame.
+            if (clickDownPending) {
+                choreographer.removeFrameCallback(clickDownFrame)
+                clickDownPending = false
+                GameInput.sendKeyEvent(GameInput.MOUSE_LEFT, true)
+                guiLmbHeld = true
+                choreographer.postFrameCallbackDelayed(this, CLICK_FRAME_DELAY_MS)
+                return
+            }
+            if (guiLmbHeld) {
+                GameInput.sendKeyEvent(GameInput.MOUSE_LEFT, false)
+                guiLmbHeld = false
+            }
+        }
+    }
+
     private fun scheduleClickDown() {
-        BooxinBridge.sChoreographer.removeFrameCallback(clickDownFrame)
-        BooxinBridge.sChoreographer.postFrameCallbackDelayed(clickDownFrame, CLICK_FRAME_DELAY_MS)
+        // Never cancel a pending UP â€” that left LMB stuck in the game.
+        flushGuiClick(releaseIfHeld = true)
+        clickDownPending = true
+        choreographer.postFrameCallbackDelayed(clickDownFrame, CLICK_FRAME_DELAY_MS)
     }
 
     private fun scheduleClickUp() {
-        BooxinBridge.sChoreographer.removeFrameCallback(clickUpFrame)
-        BooxinBridge.sChoreographer.postFrameCallbackDelayed(clickUpFrame, CLICK_FRAME_DELAY_MS)
+        choreographer.removeFrameCallback(clickUpFrame)
+        choreographer.postFrameCallbackDelayed(clickUpFrame, CLICK_FRAME_DELAY_MS)
     }
 
-    private val clickDownFrame = android.view.Choreographer.FrameCallback {
-        GameInput.sendKeyEvent(GameInput.MOUSE_LEFT, true)
+    /** Cancel pending frames; optionally send UP if button is held. */
+    private fun flushGuiClick(releaseIfHeld: Boolean) {
+        choreographer.removeFrameCallback(clickDownFrame)
+        choreographer.removeFrameCallback(clickUpFrame)
+        clickDownPending = false
+        if (releaseIfHeld && guiLmbHeld) {
+            GameInput.sendKeyEvent(GameInput.MOUSE_LEFT, false)
+            guiLmbHeld = false
+        }
     }
-    private val clickUpFrame = android.view.Choreographer.FrameCallback {
-        GameInput.sendKeyEvent(GameInput.MOUSE_LEFT, false)
+
+    private fun scheduleGrabbedTap(buttonCode: Int) {
+        cancelGrabbedTap(releaseIfHeld = true)
+        grabbedTapButton = buttonCode
+        GameInput.sendKeyEvent(buttonCode, true)
+        val cb: Choreographer.FrameCallback = Choreographer.FrameCallback {
+            if (grabbedTapButton == buttonCode) {
+                GameInput.sendKeyEvent(buttonCode, false)
+                grabbedTapButton = -1
+            }
+            grabbedTapUp = null
+        }
+        grabbedTapUp = cb
+        choreographer.postFrameCallbackDelayed(cb, CLICK_FRAME_DELAY_MS)
+    }
+
+    private fun cancelGrabbedTap(releaseIfHeld: Boolean) {
+        grabbedTapUp?.let { choreographer.removeFrameCallback(it) }
+        grabbedTapUp = null
+        if (releaseIfHeld && grabbedTapButton >= 0) {
+            GameInput.sendKeyEvent(grabbedTapButton, false)
+        }
+        grabbedTapButton = -1
     }
 
     init {
@@ -70,8 +134,8 @@ class GameTouchPad @JvmOverloads constructor(
     }
 
     fun resetTouchState() {
-        BooxinBridge.sChoreographer.removeFrameCallback(clickDownFrame)
-        BooxinBridge.sChoreographer.removeFrameCallback(clickUpFrame)
+        cancelGrabbedTap(releaseIfHeld = true)
+        flushGuiClick(releaseIfHeld = true)
         pointerId = -1
         shouldBeDown = false
         tapCancelled = false
@@ -107,7 +171,6 @@ class GameTouchPad @JvmOverloads constructor(
                 val idx = event.actionIndex
                 pointerId = event.getPointerId(idx)
                 GameInput.setPointer(event.getX(idx).toInt(), event.getY(idx).toInt())
-                BooxinBridge.sChoreographer.removeFrameCallback(clickUpFrame)
                 scheduleClickDown()
             }
             MotionEvent.ACTION_MOVE -> {
@@ -121,7 +184,11 @@ class GameTouchPad @JvmOverloads constructor(
                 }
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                scheduleClickUp()
+                if (event.actionMasked == MotionEvent.ACTION_CANCEL) {
+                    flushGuiClick(releaseIfHeld = true)
+                } else {
+                    scheduleClickUp()
+                }
                 pointerId = -1
             }
         }
@@ -162,7 +229,7 @@ class GameTouchPad @JvmOverloads constructor(
                 }
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                if (pointerId >= 0) {
+                if (pointerId >= 0 && event.actionMasked != MotionEvent.ACTION_CANCEL) {
                     val idx = event.findPointerIndex(pointerId).takeIf { it >= 0 } ?: 0
                     finishGuiSlideTap(idx, event)
                 }
@@ -179,8 +246,7 @@ class GameTouchPad @JvmOverloads constructor(
             abs(x - downX) <= TAP_SLOP &&
             abs(y - downY) <= TAP_SLOP
         ) {
-            GameInput.sendKeyEvent(GameInput.MOUSE_LEFT, true)
-            GameInput.sendKeyEvent(GameInput.MOUSE_LEFT, false)
+            scheduleGrabbedTap(GameInput.MOUSE_LEFT)
         }
     }
 
@@ -190,41 +256,30 @@ class GameTouchPad @JvmOverloads constructor(
         }
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
-                // Start (or retarget) look on this pointer. Prefer a new finger when
-                // one is already held on a virtual key and this event is POINTER_DOWN.
+                // TouchPassthroughLayout forwards each finger as a single-pointer stream
+                // (always ACTION_DOWN). Allow starting look while a virtual key is held.
                 val idx = event.actionIndex
                 val x = event.getX(idx)
                 val screenW = width.coerceAtLeast(1)
                 if (disableLeftTouchWhenGrabbed && x <= screenW / 2f) {
                     return true
                 }
-                if (pointerId >= 0 && event.actionMasked == MotionEvent.ACTION_DOWN) {
-                    // Primary down replaces previous look finger.
-                } else if (pointerId >= 0 && event.actionMasked == MotionEvent.ACTION_POINTER_DOWN) {
-                    // Already looking with another finger â€?ignore extra look fingers.
-                    return true
-                }
+                // New look finger replaces a previous one from this pad.
                 beginLook(event.getPointerId(idx), x.toInt(), event.getY(idx).toInt())
             }
             MotionEvent.ACTION_MOVE -> {
                 if (!shouldBeDown || pointerId < 0) return true
                 val idx = event.findPointerIndex(pointerId)
-                if (idx < 0) return true
-                val newDownX = event.getX(idx).toInt()
-                val newDownY = event.getY(idx).toInt()
-                if (!tapCancelled &&
-                    (abs(newDownX - tapAnchorX) > TAP_SLOP || abs(newDownY - tapAnchorY) > TAP_SLOP)
-                ) {
-                    tapCancelled = true
+                if (idx < 0) {
+                    // Synthesized events always use pointer 0; recover if ids diverge.
+                    if (event.pointerCount > 0) {
+                        val x = event.getX(0).toInt()
+                        val y = event.getY(0).toInt()
+                        applyLookDelta(x, y)
+                    }
+                    return true
                 }
-                val scale = GameInput.scaleFactor().coerceAtLeast(0.0001)
-                val deltaX = ((newDownX - downX) * lookSensitivity / scale).toInt()
-                val deltaY = ((newDownY - downY) * lookSensitivity / scale).toInt()
-                GameInput.setPointer(initialX + deltaX, initialY + deltaY)
-                downX = newDownX
-                downY = newDownY
-                initialX = GameInput.pointerX
-                initialY = GameInput.pointerY
+                applyLookDelta(event.getX(idx).toInt(), event.getY(idx).toInt())
             }
             MotionEvent.ACTION_POINTER_UP -> {
                 if (event.getPointerId(event.actionIndex) == pointerId) {
@@ -246,6 +301,22 @@ class GameTouchPad @JvmOverloads constructor(
         return true
     }
 
+    private fun applyLookDelta(newDownX: Int, newDownY: Int) {
+        if (!tapCancelled &&
+            (abs(newDownX - tapAnchorX) > TAP_SLOP || abs(newDownY - tapAnchorY) > TAP_SLOP)
+        ) {
+            tapCancelled = true
+        }
+        val scale = GameInput.scaleFactor().coerceAtLeast(0.0001)
+        val deltaX = ((newDownX - downX) * lookSensitivity / scale).toInt()
+        val deltaY = ((newDownY - downY) * lookSensitivity / scale).toInt()
+        GameInput.setPointer(initialX + deltaX, initialY + deltaY)
+        downX = newDownX
+        downY = newDownY
+        initialX = GameInput.pointerX
+        initialY = GameInput.pointerY
+    }
+
     private fun beginLook(id: Int, x: Int, y: Int) {
         pointerId = id
         shouldBeDown = true
@@ -262,16 +333,10 @@ class GameTouchPad @JvmOverloads constructor(
     private fun endLook(allowTap: Boolean) {
         shouldBeDown = false
         if (allowTap && !tapCancelled && !disableGesture) {
-            // No long-press: stationary touch-up = one click by current mode.
+            // Stationary touch-up = one click by current mode; keep down â‰¥1 frame.
             when (gestureMode) {
-                GestureMode.BUILD -> {
-                    GameInput.sendKeyEvent(GameInput.MOUSE_RIGHT, true)
-                    GameInput.sendKeyEvent(GameInput.MOUSE_RIGHT, false)
-                }
-                GestureMode.FIGHT -> {
-                    GameInput.sendKeyEvent(GameInput.MOUSE_LEFT, true)
-                    GameInput.sendKeyEvent(GameInput.MOUSE_LEFT, false)
-                }
+                GestureMode.BUILD -> scheduleGrabbedTap(GameInput.MOUSE_RIGHT)
+                GestureMode.FIGHT -> scheduleGrabbedTap(GameInput.MOUSE_LEFT)
             }
         }
         pointerId = -1

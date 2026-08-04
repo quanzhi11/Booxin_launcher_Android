@@ -11,31 +11,17 @@ class VersionManifestClient(
 
     suspend fun fetchManifest(): Result<VersionManifest> = withContext(Dispatchers.IO) {
         runCatching {
-            val provider = DownloadProviders.current()
-            var lastError: Throwable? = null
-            for (url in provider.versionListCandidates()) {
-                val text = downloader.downloadText(url)
-                if (text.isSuccess) {
-                    return@runCatching GameJsonParser.parseManifest(text.getOrThrow())
-                }
-                lastError = text.exceptionOrNull()
-            }
-            throw lastError ?: IllegalStateException("无法获取版本列表")
+            val urls = DownloadProviders.current().versionListCandidates()
+            val text = downloader.downloadText(urls).getOrThrow()
+            GameJsonParser.parseManifest(text)
         }
     }
 
     suspend fun fetchVersionJson(url: String): Result<ResolvedVersion> = withContext(Dispatchers.IO) {
         runCatching {
-            val provider = DownloadProviders.current()
-            var lastError: Throwable? = null
-            for (candidate in provider.candidateUrls(url)) {
-                val text = downloader.downloadText(candidate)
-                if (text.isSuccess) {
-                    return@runCatching GameJsonParser.parseVersionJson(text.getOrThrow())
-                }
-                lastError = text.exceptionOrNull()
-            }
-            throw lastError ?: IllegalStateException("无法下载 version.json")
+            val urls = DownloadProviders.current().candidateUrls(url)
+            val text = downloader.downloadText(urls).getOrThrow()
+            GameJsonParser.parseVersionJson(text)
         }
     }
 }

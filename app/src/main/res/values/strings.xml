@@ -63,6 +63,30 @@
     <string name="control_edit_reset">恢复默认</string>
     <string name="control_edit_done">完成</string>
     <string name="control_menu_title">操控设置</string>
+    <string name="control_menu_multiplayer">联机</string>
+    <string name="ingame_mp_title">游戏内联机</string>
+    <string name="ingame_mp_hint">需先在联机页登录。开房前请在游戏里「对局域网开放」并记下端口。</string>
+    <string name="ingame_mp_create">创建房间</string>
+    <string name="ingame_mp_join">加入房间</string>
+    <string name="ingame_mp_leave">离开/关闭房间</string>
+    <string name="ingame_mp_copy_code">复制房间码</string>
+    <string name="ingame_mp_refresh">刷新成员</string>
+    <string name="ingame_mp_port_title">局域网端口</string>
+    <string name="ingame_mp_port_hint">游戏聊天里显示的端口，例如 25565</string>
+    <string name="ingame_mp_code_title">房间码</string>
+    <string name="ingame_mp_code_hint">29 位 Booxin 房间码</string>
+    <string name="ingame_mp_public">公开房间</string>
+    <string name="ingame_mp_no_session">请先退出游戏，在联机页登录账号</string>
+    <string name="ingame_mp_idle">当前未在房间中</string>
+    <string name="ingame_mp_room_line">房间码：%1$s</string>
+    <string name="ingame_mp_role_host">身份：房主</string>
+    <string name="ingame_mp_role_guest">身份：访客</string>
+    <string name="ingame_mp_members_title">房间成员</string>
+    <string name="ingame_mp_members_empty">暂无成员信息</string>
+    <string name="ingame_mp_copied">房间码已复制</string>
+    <string name="ingame_mp_working">处理中…</string>
+    <string name="ingame_mp_invalid_port">请输入有效端口（100-65535）</string>
+    <string name="ingame_mp_invalid_code">请输入有效房间码</string>
 
     <string name="versions_title">已下载版本</string>
     <string name="versions_subtitle">管理本机已安装的游戏实例，长按可删除</string>
@@ -144,6 +168,7 @@
     <string name="forge_processor_fg_text">正在运行 Forge 安装工具，请勿关闭</string>
     <string name="download_installing">正在下载安装…</string>
     <string name="download_install_done">安装完成：%1$s</string>
+    <string name="download_reinstall_done">已重新校验安装：%1$s</string>
     <string name="download_install_failed">安装失败：%1$s</string>
     <string name="download_already_installed">已安装</string>
     <string name="download_tap_install">点击下载安装</string>
@@ -233,6 +258,19 @@
     <string name="settings_memory">内存分配</string>
     <string name="settings_memory_value">%1$d MB（启动 -Xmx）</string>
     <string name="settings_renderer">渲染器</string>
+    <string name="settings_renderer_hint">Auto：按游戏版本自动选择；手动：固定使用指定渲染器。插件渲染器需先下载。</string>
+    <string name="settings_renderer_mode_auto">Auto</string>
+    <string name="settings_renderer_mode_manual">手动</string>
+    <string name="settings_renderer_auto">按版本自动选择</string>
+    <string name="settings_renderer_current">当前：%1$s</string>
+    <string name="settings_renderer_pick">选择渲染器</string>
+    <string name="settings_renderer_download">下载当前渲染器插件</string>
+    <string name="settings_renderer_downloading">正在下载 %1$s…</string>
+    <string name="settings_renderer_download_done">已安装 %1$s</string>
+    <string name="settings_renderer_download_failed">下载失败：%1$s</string>
+    <string name="settings_renderer_builtin">内置</string>
+    <string name="settings_renderer_installed">已下载</string>
+    <string name="settings_renderer_missing">未下载</string>
     <string name="settings_java_env">Java 环境</string>
     <string name="settings_java_download">下载 Java %1$d</string>
     <string name="settings_java_uninstall">卸载 Java %1$d</string>
@@ -426,7 +464,15 @@
     <string name="multiplayer_message_revoked">（已撤回）</string>
 
     <string name="settings_export_logs">导出诊断日志</string>
-    <string name="settings_export_logs_hint">生成文本文件并通过微信/文件分享给开发者（别人手机也能用）</string>
+    <string name="settings_export_logs_hint">生成文本文件分享给开发者。含分辨率、内存、渲染器和 options.txt 等；卡顿请先进一次游戏再导出。</string>
     <string name="settings_export_logs_ok">已生成日志，请选择分享方式</string>
     <string name="settings_export_logs_failed">导出失败：%1$s</string>
+    <string name="settings_realtime_log">启动实时日志</string>
+    <string name="settings_realtime_log_hint">开启后下次进游戏会把进程日志写入磁盘。结束后点「结束并导出」分享 txt。</string>
+    <string name="settings_realtime_log_start">开启录制</string>
+    <string name="settings_realtime_log_stop_export">结束并导出</string>
+    <string name="settings_realtime_log_started">已开启启动实时日志，请启动游戏；结束后回设置点「结束并导出」</string>
+    <string name="settings_realtime_log_exported">已导出实时日志，请选择分享方式</string>
+    <string name="settings_realtime_log_export_failed">导出失败：%1$s</string>
+    <string name="settings_realtime_log_status">状态：%1$s</string>
 </resources>

@@ -16,4 +16,17 @@ object HttpClients {
             .followSslRedirects(true)
             .build()
     }
+
+    /**
+     * Short-lived attempts when cascading mirrors: fail fast so the next
+     * candidate is tried instead of hanging on a throttled primary.
+     */
+    val cascadeAttempt: OkHttpClient by lazy {
+        shared.newBuilder()
+            .connectTimeout(8, TimeUnit.SECONDS)
+            .readTimeout(25, TimeUnit.SECONDS)
+            .writeTimeout(25, TimeUnit.SECONDS)
+            .callTimeout(35, TimeUnit.SECONDS)
+            .build()
+    }
 }

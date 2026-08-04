@@ -69,10 +69,7 @@ data class LaunchCommand(
     }
 }
 
-/**
- * Builds a Minecraft client command line using FCL/HMCL-style Android adaptations:
- * -Dos.name=Linux, glfwstub window size, filtered libraries, offline auth tokens.
- */
+/** Builds the Minecraft client argv / env for Android. */
 class LaunchCommandBuilder(
     private val context: Context
 ) {
@@ -114,28 +111,26 @@ class LaunchCommandBuilder(
             ?: root.optString("assets").ifBlank { "legacy" }
 
         AndroidGameRuntime.ensure(context)
-        val renderer = RendererBackend.kindForVersion(mcVersionId)
+        val requestedRenderer = RendererBackend.kindForVersion(mcVersionId)
+        val renderer = resolveRendererOrFallback(requestedRenderer, mcVersionId)
         AndroidGameRuntime.applyRenderer(renderer)
         val androidLwjgl = AndroidGameRuntime.lwjglJar()
         require(androidLwjgl.isFile) {
-            "缂哄皯 Android LWJGL: ${androidLwjgl.absolutePath}"
+            "缺少 Android LWJGL: ${androidLwjgl.absolutePath}"
         }
 
         val isForgeOrLoader = VersionJsonMerger.isModLoaderVersion(versionId)
 
         val classpath = linkedSetOf<File>()
         val missingLibs = mutableListOf<String>()
-        // FCL-style: CallbackBridge / input hooks / RendererInit are merged into a
-        // single lwjgl.jar. A separate bridge-patch jar becomes a second module that
-        // also exports org.lwjgl.* and ForgeBootstrap fails with ResolutionException.
+        // One lwjgl.jar only — a second org.lwjgl module breaks ForgeBootstrap.
         classpath += androidLwjgl
         val libraries = root.optJSONArray("libraries") ?: JSONArray()
         for (i in 0 until libraries.length()) {
             val lib = libraries.getJSONObject(i)
             val name = lib.getString("name")
             if (!LibraryFilter.shouldKeep(name)) continue
-            // FCL/Android: Forge earlydisplay creates a second GLFW context and races
-            // with our surface; drop it so ModLauncher skips ImmediateWindowHandler UI.
+            // earlydisplay opens a second GLFW window and races our Surface.
             if (isForgeOrLoader && name.contains("fmlearlydisplay", ignoreCase = true)) continue
             // Keep artifact jars even if the library also declares desktop natives.
             val artifact = lib.optJSONObject("downloads")?.optJSONObject("artifact")
@@ -205,7 +200,7 @@ class LaunchCommandBuilder(
             "library_directory" to LauncherPaths.librariesDir.absolutePath,
             "classpath_separator" to File.pathSeparator,
             "primary_jar" to jarFile.absolutePath,
-            // FCL: Forge ignoreList may reference ${primary_jar_name} so vanilla jar
+            // Forge ignoreList may reference ${primary_jar_name} so vanilla jar
             // is not turned into a second JPMS module next to forge-*-client.jar.
             "primary_jar_name" to jarFile.name,
             "language" to Locale.getDefault().toString()
@@ -215,7 +210,7 @@ class LaunchCommandBuilder(
         val isKnotLoader = isKnotMainClass(mainClass)
         val isOptiFine = isOptiFineVersion(versionId, mainClass, root)
         if (isForgeOrLoader && !isKnotLoader && !isOptiFine) {
-            // FCL FCLGameLauncher: disable Forge splash animation.
+            // Disable Forge splash (second window).
             disableForgeSplash(gameDir)
         }
         val jvmArgs = when {
@@ -282,8 +277,12 @@ class LaunchCommandBuilder(
         val stagedNatives = stagedNativesDir.absolutePath
         val glLib = RuntimeEnv.glLibraryFile(stagedNativesDir, renderer)
         require(glLib.isFile) { "缺少渲染库: ${glLib.absolutePath}" }
-        val libraryPath = buildLibraryPath(java.homeDir, stagedNatives)
-        // Renderer token must stay opengles* for transitional exec bridge (br_init).
+        val pluginDir = com.booxin.launcher.core.runtime.RendererInstaller.pluginNativeDir(renderer)
+        val libraryPath = buildLibraryPath(
+            java.homeDir,
+            stagedNatives,
+            pluginDir?.absolutePath
+        )
         val envBase = linkedMapOf(
             "JAVA_HOME" to java.homeDir.absolutePath,
             "HOME" to gameDir.absolutePath,
@@ -309,6 +308,7 @@ class LaunchCommandBuilder(
             envBase["allow_glsl_extension_directive_midshader"] = "true"
             envBase["force_glsl_extensions_warn"] = "true"
         }
+        RuntimeEnv.pluginExtraEnv(renderer).forEach { (k, v) -> envBase[k] = v }
         val env = RuntimeEnv.withNativeAliases(envBase, stagedNatives, renderer)
 
         return LaunchCommand(
@@ -323,7 +323,39 @@ class LaunchCommandBuilder(
         )
     }
 
-    /** Vanilla-only JVM args — no Forge module-path / FCL --add-exports. */
+    /** Vanilla JVM args (no Forge module-path). */
+    private fun resolveRendererOrFallback(
+        requested: GlRendererKind,
+        mcVersionId: String
+    ): GlRendererKind {
+        if (!requested.requiresPlugin) return requested
+        if (com.booxin.launcher.core.runtime.RendererInstaller.isInstalled(requested)) {
+            return requested
+        }
+        val installed = kotlinx.coroutines.runBlocking {
+            com.booxin.launcher.core.runtime.RendererInstaller.ensureInstalled(requested)
+        }
+        if (installed.isSuccess) return requested
+        val err = installed.exceptionOrNull()?.message ?: "unknown"
+        val fallback = GlRendererProfile.forVersion(mcVersionId).let { auto ->
+            if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P && auto == GlRendererKind.GL4ES) {
+                GlRendererKind.MOBILE_GLUES
+            } else {
+                auto
+            }
+        }
+        android.util.Log.w(
+            "LaunchCmd",
+            "渲染器 ${requested.displayName} 下载失败，回退 ${fallback.displayName}: $err"
+        )
+        // Surface the reason in env so GameLaunchService log line still shows it.
+        System.setProperty(
+            "booxin.renderer.fallback",
+            "${requested.displayName}→${fallback.displayName} ($err)"
+        )
+        return fallback
+    }
+
     private fun buildVanillaJvmArgs(
         jarFile: File,
         gameDir: File,
@@ -351,7 +383,7 @@ class LaunchCommandBuilder(
 
     /**
      * Fabric/Quilt Knot: keep Android LWJGL on the app (system) classloader.
-     * HotSpot preinit already System.loads libpojavexec/liblwjgl via AppClassLoader;
+     * HotSpot preinit already System.loads the bridge/LWJGL via AppClassLoader;
      * if Knot reloads org.lwjgl.* it hits "already loaded in another classloader".
      *
      * Fabric uses `fabric.*` props; Quilt uses `loader.*` — set both for safety.
@@ -463,11 +495,7 @@ class LaunchCommandBuilder(
         return legacy.contains("OptiFine", ignoreCase = true)
     }
 
-    /**
-     * Forge / mod-loader JVM args (FCL DefaultLauncher):
-     * merged version arguments.jvm + --add-exports for Java 鈮?8.
-     * Valued flags stay as two tokens (native parser combines for JNI).
-     */
+    /** Forge / mod-loader JVM args from version JSON + Java 9+ exports. */
     private fun buildForgeJvmArgs(
         jarFile: File,
         gameDir: File,
@@ -511,7 +539,7 @@ class LaunchCommandBuilder(
             addAll(patchIgnoreList(versionJvm, ignoreExtras))
             // ForgeBootstrap: enable bootstrap debug to logcat via stdout capture.
             add("-Dbsl.debug=true")
-            // FCL: only BootstrapLauncher needs this export on Java 9+.
+            // BootstrapLauncher needs this on Java 9+.
             if (javaMajor != 8 && usesBootstrapLauncher(mainClass)) {
                 add("--add-exports")
                 add("cpw.mods.bootstraplauncher/cpw.mods.bootstraplauncher=ALL-UNNAMED")
@@ -524,10 +552,7 @@ class LaunchCommandBuilder(
         }
     }
 
-    /**
-     * FCL/NeoForge: keep official ignoreList, but always also ignore the vanilla/primary
-     * client jar filename so it is not loaded as a competing JPMS module.
-     */
+    /** Append extra jars to -DignoreList so they aren't loaded as modules. */
     private fun patchIgnoreList(jvmArgs: List<String>, extraIgnores: List<String>): List<String> {
         if (extraIgnores.isEmpty()) return jvmArgs
         var found = false
@@ -580,10 +605,10 @@ class LaunchCommandBuilder(
     ): List<String> {
         val nativeDir = AndroidGameRuntime.nativesDir().absolutePath
         val jnaPath = buildJnaBootLibraryPath()
-        val glLibName = when (renderer) {
-            GlRendererKind.GL4ES -> "$nativeDir/libgl4es_114.so"
-            GlRendererKind.MOBILE_GLUES -> "$nativeDir/libmobileglues.so"
-        }
+        val glLibName = RuntimeEnv.glLibraryFile(
+            AndroidGameRuntime.nativesDir(),
+            renderer
+        ).absolutePath
         return buildList {
             add("-Xmx${maxMemoryMb}m")
             add("-Xms64m")
@@ -599,7 +624,7 @@ class LaunchCommandBuilder(
             add("-Dminecraft.client.jar=${jarFile.absolutePath}")
             // Android uses a patched LWJGL (reports 3.3.6-snapshot). Sodium's
             // issue#2561 gate expects desktop Mojang LWJGL (e.g. 3.3.3) and aborts
-            // otherwise — same bypass used by Pojav/FCL.
+            // Same bypass as other Android launchers.
             add("-Dsodium.checks.issue2561=false")
             if (forgeExtras) {
                 add("-Dfml.ignoreInvalidMinecraftCertificates=true")
@@ -641,7 +666,7 @@ class LaunchCommandBuilder(
 
     /**
      * Parse merged [arguments.jvm], skipping `-cp` / `${classpath}` (we pass -cp separately).
-     * Remap natives/tmp extract paths to cache like FCL.
+     * Remap natives/tmp extract paths into our cache dir.
      */
     private fun parseVersionJvmArgs(
         root: JSONObject,
@@ -851,7 +876,7 @@ class LaunchCommandBuilder(
             val feature = rule.optJSONObject("features")
             // Skip feature-gated args (demo, custom resolution) unless we set features.
             if (feature != null) continue
-            // FCL pretends to be Linux 鈥?accept unrestricted or linux/unix OS rules.
+            // We report as Linux — accept unrestricted / linux / unix rules.
             val matches = when {
                 os == null -> true
                 else -> {
@@ -864,10 +889,15 @@ class LaunchCommandBuilder(
         return allowed
     }
 
-    private fun buildLibraryPath(javaHome: File, stagedNatives: String): String {
+    private fun buildLibraryPath(
+        javaHome: File,
+        stagedNatives: String,
+        pluginNatives: String? = null
+    ): String {
         val parts = mutableListOf<String>()
         // Staged natives first so libmobileglues / disguised libgl4es win over APK holy-gl4es.
         parts += stagedNatives
+        if (!pluginNatives.isNullOrBlank()) parts += pluginNatives
         listOf(
             File(javaHome, "lib"),
             File(javaHome, "lib/aarch64"),

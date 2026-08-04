@@ -13,7 +13,7 @@ class GameProcessRunner(
     private val context: Context
 ) {
 
-    private val _logs = MutableSharedFlow<String>(extraBufferCapacity = 512)
+    private val _logs = MutableSharedFlow<String>(extraBufferCapacity = 4096)
     val logs: SharedFlow<String> = _logs.asSharedFlow()
 
     @Volatile

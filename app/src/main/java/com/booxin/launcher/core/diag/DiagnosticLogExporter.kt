@@ -16,9 +16,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-/**
- * Builds a shareable diagnostic text for devices we cannot adb into.
- */
+/** Builds and shares a plain-text diagnostic report. */
 object DiagnosticLogExporter {
 
     suspend fun exportAndShare(context: Context): Result<File> = withContext(Dispatchers.IO) {
@@ -60,6 +58,8 @@ object DiagnosticLogExporter {
         sb.appendLine(
             "directConnect=${AppContainer.multiplayerAuth.directConnectAddress.value ?: "(none)"}"
         )
+        sb.appendLine()
+        sb.appendLine(PerfSnapshot.build(context))
         sb.appendLine()
         sb.appendLine("=== app event log (release-safe) ===")
         sb.appendLine(DiagEventLog.readPersisted())
@@ -110,13 +110,18 @@ object DiagnosticLogExporter {
             if (pidOnly) {
                 cmd += "--pid=${android.os.Process.myPid()}"
             } else {
-                // Best-effort: include HotSpot / launcher tags from any process we can read.
                 cmd += listOf(
                     "BooxinDiag:I",
+                    "Perf:I",
+                    "BooxinJvm:I",
+                    "BooxinEGL:I",
+                    "BooxinEnv:I",
+                    "BooxinBridge:I",
+                    "BooxinLaunch:I",
+                    "BooxinRuntime:I",
                     "EasyTierSession:I",
                     "EasyTierRuntime:I",
                     "RoomJoin:I",
-                    "BooxinLaunch:I",
                     "GameLaunchService:I",
                     "LaunchActivity:I",
                     "AndroidRuntime:E",

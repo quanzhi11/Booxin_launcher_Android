@@ -5,16 +5,12 @@ import android.view.Surface
 import com.booxin.launcher.core.java.InstalledJavaRuntime
 import com.booxin.launcher.core.launch.LaunchCommand
 
-/**
- * Stable contract between launcher business code and the game process runtime.
- * Implementations may use transitional natives; callers must not depend on that.
- */
+/** How the launcher talks to the game process (surface, input, JVM env, launch). */
 interface GameRuntimeBackend {
     val id: String
 
     fun prepare(context: Context)
 
-    /** Load ART-side exec/input bridge when required for this loader/mainClass. */
     fun ensureExecBridgeLoaded(skipArtPreload: Boolean): Result<Unit>
 
     fun attachSurface(surface: Surface): Boolean
@@ -38,7 +34,6 @@ object GameRuntimeBackends {
 
     fun current(): GameRuntimeBackend = active
 
-    /** Swap implementation (tests / LegacyCompatBackend). */
     fun install(backend: GameRuntimeBackend) {
         active = backend
     }

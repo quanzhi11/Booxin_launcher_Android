@@ -1,9 +1,6 @@
 package com.booxin.launcher.core.download.game
 
-/**
- * Port of FCL [com.tungsten.fclcore.util.LibFilter]:
- * drop desktop LWJGL / platform natives and bump known broken transitive deps.
- */
+/** Drop desktop LWJGL / platform natives; bump a few known-bad transitive deps. */
 object LibraryFilter {
 
     private val ASM_ALL_5_0_4 = ResolvedLibrary(

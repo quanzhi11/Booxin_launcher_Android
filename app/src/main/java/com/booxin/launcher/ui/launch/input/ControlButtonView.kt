@@ -185,7 +185,7 @@ class ControlButtonView(
         return true
     }
 
-    /** Map stored GLFW mouse button (0/1/2) to FCL-style virtual codes. */
+    /** Map GLFW mouse button (0/1/2) to our virtual key codes. */
     private fun mouseVirtualCode(glfwButton: Int): Int = when (glfwButton) {
         GlfwKeys.MOUSE_LEFT -> GameInput.MOUSE_LEFT
         GlfwKeys.MOUSE_RIGHT -> GameInput.MOUSE_RIGHT

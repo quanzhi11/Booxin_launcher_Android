@@ -44,6 +44,9 @@ class LaunchActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityLaunchBinding
     private lateinit var controlLayout: ControlLayoutController
+    private val multiplayerPanel by lazy {
+        InGameMultiplayerPanel(this) { pendingUsername }
+    }
     private val logBuffer = StringBuilder()
     private var logReceiver: BroadcastReceiver? = null
     private var pendingVersionId: String = ""
@@ -66,8 +69,7 @@ class LaunchActivity : AppCompatActivity() {
         override fun run() {
             BooxinBridge.enableAndroidInput()
             if (inputReady) return
-            // After a few retries, force-arm UI even if mouseCb/showing lag behind
-            // (callbacks are set after MC creates the window; touch must still queue).
+            // Don't wait forever for callbacks; queue touch once UI is up.
             if (inputArmRetries >= 3) {
                 enableGameInputForced()
                 return
@@ -82,18 +84,20 @@ class LaunchActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Only hide the loading cover when the game is actually showable.
-     * Do NOT include early boot noise (GLFW / OpenGL / Loading / pojavexec) —
-     * those fire long before the first frame and caused black-screen flash.
-     */
+    // Hide loading only on these — early GLFW/GL lines flash a black screen.
     private val overlayReadyPatterns = listOf(
         "Setting user",
         "Reloading ResourceManager",
         "Reload of ResourceManager",
         "Narrator library successfully loaded",
         "Sound engine started",
+        "Backend library GL",
+        "Loading Minecraft",
+        "OpenGL debug",
     )
+
+    /** True once Minecraft log shows we're past early black Surface. */
+    private var gameProgressSeen = false
 
     /** Coarse stage → percent mapping from our launcher + Minecraft logs. */
     private val loadingStages = listOf(
@@ -176,10 +180,10 @@ class LaunchActivity : AppCompatActivity() {
             returnToLauncher()
         }
 
-        // Manual dismiss only after game is far enough that Surface isn't pure black.
+        // Manual dismiss once game has progressed far enough (Surface isn't pure black).
         binding.panelOverlay.setOnClickListener {
-            if (loadingPercent >= 70 || BooxinBridge.areNativesLinked()) {
-                hideOverlayIfNeeded(force = true)
+            if (loadingPercent >= 60 || gameProgressSeen || BooxinBridge.areNativesLinked()) {
+                hideOverlayIfNeeded(force = true, allowWithoutBridge = true)
             } else {
                 appendLog("仍在加载（${loadingPercent}%），请稍候再点进入")
             }
@@ -187,7 +191,7 @@ class LaunchActivity : AppCompatActivity() {
 
         setupControls()
         GameInput.bindSoftKeyboard(binding.touchCharInput)
-        // FCL: screen size is fixed at TouchPad/FCLInput construction — never 0.
+        // TouchPad size is fixed once constructed — never leave 0.
         GameInput.initScreenSize(
             resources.displayMetrics.widthPixels,
             resources.displayMetrics.heightPixels
@@ -219,6 +223,9 @@ class LaunchActivity : AppCompatActivity() {
     }
 
     private fun setupControls() {
+        // Route blank-area fingers to the look pad while buttons/joystick keep their own pointers.
+        binding.panelCustomButtons.fallbackTarget = binding.touchPad
+
         controlLayout = ControlLayoutController(
             context = this,
             host = binding.panelCustomButtons,
@@ -231,12 +238,12 @@ class LaunchActivity : AppCompatActivity() {
             }
         )
 
-        // Screen touch = mouse (FCL): GUI click-to-point; in-world BUILD gestures.
+        // Screen touch = mouse: GUI click-to-point; in-world BUILD gestures.
         binding.touchPad.mouseMoveMode = MouseMoveMode.CLICK
         binding.touchPad.gestureMode = GestureMode.BUILD
         binding.touchPad.lookSensitivity = 1.2f
         binding.touchPad.guiSensitivity = 1.0f
-        // FCL-style cursor layout: left/top gravity so translationX/Y map from (0,0)
+        // left/top gravity so translationX/Y map from (0,0)
         binding.cursorView.layoutParams = (binding.cursorView.layoutParams as FrameLayout.LayoutParams).apply {
             gravity = Gravity.TOP or Gravity.START
             leftMargin = 0
@@ -251,7 +258,7 @@ class LaunchActivity : AppCompatActivity() {
                 binding.touchPad.syncCursorToCenter()
             }
         }
-        // FCL: physical mouse HOVER / BUTTON arrive via generic motion on TouchPad.
+        // Physical mouse HOVER / BUTTON arrive via generic motion on TouchPad.
         binding.touchPad.setOnGenericMotionListener { _, event ->
             inputReady && GameInput.handleGenericMotion(event)
         }
@@ -271,7 +278,8 @@ class LaunchActivity : AppCompatActivity() {
             Log.i(TAG, "grabListener grabbing=$grabbing overlayHidden=$overlayHidden")
             if (!overlayHidden) {
                 if (grabbing) {
-                    hideOverlayIfNeeded(force = true)
+                    // Cursor grab = in-world / menu ready — enter without requiring a tap.
+                    hideOverlayIfNeeded(force = true, allowWithoutBridge = true)
                 }
                 return@setGrabListener
             }
@@ -283,7 +291,7 @@ class LaunchActivity : AppCompatActivity() {
             if (grabbing) {
                 binding.touchPad.syncCursorToCenter()
             } else {
-                // FCL: keep view-space pointer; re-push so game cursor matches overlay.
+                // Keep view-space pointer; re-push so game cursor matches overlay.
                 GameInput.setPointer(GameInput.pointerX, GameInput.pointerY)
             }
             binding.joystickMove.releaseKeys()
@@ -310,8 +318,9 @@ class LaunchActivity : AppCompatActivity() {
             line.contains(pattern, ignoreCase = true)
         }
         if (ready) {
+            gameProgressSeen = true
             updateLoadingUi(100, line.trim().take(80))
-            hideOverlayIfNeeded(force = true)
+            hideOverlayIfNeeded(force = true, allowWithoutBridge = true)
         }
     }
 
@@ -355,18 +364,25 @@ class LaunchActivity : AppCompatActivity() {
         return if (trimmed.length <= 96) trimmed else trimmed.take(93) + "…"
     }
 
-    private fun hideOverlayIfNeeded(force: Boolean = false) {
+    private fun hideOverlayIfNeeded(force: Boolean = false, allowWithoutBridge: Boolean = false) {
         if (overlayHidden) return
         if (!force) return
         val dump = getInputBridgeDump()
-        if (!isInputBridgeReady(dump) &&
-            !isInputBridgeMinimallyReady(dump) &&
-            !BooxinBridge.isGrabbing()
-        ) {
+        val bridgeOk = isInputBridgeReady(dump) ||
+            isInputBridgeMinimallyReady(dump) ||
+            BooxinBridge.isGrabbing() ||
+            BooxinBridge.areNativesLinked()
+        // Forge often keeps stackQ=0; still show the game once progress is clear.
+        if (!bridgeOk && !allowWithoutBridge) {
             appendLog("输入桥尚未完全就绪，继续等待游戏窗口/回调…")
             Log.i(TAG, "skip hideOverlay; bridge not ready: $dump")
             scheduleInputArmRetries()
             return
+        }
+        if (!bridgeOk) {
+            appendLog("输入桥未完全确认，仍进入游戏画面并继续重试触控…")
+            Log.i(TAG, "hideOverlay with soft bridge: $dump")
+            scheduleInputArmRetries()
         }
         overlayHidden = true
         overlayHideTimeout?.let { mainHandler.removeCallbacks(it) }
@@ -380,14 +396,13 @@ class LaunchActivity : AppCompatActivity() {
 
     private fun scheduleOverlayFallbackHide() {
         overlayHideTimeout?.let { mainHandler.removeCallbacks(it) }
-        // Safety net only — real hide should come from ready logs / first grab / tap.
+        // Safety net — prefer ready logs / first grab; do not leave users on a black cover.
         overlayHideTimeout = Runnable {
-            appendLog("加载超时，显示游戏画面（可点覆盖层手动进入）")
-            updateLoadingUi(99, "仍在加载，点击屏幕进入游戏")
-            // Do not auto-force-hide on timeout; leave cover so user can tap.
-            // Black surface behind is worse than a stuck loading UI.
+            appendLog("加载超时，自动进入游戏画面")
+            updateLoadingUi(99, "进入游戏")
+            hideOverlayIfNeeded(force = true, allowWithoutBridge = true)
         }
-        mainHandler.postDelayed(overlayHideTimeout!!, 45_000L)
+        mainHandler.postDelayed(overlayHideTimeout!!, 35_000L)
     }
 
     private fun refreshMoveVisibility() {
@@ -462,7 +477,20 @@ class LaunchActivity : AppCompatActivity() {
         } else {
             getString(R.string.control_menu_show)
         }
+        val buildLabel = if (binding.touchPad.gestureMode == GestureMode.BUILD) {
+            getString(R.string.control_menu_gesture_build_current)
+        } else {
+            getString(R.string.control_menu_gesture_build)
+        }
+        val fightLabel = if (binding.touchPad.gestureMode == GestureMode.FIGHT) {
+            getString(R.string.control_menu_gesture_fight_current)
+        } else {
+            getString(R.string.control_menu_gesture_fight)
+        }
         val items = arrayOf(
+            buildLabel,
+            fightLabel,
+            getString(R.string.control_menu_multiplayer),
             getString(R.string.control_menu_edit),
             hideLabel,
             getString(R.string.control_menu_exit)
@@ -471,12 +499,15 @@ class LaunchActivity : AppCompatActivity() {
             .setTitle(R.string.control_menu_title)
             .setItems(items) { _, which ->
                 when (which) {
-                    0 -> {
+                    0 -> binding.touchPad.gestureMode = GestureMode.BUILD
+                    1 -> binding.touchPad.gestureMode = GestureMode.FIGHT
+                    2 -> multiplayerPanel.show()
+                    3 -> {
                         setControlsVisible(true)
                         controlLayout.enterEditMode()
                     }
-                    1 -> setControlsVisible(!controlsVisible)
-                    2 -> returnToLauncher()
+                    4 -> setControlsVisible(!controlsVisible)
+                    5 -> returnToLauncher()
                 }
             }
             .show()
@@ -485,6 +516,7 @@ class LaunchActivity : AppCompatActivity() {
     /** Stop game, bring MainActivity to front, kill :game process (HotSpot cannot be stopped cleanly). */
     private fun returnToLauncher() {
         if (isFinishing || isDestroyed) return
+        runCatching { multiplayerPanel.dispose() }
         runCatching { GameLaunchService.stop(this) }
         val intent = Intent(this, com.booxin.launcher.ui.MainActivity::class.java).apply {
             addFlags(
@@ -524,7 +556,6 @@ class LaunchActivity : AppCompatActivity() {
 
     private fun enableGameInput() {
         if (inputReady) {
-            // Already armed — do not re-dump / re-schedule (was waking UI every call).
             BooxinBridge.enableAndroidInput()
             return
         }
@@ -584,14 +615,12 @@ class LaunchActivity : AppCompatActivity() {
             !dump.contains("cursorCb=0x0") && !dump.contains("cursorCb=0 ")
     }
 
-    /** ready + buffers: enough to queue touch; callbacks may appear a bit later. */
     private fun isInputBridgeMinimallyReady(dump: String): Boolean {
+        // Forge often reports stackQ=0 even when touch works after enableAndroidInput().
         return dump.contains("ready=1") &&
-            dump.contains("stackQ=1") &&
             !dump.contains("mouseBuf=0x0") && !dump.contains("mouseBuf=0 ")
     }
 
-    /** Surface bridge dump in UI so diagnosis works without adb. */
     private fun logInputBridgeStatus(where: String) {
         val dump = getInputBridgeDump()
         appendLog("输入桥[$where]: $dump")
@@ -604,7 +633,6 @@ class LaunchActivity : AppCompatActivity() {
         }
     }
 
-    /** Keep re-arming stack queue until GLFW callbacks exist (FCL timing). */
     private fun scheduleInputArmRetries() {
         mainHandler.removeCallbacks(inputArmRunnable)
         inputArmRetries = 0
@@ -615,7 +643,7 @@ class LaunchActivity : AppCompatActivity() {
     }
 
     override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
-        // FCL: physical mouse HOVER_MOVE / BUTTON_PRESS arrive here, not onTouch.
+        // Physical mouse HOVER_MOVE / BUTTON_PRESS arrive here, not onTouch.
         if (inputReady && GameInput.handleGenericMotion(event)) return true
         return super.dispatchGenericMotionEvent(event)
     }
@@ -702,6 +730,7 @@ class LaunchActivity : AppCompatActivity() {
         if (::controlLayout.isInitialized) {
             controlLayout.releaseAllHolds()
         }
+        multiplayerPanel.dispose()
         binding.joystickMove.releaseKeys()
         binding.surfaceGame.holder.removeCallback(surfaceCallback)
         logReceiver?.let { unregisterReceiver(it) }

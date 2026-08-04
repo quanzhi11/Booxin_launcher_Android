@@ -10,11 +10,7 @@ import com.booxin.launcher.core.launch.LaunchCommand
 import com.booxin.launcher.core.launch.NativeJvmLauncher
 import com.booxin.runtime.BooxinBridge
 
-/**
- * Target self-hosted backend. Currently falls back to the same native path as
- * [LegacyCompatBackend] while [BooxinBridge] / `libbooxin_jvm` absorb Surface + input.
- * Flip [GameRuntimeBackends.install] when `libbooxin_bridge` is feature-complete.
- */
+/** Default game runtime: staged natives + Booxin bridge. */
 object BooxinNativeBackend : GameRuntimeBackend {
     private const val TAG = "BooxinNativeBackend"
 
@@ -26,7 +22,6 @@ object BooxinNativeBackend : GameRuntimeBackend {
     }
 
     override fun ensureExecBridgeLoaded(skipArtPreload: Boolean): Result<Unit> {
-        // Prefer Booxin path: still requires transitional exec SO until bridge rewrite lands.
         if (skipArtPreload) return Result.success(Unit)
         return runCatching { ExecBridgeLoader.ensureLoaded() }
     }

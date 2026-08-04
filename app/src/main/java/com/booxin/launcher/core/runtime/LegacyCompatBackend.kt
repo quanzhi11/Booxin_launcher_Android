@@ -9,10 +9,7 @@ import com.booxin.launcher.core.launch.LaunchCommand
 import com.booxin.launcher.core.launch.NativeJvmLauncher
 import com.booxin.runtime.BooxinBridge
 
-/**
- * First [GameRuntimeBackend] implementation: wraps transitional Pojav/FCL natives
- * behind the Booxin API. Replace with [BooxinNativeBackend] when self-hosted bridge ships.
- */
+/** Alternate backend; same launch path as [BooxinNativeBackend] for now. */
 object LegacyCompatBackend : GameRuntimeBackend {
     override val id: String = "legacy-compat"
 

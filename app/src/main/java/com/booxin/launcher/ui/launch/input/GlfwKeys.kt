@@ -2,7 +2,7 @@ package com.booxin.launcher.ui.launch.input
 
 /**
  * GLFW key / mouse constants used by on-screen controls.
- * Values match glfw3.h / FCL LwjglGlfwKeycode.
+ * Values match glfw3.h.
  */
 object GlfwKeys {
     const val KEY_SPACE = 32

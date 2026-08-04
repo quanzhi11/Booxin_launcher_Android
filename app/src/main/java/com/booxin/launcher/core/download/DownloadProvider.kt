@@ -2,9 +2,12 @@ package com.booxin.launcher.core.download
 
 import android.content.Context
 import android.util.Log
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * Download source strategy inspired by FCL/HMCL DownloadProvider.
+ * Download source strategy (primary + fallback mirrors).
  */
 enum class DownloadSource(val displayName: String) {
     OFFICIAL("官方源"),
@@ -76,7 +79,7 @@ class BmclApiDownloadProvider(
 }
 
 /**
- * File downloads try primary then fallback (FCL "official/balanced" file strategy).
+ * File downloads try primary then fallback.
  */
 class CascadeDownloadProvider(
     private val primary: DownloadProvider,
@@ -98,7 +101,7 @@ class CascadeDownloadProvider(
             libraryPreference() == MirrorPreference.MIRROR_FIRST
         }
         val ordered = if (preferMirror) {
-            listOfNotNull(bmcl, official).plus(extras)
+            listOfNotNull(bmcl, official.takeIf { it != bmcl }).plus(extras)
         } else {
             listOfNotNull(official, bmcl.takeIf { it != official }).plus(extras)
         }
@@ -179,7 +182,12 @@ object DownloadProviders {
     private const val KEY_FORGE_PREF = "forge_pref"
     private const val KEY_SUMMARY = "probe_summary"
     private const val KEY_PROBED_AT = "probed_at"
-    private const val PROBE_TTL_MS = 24L * 60L * 60L * 1000L
+    private const val PROBE_TTL_MS = 6L * 60L * 60L * 1000L
+    /** Flip BALANCED preference after this many consecutive primary-source failures. */
+    private const val ADAPTIVE_FLIP_THRESHOLD = 4
+
+    private val probeMutex = Mutex()
+    private val consecutivePrimaryFails = AtomicInteger(0)
 
     @Volatile
     var source: DownloadSource = DownloadSource.BALANCED
@@ -200,7 +208,11 @@ object DownloadProviders {
     @Volatile
     private var probedAtMs: Long = 0L
 
+    @Volatile
+    private var appContext: Context? = null
+
     fun init(context: Context) {
+        appContext = context.applicationContext
         val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         source = runCatching {
             DownloadSource.valueOf(prefs.getString(KEY_SOURCE, DownloadSource.BALANCED.name)!!)
@@ -209,11 +221,13 @@ object DownloadProviders {
         forgePreference = readPref(prefs.getString(KEY_FORGE_PREF, null), MirrorPreference.MIRROR_FIRST)
         lastProbeSummary = prefs.getString(KEY_SUMMARY, null)
         probedAtMs = prefs.getLong(KEY_PROBED_AT, 0L)
+        consecutivePrimaryFails.set(0)
         Log.i(TAG, "restored source=$source lib=$libraryPreference forge=$forgePreference")
     }
 
     fun setSource(context: Context, next: DownloadSource) {
         source = next
+        consecutivePrimaryFails.set(0)
         persist(context)
     }
 
@@ -225,10 +239,14 @@ object DownloadProviders {
 
     suspend fun ensureProbed(context: Context, force: Boolean = false): DownloadProbeResult? {
         if (!force && source != DownloadSource.BALANCED) return null
-        if (!force && !needsProbe()) return null
-        val result = DownloadSourceProbe.probe()
-        applyProbe(context, result)
-        return result
+        return probeMutex.withLock {
+            if (!force && source != DownloadSource.BALANCED) return@withLock null
+            if (!force && !needsProbe()) return@withLock null
+            val result = DownloadSourceProbe.probe()
+            applyProbe(context, result)
+            consecutivePrimaryFails.set(0)
+            result
+        }
     }
 
     fun applyProbe(context: Context, result: DownloadProbeResult) {
@@ -239,6 +257,50 @@ object DownloadProviders {
         persist(context)
         Log.i(TAG, "probe applied: ${result.summary}")
     }
+
+    /**
+     * Runtime feedback from cascade downloads. In BALANCED mode, repeated primary
+     * failures flip preference so later files skip the dead host sooner.
+     */
+    fun noteDownloadOutcome(url: String, success: Boolean) {
+        if (source != DownloadSource.BALANCED) return
+        val mirror = isMirrorUrl(url)
+        val forgeHost = isForgeHost(url)
+        val primaryIsMirror = if (forgeHost) {
+            forgePreference == MirrorPreference.MIRROR_FIRST
+        } else {
+            libraryPreference == MirrorPreference.MIRROR_FIRST
+        }
+        val isPrimary = mirror == primaryIsMirror
+        if (success) {
+            if (isPrimary) consecutivePrimaryFails.set(0)
+            return
+        }
+        if (!isPrimary) return
+        val fails = consecutivePrimaryFails.incrementAndGet()
+        if (fails < ADAPTIVE_FLIP_THRESHOLD) return
+        val flipped = if (primaryIsMirror) {
+            MirrorPreference.OFFICIAL_FIRST
+        } else {
+            MirrorPreference.MIRROR_FIRST
+        }
+        if (forgeHost) {
+            forgePreference = flipped
+        } else {
+            libraryPreference = flipped
+        }
+        consecutivePrimaryFails.set(0)
+        lastProbeSummary = "运行中自动切换 → ${label(flipped)}（主源连续失败）"
+        appContext?.let { persist(it) }
+        Log.w(TAG, "adaptive flip to $flipped after $fails primary failures forge=$forgeHost")
+    }
+
+    private fun isForgeHost(url: String): Boolean =
+        url.contains("minecraftforge.net", ignoreCase = true) ||
+            url.contains("neoforged.net", ignoreCase = true) ||
+            url.contains("fabricmc.net", ignoreCase = true) ||
+            url.contains("quiltmc.org", ignoreCase = true) ||
+            url.contains("/maven/", ignoreCase = true) && isMirrorUrl(url)
 
     fun statusText(): String = when (source) {
         DownloadSource.OFFICIAL -> "始终优先官方源，失败再试 BMCL"
@@ -269,6 +331,13 @@ object DownloadProviders {
             forgePreference = { forcedForge }
         )
     }
+
+    private fun isMirrorUrl(url: String): Boolean =
+        url.contains("bmclapi", ignoreCase = true) ||
+            url.contains("bangbang93.com", ignoreCase = true)
+
+    private fun label(pref: MirrorPreference): String =
+        if (pref == MirrorPreference.MIRROR_FIRST) "BMCL" else "官方"
 
     private fun persist(context: Context) {
         context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)

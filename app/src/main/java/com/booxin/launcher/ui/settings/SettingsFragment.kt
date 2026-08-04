@@ -19,11 +19,17 @@ import com.booxin.launcher.core.diag.DiagnosticLogExporter
 import com.booxin.launcher.core.download.DownloadProviders
 import com.booxin.launcher.core.download.DownloadSource
 import com.booxin.launcher.core.java.JavaInstallState
+import com.booxin.launcher.core.launch.RealtimeLaunchLog
+import com.booxin.launcher.core.runtime.RendererInstaller
+import com.booxin.launcher.core.runtime.RendererPackages
 import com.booxin.launcher.databinding.FragmentSettingsBinding
 import com.booxin.launcher.ui.update.LauncherUpdateUi
 import com.google.android.material.button.MaterialButton
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.slider.Slider
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class SettingsFragment : Fragment() {
 
@@ -45,7 +51,51 @@ class SettingsFragment : Fragment() {
         binding.textAbout.text = getString(R.string.settings_version, BuildConfig.VERSION_NAME)
         refreshDownloadSource()
         refreshJavaStatus()
+        setupRendererModeToggle()
+        refreshRenderer()
         setupMemorySlider()
+        refreshRealtimeLog()
+
+        binding.buttonRenderer.setOnClickListener { showRendererPicker() }
+        binding.buttonDownloadRenderer.setOnClickListener { downloadSelectedRenderer() }
+
+        binding.buttonRealtimeLogStart.setOnClickListener {
+            RealtimeLaunchLog.enable()
+            refreshRealtimeLog()
+            Toast.makeText(
+                requireContext(),
+                R.string.settings_realtime_log_started,
+                Toast.LENGTH_LONG
+            ).show()
+        }
+        binding.buttonRealtimeLogStop.setOnClickListener {
+            viewLifecycleOwner.lifecycleScope.launch {
+                binding.buttonRealtimeLogStop.isEnabled = false
+                binding.buttonRealtimeLogStart.isEnabled = false
+                val result = withContext(Dispatchers.IO) {
+                    RealtimeLaunchLog.stopAndExport(requireContext().applicationContext)
+                }
+                binding.buttonRealtimeLogStop.isEnabled = true
+                binding.buttonRealtimeLogStart.isEnabled = true
+                refreshRealtimeLog()
+                if (result.isSuccess) {
+                    Toast.makeText(
+                        requireContext(),
+                        R.string.settings_realtime_log_exported,
+                        Toast.LENGTH_SHORT
+                    ).show()
+                } else {
+                    Toast.makeText(
+                        requireContext(),
+                        getString(
+                            R.string.settings_realtime_log_export_failed,
+                            result.exceptionOrNull()?.message ?: "unknown"
+                        ),
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+        }
 
         binding.buttonDownloadSource.setOnClickListener {
             val values = DownloadSource.entries
@@ -128,6 +178,111 @@ class SettingsFragment : Fragment() {
                     }
                 }
             }
+        }
+    }
+
+    private fun setupRendererModeToggle() {
+        val b = _binding ?: return
+        b.toggleRendererMode.addOnButtonCheckedListener { _, checkedId, isChecked ->
+            if (!isChecked) return@addOnButtonCheckedListener
+            val wantAuto = checkedId == R.id.buttonRendererAuto
+            if (wantAuto == LauncherPrefs.isRendererAuto()) {
+                refreshRenderer()
+                return@addOnButtonCheckedListener
+            }
+            LauncherPrefs.setRendererAuto(wantAuto)
+            refreshRenderer()
+        }
+    }
+
+    private fun refreshRenderer() {
+        val b = _binding ?: return
+        val auto = LauncherPrefs.isRendererAuto()
+        val checkedId = if (auto) R.id.buttonRendererAuto else R.id.buttonRendererManual
+        if (b.toggleRendererMode.checkedButtonId != checkedId) {
+            b.toggleRendererMode.check(checkedId)
+        }
+        b.panelRendererManual.isVisible = !auto
+
+        if (auto) {
+            b.textRenderer.text = getString(
+                R.string.settings_renderer_current,
+                getString(R.string.settings_renderer_auto)
+            )
+            b.buttonDownloadRenderer.isVisible = false
+            return
+        }
+
+        val kind = LauncherPrefs.rendererKind()
+            ?: LauncherPrefs.lastManualRendererKind()
+        val label = kind?.displayName ?: getString(R.string.settings_renderer_pick)
+        val status = when {
+            kind == null -> ""
+            !kind.requiresPlugin -> " · ${getString(R.string.settings_renderer_builtin)}"
+            RendererInstaller.isInstalled(kind) -> " · ${getString(R.string.settings_renderer_installed)}"
+            else -> " · ${getString(R.string.settings_renderer_missing)}"
+        }
+        b.textRenderer.text = getString(R.string.settings_renderer_current, label + status)
+        b.buttonRenderer.text = label
+        val needDownload = kind != null && kind.requiresPlugin && !RendererInstaller.isInstalled(kind)
+        b.buttonDownloadRenderer.isVisible = needDownload
+    }
+
+    private fun showRendererPicker() {
+        val options = RendererPackages.selectableKinds().map { kind ->
+            val status = when {
+                !kind.requiresPlugin -> getString(R.string.settings_renderer_builtin)
+                RendererInstaller.isInstalled(kind) -> getString(R.string.settings_renderer_installed)
+                else -> getString(R.string.settings_renderer_missing)
+            }
+            kind to "${kind.displayName}（$status）"
+        }
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle(R.string.settings_renderer_pick)
+            .setItems(options.map { it.second }.toTypedArray()) { _, which ->
+                LauncherPrefs.setRendererKind(options[which].first)
+                refreshRenderer()
+            }
+            .show()
+    }
+
+    private fun downloadSelectedRenderer() {
+        val kind = LauncherPrefs.rendererKind() ?: return
+        if (!kind.requiresPlugin) return
+        viewLifecycleOwner.lifecycleScope.launch {
+            val b = _binding ?: return@launch
+            b.buttonDownloadRenderer.isEnabled = false
+            b.buttonRenderer.isEnabled = false
+            b.buttonRendererAuto.isEnabled = false
+            b.buttonRendererManual.isEnabled = false
+            b.textRenderer.text = getString(R.string.settings_renderer_downloading, kind.displayName)
+            val result = RendererInstaller.ensureInstalled(kind)
+            _binding ?: return@launch
+            b.buttonDownloadRenderer.isEnabled = true
+            b.buttonRenderer.isEnabled = true
+            b.buttonRendererAuto.isEnabled = true
+            b.buttonRendererManual.isEnabled = true
+            refreshRenderer()
+            val context = context ?: return@launch
+            result.fold(
+                onSuccess = {
+                    Toast.makeText(
+                        context,
+                        getString(R.string.settings_renderer_download_done, kind.displayName),
+                        Toast.LENGTH_SHORT
+                    ).show()
+                },
+                onFailure = { err ->
+                    Toast.makeText(
+                        context,
+                        getString(
+                            R.string.settings_renderer_download_failed,
+                            err.message ?: "unknown"
+                        ),
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            )
         }
     }
 
@@ -214,6 +369,18 @@ class SettingsFragment : Fragment() {
         b.buttonDownloadJava25.isEnabled = enabled
     }
 
+    private fun refreshRealtimeLog() {
+        val b = _binding ?: return
+        val on = RealtimeLaunchLog.isEnabled()
+        b.textRealtimeLog.text = buildString {
+            append(getString(R.string.settings_realtime_log_hint))
+            append('\n')
+            append(getString(R.string.settings_realtime_log_status, RealtimeLaunchLog.statusText()))
+        }
+        b.buttonRealtimeLogStart.isEnabled = !on
+        b.buttonRealtimeLogStop.isEnabled = true
+    }
+
     private fun refreshDownloadSource() {
         val b = _binding ?: return
         val source = DownloadProviders.source
@@ -268,6 +435,13 @@ class SettingsFragment : Fragment() {
             getString(R.string.settings_java_uninstall, major)
         } else {
             getString(R.string.settings_java_download, major)
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (_binding != null) {
+            refreshRealtimeLog()
         }
     }
 

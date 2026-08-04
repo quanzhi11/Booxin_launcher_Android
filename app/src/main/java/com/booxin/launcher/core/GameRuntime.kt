@@ -98,12 +98,9 @@ class BooxinGameRuntime(
         serverAddress: String?
     ): Result<Unit> {
         return runCatching {
-            val installed = repository.installedVersions.value.any { it.id == versionId }
-            if (!installed) {
-                prepare(versionId).getOrThrow()
-            } else {
-                javaEnvironment.ensureForMinecraft(versionId).getOrThrow()
-            }
+            // Fast path: only ensure Java here. Asset repair runs inside :game
+            // (GameLaunchService) so the UI is not blocked / cancelled.
+            javaEnvironment.ensureForMinecraft(versionId).getOrThrow()
             val intent = Intent(context, LaunchActivity::class.java).apply {
                 putExtra(LaunchActivity.EXTRA_VERSION_ID, versionId)
                 putExtra(LaunchActivity.EXTRA_USERNAME, account.name)

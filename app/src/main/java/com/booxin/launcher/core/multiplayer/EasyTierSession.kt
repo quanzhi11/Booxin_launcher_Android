@@ -50,11 +50,7 @@ class EasyTierSession private constructor(
         withContext(Dispatchers.IO) {
             stopInternal()
             rpcPort = allocatePort()
-            val relays = listOf(
-                "tcp://175.178.174.103:8080",
-                "tcp://175.178.174.103:8081",
-                "tcp://175.178.174.103:8082"
-            )
+            val relays = defaultRelays()
             val args = mutableListOf(
                 paths.core.absolutePath,
                 "--no-tun",
@@ -67,7 +63,6 @@ class EasyTierSession private constructor(
                 "--network-name", lobby.networkName,
                 "--network-secret", lobby.networkSecret,
                 "--machine-id", machineId,
-                // Bind loopback explicitly so CLI can always reach the portal.
                 "--rpc-portal", "127.0.0.1:$rpcPort",
                 "--bind-device", "false",
                 "--private-mode", "true",
@@ -82,34 +77,91 @@ class EasyTierSession private constructor(
                 args += listOf("-p", relay)
             }
             DiagEventLog.i(TAG, "launchJoin rpc=$rpcPort name=${lobby.networkName} core=${paths.core}")
-            val pb = ProcessBuilder(args)
-                .directory(paths.dir)
-                .redirectErrorStream(true)
-            pb.environment()["LD_LIBRARY_PATH"] = paths.dir.absolutePath
-            val process = try {
-                pb.start()
-            } catch (e: java.io.IOException) {
-                DiagEventLog.e(TAG, "start failed", e)
-                throw java.io.IOException(
-                    "无法启动 EasyTier（${paths.core.absolutePath}）：${e.message}。" +
-                        "Android 10+ 只能执行 APK nativeLibraryDir 内的 lib*.so。",
-                    e
-                )
-            }
-            processRef.set(process)
-            drainAsync(process)
-            if (!process.isAlive) {
-                val tail = recentOutput()
-                DiagEventLog.e(TAG, "exited immediately: ${tail.takeLast(300)}")
-                error(
-                    "EasyTier 启动后立即退出" +
-                        if (tail.isBlank()) "" else "：\n${tail.takeLast(600)}"
-                )
-            }
-            // TCP open is not enough — WebClientService must be registered or CLI
-            // returns "failed to get manage client" (common on slow OEM devices).
-            waitForRpcReady()
+            startCore(args)
         }
+
+    /**
+     * Host path aligned with PC EasyTierArgumentsBuilder.BuildHost.
+     * Hostname = terracotta-mc-{scaffoldingPort}; whitelist MC + scaffolding ports.
+     */
+    suspend fun launchHost(
+        lobby: TerracottaLobbyInfo,
+        minecraftPort: Int,
+        scaffoldingPort: Int,
+        machineId: String = UUID.randomUUID().toString()
+    ) = withContext(Dispatchers.IO) {
+        require(minecraftPort in 1..65535) { "无效 Minecraft 端口" }
+        require(scaffoldingPort in 1..65535) { "无效 Scaffolding 端口" }
+        stopInternal()
+        rpcPort = allocatePort()
+        val relays = defaultRelays()
+        val args = mutableListOf(
+            paths.core.absolutePath,
+            "--no-tun",
+            "--multi-thread",
+            "--enable-kcp-proxy",
+            "--enable-quic-proxy",
+            "--encryption-algorithm", "aes-gcm",
+            "--compression", "zstd",
+            "--default-protocol", "tcp",
+            "--network-name", lobby.networkName,
+            "--network-secret", lobby.networkSecret,
+            "--machine-id", machineId,
+            "--rpc-portal", "127.0.0.1:$rpcPort",
+            "--bind-device", "false",
+            "--private-mode", "true",
+            "-i", lobby.virtualHostIp,
+            "--hostname", "${EasyTierPeer.HOSTNAME_PREFIX}$scaffoldingPort",
+            "--tcp-whitelist", scaffoldingPort.toString(),
+            "--udp-whitelist", scaffoldingPort.toString(),
+            "--tcp-whitelist", minecraftPort.toString(),
+            "--udp-whitelist", minecraftPort.toString(),
+            "-l", "tcp://0.0.0.0:0",
+            "-l", "udp://0.0.0.0:0"
+        )
+        relays.forEach { relay ->
+            args += listOf("-p", relay)
+        }
+        DiagEventLog.i(
+            TAG,
+            "launchHost rpc=$rpcPort mc=$minecraftPort sc=$scaffoldingPort name=${lobby.networkName}"
+        )
+        startCore(args)
+    }
+
+    private fun defaultRelays(): List<String> = listOf(
+        "tcp://175.178.174.103:8080",
+        "tcp://175.178.174.103:8081",
+        "tcp://175.178.174.103:8082"
+    )
+
+    private fun startCore(args: List<String>) {
+        val pb = ProcessBuilder(args)
+            .directory(paths.dir)
+            .redirectErrorStream(true)
+        pb.environment()["LD_LIBRARY_PATH"] = paths.dir.absolutePath
+        val process = try {
+            pb.start()
+        } catch (e: java.io.IOException) {
+            DiagEventLog.e(TAG, "start failed", e)
+            throw java.io.IOException(
+                "无法启动 EasyTier（${paths.core.absolutePath}）：${e.message}。" +
+                    "Android 10+ 只能执行 APK nativeLibraryDir 内的 lib*.so。",
+                e
+            )
+        }
+        processRef.set(process)
+        drainAsync(process)
+        if (!process.isAlive) {
+            val tail = recentOutput()
+            DiagEventLog.e(TAG, "exited immediately: ${tail.takeLast(300)}")
+            error(
+                "EasyTier 启动后立即退出" +
+                    if (tail.isBlank()) "" else "：\n${tail.takeLast(600)}"
+            )
+        }
+        waitForRpcReady()
+    }
 
     suspend fun readPeers(): List<EasyTierPeer> = withContext(Dispatchers.IO) {
         ensureAlive()

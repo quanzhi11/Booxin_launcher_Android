@@ -30,11 +30,12 @@ class LauncherRepository(
     private val appContext: Context,
     private val manifestClient: VersionManifestClient = VersionManifestClient(),
     private val gameInstaller: VanillaGameInstaller = VanillaGameInstaller(),
-    private val forgeInstaller: ForgeGameInstaller = ForgeGameInstaller(),
-    private val fabricInstaller: FabricGameInstaller = FabricGameInstaller(),
-    private val quiltInstaller: QuiltGameInstaller = QuiltGameInstaller(),
-    private val optiFineInstaller: OptiFineGameInstaller = OptiFineGameInstaller()
 ) {
+    // Share the same vanilla installer so mod-loader base installs report on installProgress.
+    private val forgeInstaller = ForgeGameInstaller(vanillaInstaller = gameInstaller)
+    private val fabricInstaller = FabricGameInstaller(vanillaInstaller = gameInstaller)
+    private val quiltInstaller = QuiltGameInstaller(vanillaInstaller = gameInstaller)
+    private val optiFineInstaller = OptiFineGameInstaller(vanillaInstaller = gameInstaller)
 
     private val prefs by lazy {
         appContext.getSharedPreferences(PREFS_ACCOUNTS, Context.MODE_PRIVATE)
@@ -158,16 +159,14 @@ class LauncherRepository(
     }
 
     /**
-     * Ensure a version is ready to launch. Forge/Fabric wrappers must not be
-     * re-installed via the vanilla installer (their ids are not Mojang versions).
+     * Ensure a version is ready to launch. Loader wrappers are never fed to the
+     * vanilla installer (their ids are not Mojang versions).
+     *
+     * Incomplete profiles that only have `inheritsFrom` must not count as ready —
+     * that previously made taps on the download page report "安装完成" with no work.
      */
     suspend fun ensureVersionReady(versionId: String): Result<Unit> {
-        if (forgeInstaller.isInstalled(versionId) ||
-            fabricInstaller.isInstalled(versionId) ||
-            quiltInstaller.isInstalled(versionId) ||
-            optiFineInstaller.isInstalled(versionId) ||
-            VersionJsonMerger.isModLoaderVersion(versionId)
-        ) {
+        if (isModLoaderInstalled(versionId)) {
             val parent = VersionJsonMerger.resolveMinecraftVersionId(versionId)
             if (parent != versionId && !gameInstaller.isInstalled(parent)) {
                 val remote = _remoteVersions.value.firstOrNull { it.id == parent }
@@ -175,12 +174,7 @@ class LauncherRepository(
                     return Result.failure(it)
                 }
             }
-            val ready = forgeInstaller.isInstalled(versionId) ||
-                fabricInstaller.isInstalled(versionId) ||
-                quiltInstaller.isInstalled(versionId) ||
-                optiFineInstaller.isInstalled(versionId) ||
-                VersionJsonMerger.versionJsonFile(versionId) != null
-            if (!ready) {
+            if (!isModLoaderInstalled(versionId)) {
                 return Result.failure(IllegalStateException("模组加载器版本未安装: $versionId"))
             }
             refreshInstalledVersions()
@@ -189,7 +183,34 @@ class LauncherRepository(
         if (gameInstaller.isInstalled(versionId)) {
             return Result.success(Unit)
         }
+        // Broken stub json with inheritsFrom but no real loader install: repair via vanilla.
         return installVersion(versionId)
+    }
+
+    /**
+     * Resolve vanilla/parent id and download any missing asset objects.
+     * Must succeed before starting the HotSpot JVM — incomplete assets crash at TextureManager.
+     */
+    suspend fun ensureGameAssets(versionId: String): Result<Unit> {
+        val id = VersionJsonMerger.resolveMinecraftVersionId(versionId)
+        val json = File(LauncherPaths.versionsDir, "$id/$id.json")
+        if (!json.isFile) {
+            return Result.failure(IllegalStateException("缺少版本元数据，无法校验资源: $id"))
+        }
+        gameInstaller.ensureAssets(id).getOrElse { return Result.failure(it) }
+        if (!gameInstaller.assetsComplete(id)) {
+            return Result.failure(
+                IllegalStateException("游戏资源不完整（assets），请到下载页重新安装 $id")
+            )
+        }
+        return Result.success(Unit)
+    }
+
+    private fun isModLoaderInstalled(versionId: String): Boolean {
+        return forgeInstaller.isInstalled(versionId) ||
+            fabricInstaller.isInstalled(versionId) ||
+            quiltInstaller.isInstalled(versionId) ||
+            optiFineInstaller.isInstalled(versionId)
     }
 
     suspend fun installForgeVersion(

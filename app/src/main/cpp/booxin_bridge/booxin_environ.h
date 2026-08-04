@@ -1,6 +1,7 @@
 #ifndef BOOXIN_ENVIRON_H
 #define BOOXIN_ENVIRON_H
 
+#include <android/native_window.h>
 #include <jni.h>
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -61,13 +62,15 @@ typedef struct booxin_environ {
     void *GLFW_invoke_WindowSize;
 } booxin_environ_t;
 
-/* Exported under historical name for HotSpot / pump compatibility. */
+/* Symbol name kept as pojav_environ — LWJGL / pump code still looks it up. */
 extern booxin_environ_t *pojav_environ;
 extern booxin_environ_t g_booxin_environ;
 
 void booxin_environ_init(void);
 
-/** Bind native key/mouse buffers to HotSpot GLFW DirectByteBuffers (required for clicks). */
+void booxin_retain_native_window(ANativeWindow *win);
+ANativeWindow *booxin_ensure_native_window(void);
+
 void booxin_bind_glfw_input_buffers(JNIEnv *env);
 
 #ifdef __cplusplus

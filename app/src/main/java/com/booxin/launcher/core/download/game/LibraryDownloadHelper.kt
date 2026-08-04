@@ -93,20 +93,22 @@ class LibraryDownloadHelper(
     ) = withContext(Dispatchers.IO) {
         if (Digests.matchesSha1(destination, sha1)) return@withContext
         val candidates = DownloadProviders.current().candidateUrls(rawUrl)
+        if (candidates.isEmpty()) error("缺少下载地址: $label")
+        Log.i(TAG, "try $label candidates=${candidates.size} first=${candidates.first()}")
+        var remaining = candidates
         var lastError: Throwable? = null
-        for (url in candidates) {
-            Log.i(TAG, "try $label <- $url")
-            val result = downloader.download(url, destination)
-            if (result.isSuccess) {
-                if (!Digests.matchesSha1(destination, sha1)) {
-                    destination.delete()
-                    lastError = IllegalStateException("SHA-1 校验失败: ${destination.name}")
-                    continue
-                }
-                return@withContext
+        while (remaining.isNotEmpty()) {
+            val result = downloader.download(remaining, destination)
+            if (result.isFailure) {
+                lastError = result.exceptionOrNull()
+                Log.w(TAG, "all candidates failed $label : ${lastError?.message}")
+                throw lastError ?: IOException("下载失败: $label")
             }
-            lastError = result.exceptionOrNull()
-            Log.w(TAG, "candidate failed $label <- $url : ${lastError?.message}")
+            if (Digests.matchesSha1(destination, sha1)) return@withContext
+            destination.delete()
+            lastError = IllegalStateException("SHA-1 校验失败: ${destination.name}")
+            Log.w(TAG, "sha1 mismatch $label, try next mirror")
+            remaining = remaining.drop(1)
         }
         throw lastError ?: IOException("下载失败: $label")
     }

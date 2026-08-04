@@ -15,27 +15,124 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import java.io.File
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicInteger
 
-/**
- * Vanilla Minecraft install pipeline modeled after FCL GameInstallTask:
- * version.json → client.jar → libraries → assets.
- */
+/** Vanilla install: version.json → client.jar → libraries → assets. */
 class VanillaGameInstaller(
     private val downloader: FileDownloader = FileDownloader(),
     private val manifestClient: VersionManifestClient = VersionManifestClient(downloader)
 ) {
 
     private val mutex = Mutex()
+    /** Separate from [mutex] so launch-time asset repair never blocks / deadlocks install. */
+    private val assetsMutex = Mutex()
     private val _progress = MutableStateFlow<GameInstallProgress?>(null)
     val progress: StateFlow<GameInstallProgress?> = _progress.asStateFlow()
 
     fun isInstalled(versionId: String): Boolean {
         val jar = File(LauncherPaths.versionsDir, "$versionId/$versionId.jar")
         val json = File(LauncherPaths.versionsDir, "$versionId/$versionId.json")
-        return jar.exists() && jar.length() > 0L && json.exists()
+        if (!jar.isFile || jar.length() <= 0L || !json.isFile) return false
+        // Reject incomplete / wrong profiles (e.g. inheritsFrom stub without a real client).
+        return runCatching {
+            val root = JSONObject(json.readText())
+            if (root.optString("inheritsFrom").isNotBlank()) return@runCatching false
+            val id = root.optString("id")
+            id.isBlank() || id == versionId
+        }.getOrDefault(false)
+    }
+
+    /** Existence + size check against asset index objects (no SHA rehash). */
+    fun assetsComplete(versionId: String): Boolean {
+        val missing = missingAssetObjects(versionId) ?: return true
+        return missing.isEmpty()
+    }
+
+    /**
+     * Re-download missing asset objects for [versionId].
+     * Existence-only check (no SHA rehash of the whole index every launch).
+     * Uses a separate mutex so it cannot deadlock against [install].
+     */
+    suspend fun ensureAssets(versionId: String): Result<Unit> = withContext(Dispatchers.IO) {
+        assetsMutex.withLock {
+            runCatching {
+                val jsonFile = File(LauncherPaths.versionsDir, "$versionId/$versionId.json")
+                if (!jsonFile.isFile) return@runCatching
+                val root = JSONObject(jsonFile.readText())
+                if (root.optString("inheritsFrom").isNotBlank()) return@runCatching
+                val assetIndexObj = root.optJSONObject("assetIndex") ?: return@runCatching
+                val indexId = assetIndexObj.optString("id").ifBlank { return@runCatching }
+                val indexUrl = assetIndexObj.optString("url")
+                val indexSha1 = assetIndexObj.optString("sha1").ifBlank { null }
+                val indexFile = File(LauncherPaths.assetsDir, "indexes/$indexId.json")
+                if (!indexFile.isFile || indexFile.length() <= 0L) {
+                    if (indexUrl.isBlank()) error("缺少资产索引下载地址: $indexId")
+                    emit(versionId, GameInstallPhase.ASSETS, "正在补全资产索引 $indexId…")
+                    downloadVerified(
+                        rawUrl = indexUrl,
+                        destination = indexFile,
+                        sha1 = indexSha1,
+                        versionId = versionId,
+                        phase = GameInstallPhase.ASSETS,
+                        message = "补全资产索引 $indexId"
+                    )
+                }
+                val objects = GameJsonParser.parseAssetIndex(indexFile.readText())
+                // Existence only — size/SHA mismatches are rare and full rescans blocked launch.
+                val missing = objects.filter { obj ->
+                    val file = File(LauncherPaths.assetsDir, "objects/${obj.hashPath}")
+                    !file.isFile || file.length() <= 0L
+                }
+                if (missing.isEmpty()) return@runCatching
+                emit(
+                    versionId,
+                    GameInstallPhase.ASSETS,
+                    "正在补全缺失资源 ${missing.size} 个…",
+                    0,
+                    missing.size
+                )
+                val provider = DownloadProviders.current()
+                downloadAll(
+                    items = missing.map { obj ->
+                        DownloadItem(
+                            rawUrl = obj.hashPath,
+                            destination = File(LauncherPaths.assetsDir, "objects/${obj.hashPath}"),
+                            sha1 = obj.hash,
+                            label = obj.hash,
+                            urlCandidates = provider.assetCandidates(obj.hashPath)
+                        )
+                    },
+                    versionId = versionId,
+                    phase = GameInstallPhase.ASSETS,
+                    concurrency = ASSET_CONCURRENCY
+                )
+            }.onFailure { error ->
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                emit(versionId, GameInstallPhase.FAILED, error.message ?: "资源补全失败")
+            }.map { }
+        }
+    }
+
+    private fun missingAssetObjects(versionId: String): List<AssetObject>? {
+        val jsonFile = File(LauncherPaths.versionsDir, "$versionId/$versionId.json")
+        if (!jsonFile.isFile) return null
+        return runCatching {
+            val root = JSONObject(jsonFile.readText())
+            if (root.optString("inheritsFrom").isNotBlank()) return@runCatching emptyList()
+            val assetIndexObj = root.optJSONObject("assetIndex") ?: return@runCatching emptyList()
+            val indexId = assetIndexObj.optString("id").ifBlank { return@runCatching emptyList() }
+            val indexFile = File(LauncherPaths.assetsDir, "indexes/$indexId.json")
+            if (!indexFile.isFile) {
+                return@runCatching listOf(AssetObject(hash = "missing-index", size = -1L))
+            }
+            GameJsonParser.parseAssetIndex(indexFile.readText()).filter { obj ->
+                val file = File(LauncherPaths.assetsDir, "objects/${obj.hashPath}")
+                !file.isFile || file.length() <= 0L
+            }
+        }.getOrNull()
     }
 
     suspend fun install(versionId: String, versionJsonUrl: String? = null): Result<Unit> =
@@ -167,10 +264,13 @@ class VanillaGameInstaller(
         if (Digests.matchesSha1(destination, sha1)) return@withContext
 
         val candidates = urlCandidates ?: DownloadProviders.current().candidateUrls(rawUrl)
+        if (candidates.isEmpty()) error("缺少下载地址: $rawUrl")
 
+        // Pass the full candidate list so non-final hosts fail fast (short timeout).
+        var remaining = candidates
         var lastError: Throwable? = null
-        for (url in candidates) {
-            val result = downloader.download(url, destination) { downloaded, total ->
+        while (remaining.isNotEmpty()) {
+            val result = downloader.download(remaining, destination) { downloaded, total ->
                 _progress.value = GameInstallProgress(
                     versionId = versionId,
                     phase = phase,
@@ -179,15 +279,13 @@ class VanillaGameInstaller(
                     totalBytes = total
                 )
             }
-            if (result.isSuccess) {
-                if (!Digests.matchesSha1(destination, sha1)) {
-                    destination.delete()
-                    lastError = IllegalStateException("SHA-1 校验失败: ${destination.name}")
-                    continue
-                }
-                return@withContext
+            if (result.isFailure) {
+                throw result.exceptionOrNull() ?: IOException("下载失败: $rawUrl")
             }
-            lastError = result.exceptionOrNull()
+            if (Digests.matchesSha1(destination, sha1)) return@withContext
+            destination.delete()
+            lastError = IllegalStateException("SHA-1 校验失败: ${destination.name}")
+            remaining = remaining.drop(1)
         }
         throw lastError ?: IOException("下载失败: $rawUrl")
     }

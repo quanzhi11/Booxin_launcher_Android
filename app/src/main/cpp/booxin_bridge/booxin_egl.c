@@ -30,10 +30,13 @@ int pojavInitOpenGL(void);
 static void read_renderer_env(void) {
     const char *renderer = getenv("BOOXIN_RENDERER");
     if (!renderer || !renderer[0]) renderer = getenv("POJAV_RENDERER");
-    if (renderer && strstr(renderer, "opengles2")) {
+    /* Default GLES3; only holy GL4ES (opengles2) needs ES2 contexts. */
+    g_gles_version = 3;
+    if (renderer && strstr(renderer, "opengles2") &&
+        !strstr(renderer, "opengles3") &&
+        !strstr(renderer, "vulkan") &&
+        !strstr(renderer, "gallium")) {
         g_gles_version = 2;
-    } else {
-        g_gles_version = 3;
     }
     const char *libgl = getenv("LIBGL_ES");
     if (libgl && libgl[0] == '2') g_gles_version = 2;
@@ -42,16 +45,17 @@ static void read_renderer_env(void) {
 
 int pojavInit(void) {
     booxin_environ_t *e = pojav_environ;
-    if (!e || !e->nativeWindow) {
-        LOGE("pojavInit: native window missing (environ=%p window=%p)",
-             (void *)e, e ? e->nativeWindow : NULL);
+    ANativeWindow *win = booxin_ensure_native_window();
+    if (!e || !win) {
+        LOGE("pojavInit: native window missing (environ=%p window=%p retained_ensure=%p)",
+             (void *)e, e ? e->nativeWindow : NULL, (void *)win);
         return 0;
     }
-    ANativeWindow_acquire((ANativeWindow *)e->nativeWindow);
-    e->savedWidth = ANativeWindow_getWidth((ANativeWindow *)e->nativeWindow);
-    e->savedHeight = ANativeWindow_getHeight((ANativeWindow *)e->nativeWindow);
+    ANativeWindow_acquire(win);
+    e->nativeWindow = win;
+    e->savedWidth = ANativeWindow_getWidth(win);
+    e->savedHeight = ANativeWindow_getHeight(win);
     LOGI("pojavInit window=%dx%d", e->savedWidth, e->savedHeight);
-    /* glfwInit only calls Init(=pojavInit); bring up EGL here too. */
     if (!pojavInitOpenGL()) {
         LOGE("pojavInit: pojavInitOpenGL failed");
         return 0;
@@ -112,9 +116,11 @@ void *pojavCreateContext(void *contextSrc) {
 
     booxin_environ_t *e = pojav_environ;
     if (e && e->nativeWindow && g_surface == EGL_NO_SURFACE) {
+        ANativeWindow *win = booxin_ensure_native_window();
+        if (!win) win = (ANativeWindow *)e->nativeWindow;
         EGLint surf_attribs[] = { EGL_NONE };
         g_surface = eglCreateWindowSurface(
-            g_display, g_config, (EGLNativeWindowType)e->nativeWindow, surf_attribs);
+            g_display, g_config, (EGLNativeWindowType)win, surf_attribs);
         if (g_surface == EGL_NO_SURFACE) {
             LOGE("eglCreateWindowSurface failed: 0x%x", eglGetError());
         }
@@ -131,9 +137,12 @@ void pojavMakeCurrent(void *window) {
     if (!g_initialized && !pojavInitOpenGL()) return;
     EGLContext ctx = window ? (EGLContext)window : g_context;
     if (ctx == EGL_NO_CONTEXT) ctx = g_context;
-    if (g_surface == EGL_NO_SURFACE && pojav_environ && pojav_environ->nativeWindow) {
-        g_surface = eglCreateWindowSurface(
-            g_display, g_config, (EGLNativeWindowType)pojav_environ->nativeWindow, NULL);
+    if (g_surface == EGL_NO_SURFACE && pojav_environ) {
+        ANativeWindow *win = booxin_ensure_native_window();
+        if (win) {
+            g_surface = eglCreateWindowSurface(
+                g_display, g_config, (EGLNativeWindowType)win, NULL);
+        }
     }
     if (!eglMakeCurrent(g_display, g_surface, g_surface, ctx)) {
         LOGE("eglMakeCurrent failed: 0x%x", eglGetError());

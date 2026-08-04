@@ -3,15 +3,37 @@ package com.booxin.launcher.core.launch
 import com.booxin.launcher.core.java.MinecraftJavaRequirement
 
 /**
- * Picks GLES translator by Minecraft version.
+ * GLES / desktop-GL translators available to the game process.
  *
- * ≤1.16.x still uses fixed-function calls like [glFogfv]; MobileGlues often
- * returns null there → crash while rendering the title screen. Holy gl4es
- * handles that era. 1.17+ prefers MobileGlues.
+ * Built-in: [GL4ES], [MOBILE_GLUES].
+ * Downloadable plugins: [KRYPTON], [LTW], [VULKAN_ZINK], [VIRGL], [FREEDRENO].
  */
 enum class GlRendererKind {
     GL4ES,
-    MOBILE_GLUES
+    MOBILE_GLUES,
+    KRYPTON,
+    LTW,
+    VULKAN_ZINK,
+    VIRGL,
+    FREEDRENO;
+
+    val displayName: String
+        get() = when (this) {
+            GL4ES -> "GL4ES"
+            MOBILE_GLUES -> "MobileGlues"
+            KRYPTON -> "Krypton Wrapper"
+            LTW -> "LTW"
+            VULKAN_ZINK -> "Vulkan Zink"
+            VIRGL -> "VirGL"
+            FREEDRENO -> "Freedreno"
+        }
+
+    /** Needs a downloaded plugin package under runtime/renderers/. */
+    val requiresPlugin: Boolean
+        get() = when (this) {
+            GL4ES, MOBILE_GLUES -> false
+            else -> true
+        }
 }
 
 object GlRendererProfile {

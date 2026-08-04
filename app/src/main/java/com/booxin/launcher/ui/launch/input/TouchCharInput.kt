@@ -8,10 +8,7 @@ import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import androidx.appcompat.widget.AppCompatEditText
 
-/**
- * FCL/Pojav [TouchCharInput]: hidden EditText that drives the system IME and
- * forwards typed characters into GLFW via [GameInput].
- */
+/** Hidden EditText for the system IME; forwards chars into [GameInput]. */
 class TouchCharInput @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,

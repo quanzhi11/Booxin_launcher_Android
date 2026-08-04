@@ -24,7 +24,7 @@ import org.json.JSONObject
 typealias ForgeInstallProgressCallback = (message: String, step: Int, total: Int) -> Unit
 
 /**
- * HMCL/FCL ForgeNewInstallTask: run embedded processors to generate client jars.
+ * Run embedded Forge processors to generate client jars.
  */
 object ForgeNewInstaller {
     private const val TAG = "ForgeNewInstaller"
@@ -202,7 +202,8 @@ object ForgeNewInstaller {
         if (!mcJar.isFile) error("缺少基础版本 client.jar: $mcVersion")
         vars["SIDE"] = "client"
         vars["MINECRAFT_JAR"] = mcJar.absolutePath
-        vars["MINECRAFT_VERSION"] = mcJar.absolutePath
+        // Must be the MC version id (e.g. "1.20.1"), never the jar path.
+        vars["MINECRAFT_VERSION"] = mcVersion
         vars["ROOT"] = LauncherPaths.rootDir.absolutePath
         vars["INSTALLER"] = installerJar.absolutePath
         vars["LIBRARY_DIR"] = LauncherPaths.librariesDir.absolutePath
@@ -301,29 +302,34 @@ object ForgeNewInstaller {
             addAll(args)
         }
         val watchFiles = outputs.keys.map(::File)
-        val exitCode = coroutineScope {
-            val startedAt = System.currentTimeMillis()
-            val runner = async(Dispatchers.IO) {
-                EmbeddedJavaRunner.run(
-                    java = java,
-                    workingDir = LauncherPaths.rootDir,
-                    command = command
-                )
+        val exitCode = try {
+            coroutineScope {
+                val startedAt = System.currentTimeMillis()
+                val runner = async(Dispatchers.IO) {
+                    EmbeddedJavaRunner.run(
+                        java = java,
+                        workingDir = LauncherPaths.rootDir,
+                        command = command
+                    )
+                }
+                while (!runner.isCompleted) {
+                    delay(3_000)
+                    val elapsedSec = ((System.currentTimeMillis() - startedAt) / 1000).toInt()
+                    val grown = watchFiles.firstOrNull { it.isFile && it.length() > 0L }
+                    val sizeText = grown?.let { formatBytes(it.length()) } ?: "尚未写出"
+                    onStatus(
+                        "Java 工具运行中（已 ${elapsedSec}s）· 输出 $sizeText\n" +
+                            "这一步在手机上可能要几分钟，请保持应用在前台"
+                    )
+                }
+                runner.await()
             }
-            while (!runner.isCompleted) {
-                delay(3_000)
-                val elapsedSec = ((System.currentTimeMillis() - startedAt) / 1000).toInt()
-                val grown = watchFiles.firstOrNull { it.isFile && it.length() > 0L }
-                val sizeText = grown?.let { formatBytes(it.length()) } ?: "尚未写出"
-                onStatus(
-                    "Java 工具运行中（已 ${elapsedSec}s）· 输出 $sizeText\n" +
-                        "这一步在手机上可能要几分钟，请保持应用在前台"
-                )
-            }
-            runner.await()
+        } catch (error: Exception) {
+            Log.e(TAG, "processor crashed: $mainClass", error)
+            throw IllegalStateException("Forge processor 运行失败: ${error.message}", error)
         }
         if (exitCode != 0) {
-            throw IllegalStateException("Forge processor 退出码 $exitCode")
+            throw IllegalStateException("Forge processor 退出码 $exitCode（$mainClass）")
         }
         Log.i(TAG, "processor done: $mainClass")
         onStatus("工具已结束，正在校验输出…")

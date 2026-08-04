@@ -4,9 +4,8 @@ import android.util.Log
 import java.io.File
 
 /**
- * FCL [GameOption] equivalent: Minecraft reads overrideWidth/Height + fullscreen
- * for framebuffer / GUI hit-testing. Without this, menu hover/click can miss
- * even when GLFW cursor coords look correct.
+ * Patch options.txt: overrideWidth/Height + fullscreen.
+ * Without this, menu hover/click can miss even when cursor coords look fine.
  */
 object GameOptionsPatch {
     private const val TAG = "BooxinLaunch"

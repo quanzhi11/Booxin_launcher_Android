@@ -7,11 +7,8 @@ import java.io.File
 import java.util.zip.ZipFile
 
 /**
- * Stages Booxin Android runtime bits (patched LWJGL jar, optional JNA,
- * and native .so files on a real filesystem path) under app storage.
- *
- * With extractNativeLibs=false, nativeLibraryDir is empty and LWJGL cannot find
- * liblwjgl.so by path — we always stage natives under filesDir.
+ * Copy LWJGL jar / natives into app filesDir.
+ * extractNativeLibs=false leaves nativeLibraryDir empty, so LWJGL needs a real path.
  */
 object AndroidGameRuntime {
 
@@ -137,17 +134,17 @@ object AndroidGameRuntime {
     fun ensureNatives(context: Context) {
         val dest = nativesDir().also { it.mkdirs() }
         val marker = File(dest, ".ready")
-        val expected = "v11:${NATIVE_NAMES.size}:${preferredAbiFolder()}"
-        val markerOk = marker.isFile && marker.readText().trim().startsWith("v11:")
+        val expected = "v13:${NATIVE_NAMES.size}:${preferredAbiFolder()}"
+        val markerOk = marker.isFile && marker.readText().trim().startsWith("v13:")
         val missingRequired = !File(dest, "liblwjgl.so").isFile ||
             !File(dest, "libbooxin_bridge.so").isFile ||
             !File(dest, "libpojavexec.so").isFile ||
             !File(dest, "libmobileglues.so").isFile ||
             !File(dest, "libgl4es_114.so").isFile
         if (markerOk && !missingRequired) {
-            // Still fill any newly-added names without wiping existing files.
             syncMissingNatives(context, dest)
             ensureHolyGl4esBackup(context, dest)
+            refreshBridgeFromApk(context, dest)
             installBridgeCompatAlias(dest)
             return
         }
@@ -183,7 +180,7 @@ object AndroidGameRuntime {
         linkNativeAlias(dest, "libspirv-cross-c-shared.so", "libspirv-cross.so")
         installBridgeCompatAlias(dest)
         ensureHolyGl4esBackup(context, dest)
-        // Drop quarantined transitional natives if staged from older installs.
+        // Wipe old red-zone .so leftovers; keep libpojavexec alias of our bridge.
         listOf(
             "libpojavexec.so",
             "libpojavexec_awt.so",
@@ -192,32 +189,50 @@ object AndroidGameRuntime {
             "liblinkerhook.so",
             "libdriver_helper.so"
         ).forEach { name ->
-            // Keep compat alias created from booxin_bridge; remove only real leftovers later.
             if (name == "libpojavexec.so") return@forEach
             File(dest, name).takeIf { it.isFile }?.delete()
         }
         marker.writeText("$expected:$copied")
     }
 
-    /**
-     * Some HotSpot / LWJGL paths still dlopen the historical filename.
-     * Point that name at our self-hosted bridge binary (same inode content).
-     */
+    /** Alias bridge as libpojavexec.so for LWJGL. */
     private fun installBridgeCompatAlias(dest: File) {
         val bridge = File(dest, "libbooxin_bridge.so")
         if (!bridge.isFile) return
         val alias = File(dest, "libpojavexec.so")
-        if (!alias.isFile || alias.length() != bridge.length()) {
+        if (!alias.isFile || alias.length() != bridge.length() || alias.lastModified() < bridge.lastModified()) {
             bridge.copyTo(alias, overwrite = true)
             alias.setReadable(true, false)
             alias.setExecutable(true, false)
         }
     }
 
-    /**
-     * Keeps a pristine holy-gl4es copy. [libgl4es_114.so] may be swapped to
-     * MobileGlues for the 1.17+ pojavexec opengles3 path.
-     */
+    private fun refreshBridgeFromApk(context: Context, dest: File) {
+        val systemNative = File(context.applicationInfo.nativeLibraryDir)
+        var refreshed = 0
+        val bridgeName = "libbooxin_bridge.so"
+        val fromApk = File(systemNative, bridgeName)
+        val out = File(dest, bridgeName)
+        if (fromApk.isFile && (!out.isFile || out.length() != fromApk.length() || out.lastModified() < fromApk.lastModified())) {
+            fromApk.copyTo(out, overwrite = true)
+            out.setReadable(true, false)
+            out.setExecutable(true, false)
+            refreshed++
+        }
+        val bridge = File(dest, bridgeName)
+        val alias = File(dest, "libpojavexec.so")
+        if (bridge.isFile && (!alias.isFile || alias.length() != bridge.length() || alias.lastModified() < bridge.lastModified())) {
+            bridge.copyTo(alias, overwrite = true)
+            alias.setReadable(true, false)
+            alias.setExecutable(true, false)
+            refreshed++
+        }
+        if (refreshed > 0) {
+            android.util.Log.i("BooxinRuntime", "refreshed bridge natives count=$refreshed")
+        }
+    }
+
+    /** Backup real gl4es — libgl4es_114.so may be swapped to MobileGlues. */
     private fun ensureHolyGl4esBackup(context: Context, dest: File) {
         val holy = File(dest, "libgl4es_holy.so")
         val gl4 = File(dest, "libgl4es_114.so")
@@ -253,9 +268,11 @@ object AndroidGameRuntime {
     }
 
     /**
-     * Stages the active translator filename expected by pojavexec / LWJGL.
+     * Stages the active translator filename expected by LWJGL.
      * - [GlRendererKind.GL4ES]: restore holy → libgl4es_114.so
      * - [GlRendererKind.MOBILE_GLUES]: disguise MobileGlues as libgl4es_114.so
+     * - Plugin GLES wrappers (Krypton / LTW): disguise plugin .so as libgl4es_114.so
+     * - Mesa (Zink / VirGL / Freedreno): keep holy gl4es as fallback; LIBGL_NAME points at OSMesa
      */
     fun applyRenderer(kind: GlRendererKind) {
         val dest = nativesDir()
@@ -281,12 +298,36 @@ object AndroidGameRuntime {
                 }
                 mg.copyTo(gl4, overwrite = true)
             }
+            GlRendererKind.KRYPTON, GlRendererKind.LTW -> {
+                val pluginGl = com.booxin.launcher.core.runtime.RendererInstaller.glLibrary(kind)
+                    ?: error("请先在设置中下载 ${kind.displayName}")
+                if (!holy.isFile && gl4.isFile && (!mg.isFile || gl4.length() != mg.length())) {
+                    gl4.copyTo(holy, overwrite = true)
+                }
+                pluginGl.copyTo(gl4, overwrite = true)
+                // Keep a copy under the plugin soname in natives for dlopen-by-name.
+                pluginGl.copyTo(File(dest, pluginGl.name), overwrite = true)
+            }
+            GlRendererKind.VULKAN_ZINK, GlRendererKind.VIRGL, GlRendererKind.FREEDRENO -> {
+                // Restore holy gl4es so accidental GLES loads still resolve;
+                // LaunchCommandBuilder points LIBGL_NAME at the Mesa/OSMesa lib.
+                if (holy.isFile) {
+                    holy.copyTo(gl4, overwrite = true)
+                }
+                val pluginDir = com.booxin.launcher.core.runtime.RendererInstaller.pluginNativeDir(kind)
+                    ?: error("请先在设置中下载 ${kind.displayName}")
+                pluginDir.listFiles()?.forEach { lib ->
+                    if (lib.isFile && lib.name.endsWith(".so")) {
+                        lib.copyTo(File(dest, lib.name), overwrite = true)
+                    }
+                }
+            }
         }
         gl4.setReadable(true, false)
         gl4.setExecutable(true, false)
     }
 
-    /** LWJGL default name vs FCL-packaged .so filename. */
+    /** Map LWJGL soname aliases to staged .so filenames. */
     private fun linkNativeAlias(dest: File, sourceName: String, aliasName: String) {
         val source = File(dest, sourceName)
         val alias = File(dest, aliasName)

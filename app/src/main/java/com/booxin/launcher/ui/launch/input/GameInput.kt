@@ -10,11 +10,8 @@ import com.booxin.runtime.BooxinBridge
 import kotlin.math.abs
 
 /**
- * FCL-aligned mouse / key injection ([FCLInput] + [FCLBridge.pushEvent*]).
- *
- * Pointers are tracked in **view / screen space** (FCL cursorX/Y).
- * Game coords = viewCoords Ã— scaleFactor, where
- * scaleFactor = windowWidth / screenWidth (FCL), never viewWidth==0/1.
+ * Mouse / key injection into the game.
+ * Pointers are view/screen space; game coords = view * (windowWidth / screenWidth).
  */
 object GameInput {
     const val MOUSE_LEFT = 1000
@@ -32,7 +29,7 @@ object GameInput {
     @Volatile
     var cursorView: ImageView? = null
 
-    /** FCL AndroidUtils.getScreenWidth/Height â€?stable, never 0 after init. */
+    /** Stable screen size; never 0 after init. */
     @Volatile
     private var screenWidth = 1
     @Volatile
@@ -50,7 +47,7 @@ object GameInput {
     var pointerY: Int = 0
         private set
 
-    /** Cached density for cursor hotspot â€?avoid displayMetrics lookup every MOVE. */
+    /** Cached density for cursor hotspot - avoid displayMetrics every MOVE. */
     @Volatile
     private var cursorHotspot = 3f
 
@@ -74,8 +71,8 @@ object GameInput {
     }
 
     /**
-     * FCL scaleFactor = gameWindow / screen.
-     * Falls back to 1.0 when sizes look unset (avoids Ã—2400 blow-up).
+     * scaleFactor = gameWindow / screen.
+     * Falls back to 1.0 when sizes look unset (avoids huge blow-up).
      */
     fun scaleFactor(): Double {
         val sw = screenWidth.coerceAtLeast(1)
@@ -105,7 +102,7 @@ object GameInput {
         cursor.visibility = if (BooxinBridge.isGrabbing()) View.GONE else View.VISIBLE
     }
 
-    /** FCL FCLInput.setPointer â€?view/screen space, then Ã— scaleFactor into GLFW. */
+    /** View/screen space, then * scaleFactor into GLFW. */
     fun setPointer(x: Int, y: Int) {
         val sw = screenWidth.coerceAtLeast(1)
         val sh = screenHeight.coerceAtLeast(1)
@@ -121,7 +118,7 @@ object GameInput {
         pointerX = vx
         pointerY = vy
 
-        // FCL updates overlay cursor immediately (no Choreographer defer / bringToFront).
+        // Update overlay cursor immediately.
         if (!BooxinBridge.isGrabbing()) {
             applyCursorView(vx, vy)
         }
@@ -226,8 +223,7 @@ object GameInput {
     }
 
     /**
-     * FCL GameMenu TouchPad OnGenericMotionListener path:
-     * HOVER_MOVE â†?setPointer; BUTTON_PRESS/SCROLL â†?handleExternalMouseEvent.
+     * Physical mouse: HOVER_MOVE -> setPointer; BUTTON/SCROLL below.
      */
     fun handleGenericMotion(event: MotionEvent): Boolean {
         if (!event.isFromSource(InputDevice.SOURCE_MOUSE) &&
@@ -274,3 +270,4 @@ object GameInput {
         return false
     }
 }
+

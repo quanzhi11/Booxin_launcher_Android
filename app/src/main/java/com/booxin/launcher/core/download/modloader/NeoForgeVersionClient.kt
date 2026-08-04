@@ -140,12 +140,13 @@ class NeoForgeVersionClient {
             if (neoForgeVersion.isBlank() || gameVersion.isBlank()) return false
             return if (neoForgeVersion.contains('-')) {
                 val mcPart = neoForgeVersion.substringBefore('-')
-                gameVersion.startsWith(mcPart)
+                // Exact MC id match — startsWith would treat 1.21.11 as compatible with 1.21.1.
+                gameVersion == mcPart
             } else {
                 val parts = neoForgeVersion.split('.')
                 if (parts.size < 2) return false
                 val expectedMc = "1.${parts[0]}.${parts[1]}"
-                gameVersion.startsWith(expectedMc)
+                gameVersion == expectedMc
             }
         }
 

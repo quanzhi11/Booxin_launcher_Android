@@ -24,6 +24,11 @@ static void push_event(int type, int i1, int i2, int i3, int i4) {
     booxin_environ_t *e = pojav_environ;
     if (!e || !e->isUseStackQueueCall) return;
     pthread_mutex_lock(&g_queue_mu);
+    /* Drop oldest when full — never overwrite unread slots (lost/spurious clicks). */
+    if (e->inEventIndex - e->outEventIndex >= BOOXIN_EVENT_WINDOW_SIZE) {
+        e->outEventIndex = e->inEventIndex - BOOXIN_EVENT_WINDOW_SIZE + 1;
+        if (e->inEventCount > 0) e->inEventCount--;
+    }
     size_t idx = e->inEventIndex % BOOXIN_EVENT_WINDOW_SIZE;
     e->events[idx].type = type;
     e->events[idx].i1 = i1;
@@ -44,8 +49,7 @@ void noncritical_set_stackqueue(jboolean use) { critical_set_stackqueue(use); }
 
 void critical_send_cursor_pos(jfloat x, jfloat y) {
     if (!pojav_environ) return;
-    /* FCL path: only update cursor + dirty bit. Pump delivers CursorPos.
-     * Do NOT enqueue CURSOR_POS (loses sub-pixel and floods the queue). */
+    /* Cursor goes through pump; don't queue every move. */
     pojav_environ->cursorX = x;
     pojav_environ->cursorY = y;
     pojav_environ->shouldUpdateMouse = true;
@@ -145,7 +149,7 @@ void pojavPumpEvents(void *window) {
     booxin_environ_t *e = pojav_environ;
     if (!e) return;
     void *win = window ? window : (void *)(intptr_t)e->showingWindow;
-    /* Never fall back to ANativeWindow — GLFW callbacks need the createContext handle. */
+    /* Callbacks expect the GLFW/createContext handle, not ANativeWindow. */
 
     if (e->shouldUpdateMouse) {
         if (e->GLFW_invoke_CursorPos && win) {
@@ -165,7 +169,6 @@ void pojavPumpEvents(void *window) {
 
         switch (ev.type) {
             case EVENT_TYPE_CURSOR_POS:
-                /* legacy queued cursor events (should be unused) */
                 if (e->GLFW_invoke_CursorPos && win)
                     ((cursor_pos_fn)e->GLFW_invoke_CursorPos)(win, (double)ev.i1, (double)ev.i2);
                 break;

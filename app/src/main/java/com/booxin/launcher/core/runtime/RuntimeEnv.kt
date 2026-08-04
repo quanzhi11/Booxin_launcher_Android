@@ -3,43 +3,52 @@ package com.booxin.launcher.core.runtime
 import com.booxin.launcher.core.launch.GlRendererKind
 import java.io.File
 
-/**
- * Canonical Booxin env keys + transitional aliases required by legacy natives.
- */
+/** Env keys for the game process (+ a few legacy aliases some natives still read). */
 object RuntimeEnv {
     const val NATIVEDIR = "BOOXIN_NATIVEDIR"
     const val RENDERER = "BOOXIN_RENDERER"
     const val EGL = "BOOXIN_EGL"
 
-    /** Legacy names still read by transitional .so binaries. */
     const val LEGACY_POJAV_NATIVEDIR = "POJAV_NATIVEDIR"
     const val LEGACY_FCL_NATIVEDIR = "FCL_NATIVEDIR"
     const val LEGACY_POJAV_RENDERER = "POJAV_RENDERER"
     const val LEGACY_POJAVEXEC_EGL = "POJAVEXEC_EGL"
 
-    fun rendererToken(kind: GlRendererKind): String = when (kind) {
-        GlRendererKind.GL4ES -> "opengles2"
-        GlRendererKind.MOBILE_GLUES -> "opengles3"
+    fun rendererToken(kind: GlRendererKind): String {
+        RendererPackages.forKind(kind)?.let { return it.rendererToken }
+        return when (kind) {
+            GlRendererKind.GL4ES -> "opengles2"
+            GlRendererKind.MOBILE_GLUES -> "opengles3"
+            else -> "opengles3"
+        }
     }
 
-    fun eglLib(kind: GlRendererKind): String = when (kind) {
-        GlRendererKind.GL4ES -> "libEGL.so"
-        GlRendererKind.MOBILE_GLUES -> "libmobileglues.so"
+    fun eglLib(kind: GlRendererKind): String {
+        RendererPackages.forKind(kind)?.let { pkg ->
+            if (pkg.eglLib == "libEGL.so") return "libEGL.so"
+            val dir = RendererInstaller.pluginNativeDir(kind)
+            if (dir != null) {
+                val file = File(dir, pkg.eglLib)
+                if (file.isFile) return file.absolutePath
+            }
+            return pkg.eglLib
+        }
+        return when (kind) {
+            GlRendererKind.MOBILE_GLUES -> "libmobileglues.so"
+            else -> "libEGL.so"
+        }
     }
 
-    fun libGlString(kind: GlRendererKind): String = when (kind) {
-        GlRendererKind.GL4ES -> "GL4ES"
-        GlRendererKind.MOBILE_GLUES -> "MobileGlues"
+    fun libGlString(kind: GlRendererKind): String = kind.displayName
+
+    fun libGlEs(kind: GlRendererKind): String {
+        RendererPackages.forKind(kind)?.let { return it.libGlEs }
+        return if (kind == GlRendererKind.GL4ES) "2" else "3"
     }
 
-    fun libGlEs(kind: GlRendererKind): String = when (kind) {
-        GlRendererKind.GL4ES -> "2"
-        GlRendererKind.MOBILE_GLUES -> "3"
-    }
+    fun pluginExtraEnv(kind: GlRendererKind): Map<String, String> =
+        RendererPackages.forKind(kind)?.extraEnv.orEmpty()
 
-    /**
-     * Injects Booxin keys and mirrors them to legacy POJAV/FCL names.
-     */
     fun withNativeAliases(
         base: MutableMap<String, String>,
         stagedNatives: String,
@@ -58,8 +67,13 @@ object RuntimeEnv {
         return base
     }
 
-    fun glLibraryFile(stagedNatives: File, kind: GlRendererKind): File = when (kind) {
-        GlRendererKind.GL4ES -> File(stagedNatives, "libgl4es_114.so")
-        GlRendererKind.MOBILE_GLUES -> File(stagedNatives, "libmobileglues.so")
+    fun glLibraryFile(stagedNatives: File, kind: GlRendererKind): File {
+        RendererInstaller.glLibrary(kind)?.let { return it }
+        return when (kind) {
+            GlRendererKind.GL4ES -> File(stagedNatives, "libgl4es_114.so")
+            GlRendererKind.MOBILE_GLUES -> File(stagedNatives, "libmobileglues.so")
+            GlRendererKind.KRYPTON, GlRendererKind.LTW -> File(stagedNatives, "libgl4es_114.so")
+            else -> File(stagedNatives, "libgl4es_114.so")
+        }
     }
 }

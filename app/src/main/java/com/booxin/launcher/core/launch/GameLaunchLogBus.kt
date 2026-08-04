@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import androidx.core.content.ContextCompat
+import com.booxin.launcher.BooxinApp
 import com.booxin.launcher.core.LauncherPaths
 import java.io.File
 import java.text.SimpleDateFormat
@@ -39,12 +40,14 @@ object GameLaunchLogBus {
     }
 
     fun beginSession(versionId: String) {
+        val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z", Locale.US).format(Date())
+        val header = "=== Booxin launch $stamp version=$versionId ===\n"
         val file = latestLogFile() ?: return
         runCatching {
             file.parentFile?.mkdirs()
-            val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z", Locale.US).format(Date())
-            file.writeText("=== Booxin launch $stamp version=$versionId ===\n")
+            file.writeText(header)
         }
+        mirrorExternalWrite(header, append = false)
     }
 
     fun emit(context: Context, line: String) {
@@ -92,6 +95,16 @@ object GameLaunchLogBus {
                 file.parentFile?.mkdirs()
                 file.appendText(line + "\n")
             }
+            mirrorExternalWrite(line + "\n", append = true)
+        }
+    }
+
+    private fun mirrorExternalWrite(text: String, append: Boolean) {
+        runCatching {
+            val ctx = BooxinApp.getAppContext()
+            val ext = File(ctx.getExternalFilesDir(null), "crash").also { it.mkdirs() }
+            val mirror = File(ext, "latest-launch.log")
+            if (append) mirror.appendText(text) else mirror.writeText(text)
         }
     }
 

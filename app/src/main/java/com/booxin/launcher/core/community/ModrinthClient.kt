@@ -34,7 +34,7 @@ class ModrinthClient(
                 .addQueryParameter("facets", facets.toString())
                 .addQueryParameter("offset", offset.toString())
                 .addQueryParameter("limit", limit.toString())
-                // Match FCL behavior: Modrinth side tends to use relevance/name-style sorting.
+                // Modrinth search defaults to relevance/name-style sorting.
                 .addQueryParameter("index", "relevance")
                 .build()
                 .toString()
@@ -179,7 +179,7 @@ class ModrinthClient(
             outer.put(JSONArray().put("versions:$gameVersion"))
         }
         if (contentType == CommunityContentType.MOD && loader != CommunityLoader.ANY) {
-            // Modrinth search lumps loaders into categories, which is what FCL also uses.
+            // Modrinth search lumps loaders into categories.
             outer.put(JSONArray().put("categories:${loader.apiValue}"))
         }
         return outer

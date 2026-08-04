@@ -233,6 +233,8 @@ class DownloadFragment : Fragment() {
         }
         adapter.submit(filtered)
         binding.textEmpty.isVisible = filtered.isEmpty()
+        binding.filterAppBar.setExpanded(true, false)
+        binding.recyclerDownload.scrollToPosition(0)
     }
 
     private fun refreshRemote() {
@@ -511,29 +513,53 @@ class DownloadFragment : Fragment() {
     private fun startInstall(version: GameVersion) {
         viewLifecycleOwner.lifecycleScope.launch {
             installing = true
-            val b = _binding ?: return@launch
-            b.progressPanel.isVisible = true
-            b.textProgress.text = getString(R.string.download_installing)
-            val result = AppContainer.gameRuntime.prepare(version.id)
-            installing = false
-            val end = _binding ?: return@launch
-            val context = context ?: return@launch
-            if (result.isSuccess) {
-                end.progressPanel.isVisible = false
-                Toast.makeText(
-                    context,
-                    getString(R.string.download_install_done, version.id),
-                    Toast.LENGTH_SHORT
-                ).show()
-                adapter.notifyDataSetChanged()
-            } else {
-                val message = result.exceptionOrNull()?.message ?: "unknown"
-                end.textProgress.text = message
-                Toast.makeText(
-                    context,
-                    getString(R.string.download_install_failed, message),
-                    Toast.LENGTH_LONG
-                ).show()
+            try {
+                val b = _binding ?: return@launch
+                b.progressPanel.isVisible = true
+                b.textProgress.text = getString(R.string.download_installing)
+
+                // Download page must run the real install pipeline — prepare()/ensureVersionReady
+                // short-circuits when files already look present and shows a fake "done".
+                val alreadyInstalled = AppContainer.repository.installedVersions.value
+                    .any { it.id == version.id } || version.installed
+                AppContainer.javaEnvironment.ensureForMinecraft(version.id).getOrElse {
+                    val end = _binding ?: return@launch
+                    val context = context ?: return@launch
+                    val message = it.message ?: "unknown"
+                    end.textProgress.text = message
+                    Toast.makeText(
+                        context,
+                        getString(R.string.download_install_failed, message),
+                        Toast.LENGTH_LONG
+                    ).show()
+                    return@launch
+                }
+                val result = AppContainer.repository.installVersion(version.id)
+                val end = _binding ?: return@launch
+                val context = context ?: return@launch
+                if (result.isSuccess) {
+                    end.progressPanel.isVisible = false
+                    Toast.makeText(
+                        context,
+                        if (alreadyInstalled) {
+                            getString(R.string.download_reinstall_done, version.id)
+                        } else {
+                            getString(R.string.download_install_done, version.id)
+                        },
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    adapter.notifyDataSetChanged()
+                } else {
+                    val message = result.exceptionOrNull()?.message ?: "unknown"
+                    end.textProgress.text = message
+                    Toast.makeText(
+                        context,
+                        getString(R.string.download_install_failed, message),
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            } finally {
+                installing = false
             }
         }
     }

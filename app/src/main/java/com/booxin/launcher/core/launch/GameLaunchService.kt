@@ -15,6 +15,8 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import com.booxin.launcher.AppContainer
 import com.booxin.launcher.R
+import com.booxin.launcher.core.diag.DiagEventLog
+import com.booxin.launcher.core.diag.PerfSnapshot
 import com.booxin.launcher.core.runtime.GameRuntimeBackends
 import com.booxin.launcher.core.runtime.RuntimeEnv
 import com.booxin.launcher.ui.launch.LaunchActivity
@@ -126,11 +128,41 @@ class GameLaunchService : Service() {
         appendLog("准备 Java 与游戏文件…")
         GameLaunchLogBus.muteUi.set(false)
         GameLaunchLogBus.beginSession(versionId)
+        if (RealtimeLaunchLog.isEnabled()) {
+            appendLog("启动实时日志：已开启（完整 logcat → 磁盘，设置里可结束并导出）")
+        }
         val prepare = AppContainer.gameRuntime.prepare(versionId)
         if (prepare.isFailure) {
             appendLog("准备失败: ${prepare.exceptionOrNull()?.message}")
             return
         }
+
+        appendLog("校验并补全游戏资源（缺资源会闪退）…")
+        val progressJob = scope.launch {
+            AppContainer.repository.installProgress.collect { progress ->
+                if (progress == null) return@collect
+                if (progress.phase != com.booxin.launcher.core.download.game.GameInstallPhase.ASSETS) {
+                    return@collect
+                }
+                val detail = if (progress.total > 0) {
+                    "${progress.message} (${progress.completed}/${progress.total})"
+                } else {
+                    progress.message
+                }
+                appendLog(detail)
+            }
+        }
+        val assets = runCatching {
+            AppContainer.repository.ensureGameAssets(versionId).getOrThrow()
+        }
+        progressJob.cancel()
+        if (assets.isFailure) {
+            appendLog("资源补全失败: ${assets.exceptionOrNull()?.message}")
+            appendLog("请到「下载」页对该版本点重新安装，或检查网络后重试")
+            return
+        }
+        appendLog("游戏资源就绪")
+
         SodiumPodiumInstaller.ensure(this, versionId)?.let { appendLog(it) }
 
         val java = AppContainer.javaEnvironment.ensureForMinecraft(versionId).getOrElse {
@@ -160,6 +192,10 @@ class GameLaunchService : Service() {
             else -> resources.displayMetrics.heightPixels
         }
         GameSurfaceBridge.onSurfaceSizeChanged(width, height)
+        appendLog(PerfSnapshot.launchLine(this, width, height))
+        runCatching {
+            DiagEventLog.i("Perf", PerfSnapshot.launchLine(this, width, height))
+        }
         runCatching {
             val gameDir = File(
                 com.booxin.launcher.core.LauncherPaths.versionsDir,
@@ -200,10 +236,12 @@ class GameLaunchService : Service() {
                 "${RuntimeEnv.EGL}=${command.env[RuntimeEnv.EGL]} " +
                 "libname=${command.jvmArgs.firstOrNull { it.startsWith("-Dorg.lwjgl.opengl.libname=") }}"
             )
+        System.getProperty("booxin.renderer.fallback")?.let {
+            appendLog("渲染器回退: $it")
+            System.clearProperty("booxin.renderer.fallback")
+        }
 
-        // Forge/NeoForge: ART-side exec preload races HotSpot securejarhandler.
-        // Fabric/Quilt/vanilla NEED preload so stack-queue + setupBridgeWindow work
-        // before KnotClient starts.
+        // Forge: skip ART preload (fights securejarhandler). Fabric needs it early.
         val skipArtPreload = shouldSkipArtExecPreload(versionId, command.mainClass)
         if (skipArtPreload) {
             appendLog("Forge/NeoForge：跳过 ART 侧 exec bridge 预加载")
@@ -236,9 +274,9 @@ class GameLaunchService : Service() {
         appendLog("GLFW 窗口已绑定")
         runCatching {
             if (NativeJvmLauncher.initializeHooks()) {
-                appendLog("ART CriticalNative send_* 已注册")
+                appendLog("输入 native 钩子已就绪")
             } else {
-                appendLog("警告：initializeHooks 失败，触控可能无效")
+                appendLog("警告：输入钩子注册失败，触控可能无效")
             }
         }.onFailure { appendLog("initializeHooks: ${it.message}") }
 

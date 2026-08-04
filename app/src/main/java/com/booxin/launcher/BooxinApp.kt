@@ -28,19 +28,31 @@ class BooxinApp : Application() {
         }
     }
 
-    /** Copy HotSpot crash logs to external files so `adb pull` works on release builds. */
+    /** Copy HotSpot crash logs + latest launch log to external files so `adb pull` works. */
     private fun stageHsErrForAdb(context: Context) {
         val outDir = File(context.getExternalFilesDir(null), "crash").also { it.mkdirs() }
         val sources = mutableListOf<File>()
         LauncherPaths.versionsDir.listFiles()?.forEach { ver ->
             if (!ver.isDirectory) return@forEach
             ver.listFiles()
-                ?.filter { it.isFile && it.name.startsWith("hs_err_pid") }
+                ?.filter { it.isFile && (it.name.startsWith("hs_err_pid") || it.name.endsWith("-client.txt")) }
+                ?.let { sources += it }
+            File(ver, "crash-reports").listFiles()
+                ?.filter { it.isFile }
                 ?.let { sources += it }
         }
-        sources.sortedByDescending { it.lastModified() }.take(3).forEach { src ->
-            val dest = File(outDir, "${src.parentFile?.name}-${src.name}")
-            src.copyTo(dest, overwrite = true)
+        File(LauncherPaths.rootDir, "logs").listFiles()
+            ?.filter { it.isFile }
+            ?.let { sources += it }
+        sources.sortedByDescending { it.lastModified() }.take(8).forEach { src ->
+            val destName = when {
+                src.parentFile?.name == "crash-reports" ->
+                    "${src.parentFile?.parentFile?.name}-${src.name}"
+                src.parentFile?.name == "logs" -> src.name
+                else -> "${src.parentFile?.name}-${src.name}"
+            }
+            val dest = File(outDir, destName)
+            runCatching { src.copyTo(dest, overwrite = true) }
         }
     }
 

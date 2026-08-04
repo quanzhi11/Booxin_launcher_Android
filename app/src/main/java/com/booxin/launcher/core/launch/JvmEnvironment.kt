@@ -112,7 +112,7 @@ object JvmEnvironment {
             findLibrary(javaHome, name)?.let { candidates += it.absolutePath }
         }
         // Exec bridge is loaded via ExecBridgeLoader (single staged copy).
-        // Do NOT preload LWJGL here — Forge 1.21+ secure module layer loads it itself.
+        // Don't preload LWJGL — Forge 1.21+ module layer loads it itself.
         listOf("libc++_shared.so").forEach { name ->
             File(nativeLibDir, name).takeIf { it.isFile }?.let { candidates += it.absolutePath }
         }

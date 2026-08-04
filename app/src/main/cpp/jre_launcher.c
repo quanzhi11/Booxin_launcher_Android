@@ -111,7 +111,7 @@ static bool parse_args(char **argv, int argc, ParsedArgs *out) {
             continue; /* will re-add as single option below */
         }
         /*
-         * FCL/JLI: options like --add-exports take a following argv token.
+         * JLI: options like --add-exports take a following argv token.
          * JNI_CreateJavaVM needs a single optionString ("--add-exports=…"),
          * otherwise the value is mis-parsed as the main class.
          */
@@ -354,9 +354,8 @@ static void reset_signals(void) {
     memset(&sa, 0, sizeof(sa));
     for (int s = SIGHUP; s < NSIG; s++) {
         if (s == SIGKILL || s == SIGSTOP) continue;
-        /* Boardwalk/FCL: ignore SIGSEGV so stray native faults in GLES/hooks
-         * do not kill the whole :game process. Do NOT pump GLFW callbacks
-         * from the ART UI thread — that crashes even with this in place. */
+        /* Ignore SIGSEGV so stray GLES/hook faults don't kill :game.
+         * Still don't pump GLFW from the ART UI thread. */
         sa.sa_handler = (s == SIGSEGV) ? SIG_IGN : SIG_DFL;
         sigaction(s, &sa, NULL);
     }
@@ -516,19 +515,21 @@ static void *open_bridge_lib(const char *soname) {
 }
 
 static void *open_pojavexec(void) {
-    /*
-     * LWJGL Android jar hardcodes Library.loadNative(..., "libpojavexec.so").
-     * Prefer that soname so ART / HotSpot / GLFW share ONE mapping and ONE environ.
-     * libbooxin_bridge.so is the same binary staged under a Booxin name.
-     */
+    /* Prefer libpojavexec.so so ART and HotSpot share one mapping. */
     void *lib = open_bridge_lib("libpojavexec.so");
-    if (lib) return lib;
-    return open_bridge_lib("libbooxin_bridge.so");
+    if (!lib) lib = open_bridge_lib("libbooxin_bridge.so");
+    if (lib) {
+        static int logged;
+        if (!logged) {
+            logged = 1;
+            void *ensure = dlsym(lib, "booxin_ensure_native_window");
+            LOGI("open_pojavexec handle=%p ensure=%p", lib, ensure);
+        }
+    }
+    return lib;
 }
 
-/* pojavexec JNI_OnLoad must run twice: once on ART (dalvikJavaVMPtr), once on
- * HotSpot (runtimeJavaVMPtr). We dlopen pojavexec without going through
- * System.loadLibrary, so both calls must be explicit. */
+/* Call JNI_OnLoad for ART and again for HotSpot (we don't use System.loadLibrary). */
 static bool call_pojav_jni_onload(JavaVM *vm, JNIEnv *env, const char *label) {
     if (!vm) return false;
     void *lib = open_pojavexec();
@@ -550,13 +551,11 @@ static bool call_pojav_jni_onload(JavaVM *vm, JNIEnv *env, const char *label) {
     return true;
 }
 
-/** Absolute path to staged bridge .so (LWJGL soname first — must be single mapping). */
 static bool pojavexec_staged_path(char *out, size_t outLen) {
     const char *nativeDir = getenv("BOOXIN_NATIVEDIR");
     if (!nativeDir || !nativeDir[0]) nativeDir = getenv("POJAV_NATIVEDIR");
     if (!nativeDir || !nativeDir[0]) nativeDir = getenv("FCL_NATIVEDIR");
     if (!nativeDir || !nativeDir[0]) return false;
-    /* Prefer historical filename: GLFW.clinit / loadNative look for this exact name. */
     snprintf(out, outLen, "%s/libpojavexec.so", nativeDir);
     if (access(out, R_OK) == 0) return true;
     snprintf(out, outLen, "%s/libbooxin_bridge.so", nativeDir);
@@ -649,10 +648,7 @@ static void log_hotspot_pump_diag(JNIEnv *env) {
  * Replacing the function pointers forces both sides onto the same environ.
  */
 
-/*
- * Dump / pump helpers need FCL environ.h layout (must stay in sync with
- * libpojavexec). Defined early so pump wrappers can refresh JNIEnv.
- */
+/* Environ layout shared with the bridge; defined early for pump helpers. */
 typedef struct {
     int type;
     int i1;
@@ -892,7 +888,7 @@ static void booxin_read_mouse_buttons(struct booxin_pojav_environ_s *e,
     *b2 = buf[2];
 }
 
-/** MC GLFW window — showingWindow, NOT pojavWindow (internal stub). */
+/* Game window handle is showingWindow, not the internal stub. */
 static void *booxin_mc_glfw_window(struct booxin_pojav_environ_s *e, void *window) {
     if (e && e->showingWindow) return (void *)(long)e->showingWindow;
     if (e && e->mainWindowBundle) return e->mainWindowBundle;
@@ -901,10 +897,6 @@ static void *booxin_mc_glfw_window(struct booxin_pojav_environ_s *e, void *windo
     return NULL;
 }
 
-/**
- * Invoke MC-registered GLFW trampolines on the HotSpot render thread.
- * Uses C struct fields (Booxin bridge layout — not legacy 0x27000 offsets).
- */
 static void booxin_deliver_glfw_native(struct booxin_pojav_environ_s *e, void *winPtr,
                                        double cx, double cy, int b0, int b1, int b2) {
     if (!e || !winPtr) return;
@@ -943,7 +935,6 @@ static void booxin_deliver_glfw_native(struct booxin_pojav_environ_s *e, void *w
     }
 }
 
-/** Always try Java MC-ClassLoader delivery as well (native trampoline may be stale). */
 static void booxin_forward_input_callbacks(void *window, double cx, double cy,
                                            int b0, int b1, int b2) {
     struct booxin_pojav_environ_s *e = booxin_get_environ();
@@ -973,13 +964,8 @@ static void booxin_forward_input_callbacks(void *window, double cx, double cy,
     if (attached) (*e->runtimeJavaVMPtr)->DetachCurrentThread(e->runtimeJavaVMPtr);
 }
 
-/*
- * Do NOT replace GLFW_invoke_* with logging wrappers: early hooks lock stale
- * pre-MC stubs. Stock pojavPumpEvents must call trampolines installed by
- * glfwSet*Callback. Extra fwdNative/Java deliver was removed (FCL does not).
- */
+/* Don't wrap GLFW_invoke_* — early hooks freeze stale stubs. */
 static void booxin_hook_input_callbacks(void) {
-    /* intentionally empty — see comment above */
 }
 
 static void (*g_pojav_start_pumping)(void) = NULL;
@@ -1002,10 +988,7 @@ static void resolve_pojav_pump_syms(void) {
             (struct booxin_pojav_environ_s **)dlsym(lib, "pojav_environ");
 }
 
-/*
- * Thin wrappers: cache dlsym once. Previous code dlopen/dlsym every frame and
- * stalled the HotSpot render thread (~1s input lag, no smooth look).
- */
+/* Cache pump symbols once (dlsym every frame lagged input badly). */
 static void booxin_start_pumping(void) {
     resolve_pojav_pump_syms();
     if (g_pojav_start_pumping) g_pojav_start_pumping();
@@ -1016,12 +999,7 @@ static void booxin_stop_pumping(void) {
     if (g_pojav_stop_pumping) g_pojav_stop_pumping();
 }
 
-/*
- * FCL path: ART CriticalNative → stack queue → stock pojavPumpEvents only.
- * Do NOT force shouldUpdateMouse every frame — that fires CursorPos on every
- * glfwPollEvents and cooks the CPU (~80% on title screen). Dirty bit is set
- * from ART via nativeMarkMousePositionDirty when the finger actually moves.
- */
+/* Drain the queue; don't force shouldUpdateMouse every frame (CPU melt). */
 static void booxin_pump_events(void *window) {
     if (!g_pojav_pump_events) resolve_pojav_pump_syms();
     if (g_pojav_pump_events) g_pojav_pump_events(window);
@@ -1046,7 +1024,7 @@ static bool patch_hotspot_pump_function_pointers(JNIEnv *env) {
         return false;
     }
 
-    /* Rebind ALL GLFW$Functions to the single loaded bridge (avoid dual-environ). */
+    /* Point GLFW$Functions at our bridge so we don't get two environ copies. */
     void *lib = open_pojavexec();
     if (lib) {
         struct {
@@ -1075,7 +1053,7 @@ static bool patch_hotspot_pump_function_pointers(JNIEnv *env) {
         }
     }
 
-    /* Pump path: prefer our thin wrappers (same bridge, cheaper than re-dlsym). */
+    /* Use cached pump wrappers. */
     jfieldID startFid = (*env)->GetStaticFieldID(env, fnCls, "StartPumping", "J");
     jfieldID pumpFid = (*env)->GetStaticFieldID(env, fnCls, "PumpEvents", "J");
     jfieldID stopFid = (*env)->GetStaticFieldID(env, fnCls, "StopPumping", "J");
@@ -1115,19 +1093,12 @@ static bool patch_hotspot_pump_function_pointers(JNIEnv *env) {
     return true;
 }
 
-/**
- * Force stack-queue + input-ready so ART touch is not silently dropped.
- *
- * FCL libpojavexec exports RegisterNatives helpers as critical_set_stackqueue /
- * critical_send_* (NOT JavaCritical_…nativeSetUseInputStackQueue). nativeSetInputReady
- * is the exception: it also has a JavaCritical_ export for direct CriticalNative link.
- */
+/* stack-queue + ready=true, or touch gets dropped. */
 static void force_input_bridge_ready(const char *where) {
     void *lib = open_pojavexec();
     if (!lib) return;
     typedef void (*set_stack_fn)(jboolean);
     typedef jboolean (*set_ready_fn)(jboolean);
-    /* Prefer FCL critical_* symbols; fall back if a different pojav build is used. */
     set_stack_fn setStack = (set_stack_fn)dlsym(lib, "critical_set_stackqueue");
     const char *stackSym = "critical_set_stackqueue";
     if (!setStack) {
@@ -1146,9 +1117,7 @@ static void force_input_bridge_ready(const char *where) {
         setReady = (set_ready_fn)dlsym(lib, "Java_org_lwjgl_glfw_CallbackBridge_nativeSetInputReady");
         readySym = "Java_…nativeSetInputReady";
     }
-    /* MUST enable stack-queue: critical_send_cursor_pos only writes cursorX/Y
-     * (offset 0x27140) when isUseStackQueueCall=1. Direct path invokes the
-     * CursorPos callback but leaves glfwGetCursorPos stuck at 0,0 — no GUI hover. */
+    /* Without stack-queue, glfwGetCursorPos sticks at 0,0. */
     if (setStack) setStack(JNI_TRUE);
     jboolean stack = JNI_FALSE;
     if (setReady) stack = setReady(JNI_TRUE);
@@ -1159,13 +1128,7 @@ static void force_input_bridge_ready(const char *where) {
     }
 }
 
-/**
- * Ensure HotSpot GLFW is initialized BEFORE pojavexec JNI_OnLoad "Saving JVM".
- * FCL binds mouseDownBuffer from GLFW static fields during that path; if
- * System.load runs first, FindClass(GLFW) re-enters loadLibrary while the .so
- * is still loading and buffers can stay NULL — clicks then hit a null write
- * (SIGSEGV is ignored in this process → silent no-op).
- */
+/* Init GLFW before bridge OnLoad so key/mouse buffers exist to bind. */
 static bool preinit_hotspot_glfw(JNIEnv *env) {
     if (!env) return false;
     jclass glfwCls = (*env)->FindClass(env, "org/lwjgl/glfw/GLFW");
@@ -1310,18 +1273,9 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_pojav) {
 
     if (with_pojav) {
     /*
-     * Register libpojavexec with THIS HotSpot VM via System.load(absolutePath).
-     * Plain dlopen+JNI_OnLoad does NOT put the .so on HotSpot's JNI native-library
-     * list, so GLFW.nglfwSetMouseButtonCallback later fails to link and mouseCb
-     * stays NULL — ART then queues events that the game never receives.
-     *
-     * Order matters (FCL vanilla): initialize GLFW first so keyDownBuffer/mouseDownBuffer
-     * exist, THEN System.load → JNI_OnLoad "Saving JVM" binds those buffers.
-     *
-     * ForgeBootstrap builds a SecureModule layer that loads org.lwjgl again. If we
-     * System.load(liblwjgl.so) on the AppClassLoader first, Forge fails with:
-     * UnsatisfiedLinkError: liblwjgl.so already loaded in another classloader.
-     * So skip GLFW preinit / pump patch for Forge; only load pojavexec.
+     * HotSpot needs System.load (not bare dlopen) or GLFW callbacks never link.
+     * Init GLFW first so buffers exist, then load the bridge.
+     * Forge: skip preinit — loading liblwjgl on AppClassLoader breaks the module layer.
      */
     int forge_like = pa.mainClass &&
         (strstr(pa.mainClass, "minecraftforge") ||
@@ -1345,7 +1299,7 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_pojav) {
         } else {
             log_pojav_environ("after HotSpot System.load(pojavexec)");
         }
-        /* Ensure key/mouse DirectByteBuffers are shared with HotSpot GLFW. */
+        /* Share GLFW DirectByteBuffers with native click state. */
         {
             void *lib = open_pojavexec();
             typedef void (*bind_fn)(JNIEnv *);
@@ -1362,6 +1316,28 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_pojav) {
         force_input_bridge_ready("after HotSpot pojavexec load");
     } else {
         LOGI("Forge-like — skip HotSpot System.load(pojavexec) to avoid classloader split");
+        /* Skip JNI_OnLoad: it FindClass(GLFW) and can load liblwjgl too early. */
+        {
+            void *lib = open_pojavexec();
+            typedef void *(*ensure_fn)(void);
+            ensure_fn ensure = lib
+                ? (ensure_fn)dlsym(lib, "booxin_ensure_native_window")
+                : NULL;
+            void *win = ensure ? ensure() : NULL;
+            LOGI("Forge-like ensure native window=%p ensure_sym=%p", win, (void *)ensure);
+            if (!win) {
+                LOGW("Forge-like: no ANativeWindow before main — glfwInit may SIGSEGV");
+            }
+            struct booxin_pojav_environ_s **pp = lib
+                ? (struct booxin_pojav_environ_s **)dlsym(lib, "pojav_environ")
+                : NULL;
+            if (pp && *pp) {
+                (*pp)->runtimeJavaVMPtr = jvm;
+                (*pp)->runtimeJNIEnvPtr_JRE = jenv;
+            }
+        }
+        log_pojav_environ("after Forge HotSpot ensure");
+        force_input_bridge_ready("after Forge HotSpot ensure");
     }
     if (!forge_like) {
         log_hotspot_pump_diag(jenv);
@@ -1373,8 +1349,7 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_pojav) {
         LOGI("Forge-like — defer GLFW pump patch until module-layer LWJGL loads");
     }
 
-    /* pojavexec hookExec/installLwjglDlopenHook crash in embedded HotSpot; rely on
-     * JNI_OnLoad + POJAV_RENDERER env + ART setupBridgeWindow instead. */
+    /* Skip hookExec / lwjgl dlopen hooks — they crash under embedded HotSpot. */
     }
 
     /* Prefer system classloader first (uses -Djava.class.path) */
@@ -1438,16 +1413,18 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_pojav) {
     }
 
     LOGI("Invoking main(%d args)", pa.nGameArgs);
-    /*
-     * FCL/Zalith keep POJAV_RENDERER=opengles* for the whole process.
-     * libpojavexec pojavInit (called from glfwInit on the render thread) does
-     * strncmp(getenv("POJAV_RENDERER"), "opengles", …) with no NULL check —
-     * unsetting it here caused SIGSEGV in __strncmp_aarch64.
-     */
     if (with_pojav) {
         const char *renderer = getenv("POJAV_RENDERER");
-        LOGI("POJAV_RENDERER=%s (kept for pojavInit/glfwInit)",
+        if (!renderer || !renderer[0]) {
+            const char *fallback = getenv("BOOXIN_RENDERER");
+            if (!fallback || !fallback[0]) fallback = "opengles3";
+            setenv("POJAV_RENDERER", fallback, 1);
+            renderer = getenv("POJAV_RENDERER");
+            LOGW("POJAV_RENDERER was unset — defaulted to %s", renderer ? renderer : "?");
+        }
+        LOGI("POJAV_RENDERER=%s",
              renderer && renderer[0] ? renderer : "(unset)");
+        log_pojav_environ("before Invoking main");
     }
     (*jenv)->CallStaticVoidMethod(jenv, mainCls, mainMethod, argsArr);
     if ((*jenv)->ExceptionCheck(jenv)) {
@@ -1500,7 +1477,7 @@ static void reset_signals_for_jli(void) {
     }
 }
 
-/** FCL ProcessService / VMLauncher.launchJVM — run java tools via libjli JLI_Launch. */
+/** Tool JVMs via libjli JLI_Launch. */
 static jint launch_jli(int argc, char **argv) {
     if (argc <= 0 || !argv || !argv[0]) return -1;
 
@@ -1760,7 +1737,7 @@ Java_com_booxin_launcher_core_launch_NativeJvmLauncher_nativeDumpInputBridge(
         return (*env)->NewStringUTF(env, "pojav_environ=null");
     }
     struct booxin_pojav_environ_s *e = *pp;
-    /* Booxin bridge: read C struct fields directly (legacy 0x27000 offsets removed). */
+    /* Dump live environ fields. */
     double cursorX = e->cursorX;
     double cursorY = e->cursorY;
     int ready = e->isInputReady ? 1 : 0;
@@ -1833,12 +1810,11 @@ Java_com_booxin_launcher_core_launch_NativeJvmLauncher_nativeSetupBridgeWindow(
         LOGE("setupBridgeWindow: GetJavaVM failed");
         return JNI_FALSE;
     }
-    /* ART pass: saves dalvikJavaVMPtr before binding the Surface window. */
     if (!call_pojav_jni_onload(artVm, env, "ART")) {
         return JNI_FALSE;
     }
     log_pojav_environ("after ART JNI_OnLoad");
-    /* CriticalNative send_* must be registered on ART — otherwise touch is silent ULE. */
+    /* Register touch send_* on ART. */
     register_callbackbridge_send_natives(env);
     force_input_bridge_ready("after ART setupBridgeWindow");
 

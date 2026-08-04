@@ -1,6 +1,7 @@
 #include "booxin_environ.h"
 
 #include <android/log.h>
+#include <android/native_window.h>
 #include <android/native_window_jni.h>
 #include <jni.h>
 #include <stdlib.h>
@@ -29,29 +30,25 @@ JNIEXPORT void JNICALL
 Java_org_lwjgl_glfw_CallbackBridge_setupBridgeWindow(JNIEnv *env, jclass cls, jobject surface) {
     (void)cls;
     if (!pojav_environ) booxin_environ_init();
-    if (pojav_environ->nativeWindow) {
-        ANativeWindow_release((ANativeWindow *)pojav_environ->nativeWindow);
-        pojav_environ->nativeWindow = NULL;
-    }
     if (surface) {
-        pojav_environ->nativeWindow = ANativeWindow_fromSurface(env, surface);
-        if (pojav_environ->nativeWindow) {
-            pojav_environ->savedWidth =
-                ANativeWindow_getWidth((ANativeWindow *)pojav_environ->nativeWindow);
-            pojav_environ->savedHeight =
-                ANativeWindow_getHeight((ANativeWindow *)pojav_environ->nativeWindow);
-            LOGI("setupBridgeWindow %dx%d", pojav_environ->savedWidth, pojav_environ->savedHeight);
+        ANativeWindow *win = ANativeWindow_fromSurface(env, surface);
+        if (win) {
+            booxin_retain_native_window(win);
+            ANativeWindow_release(win);
+            LOGI("setupBridgeWindow %dx%d",
+                 pojav_environ->savedWidth, pojav_environ->savedHeight);
+        } else {
+            LOGW("setupBridgeWindow: ANativeWindow_fromSurface returned null");
         }
+    } else {
+        booxin_retain_native_window(NULL);
     }
 }
 
 JNIEXPORT void JNICALL
 Java_net_kdt_pojavlaunch_utils_JREUtils_releaseBridgeWindow(JNIEnv *env, jclass cls) {
     (void)env; (void)cls;
-    if (pojav_environ && pojav_environ->nativeWindow) {
-        ANativeWindow_release((ANativeWindow *)pojav_environ->nativeWindow);
-        pojav_environ->nativeWindow = NULL;
-    }
+    booxin_retain_native_window(NULL);
 }
 
 JNIEXPORT jboolean JNICALL
@@ -69,12 +66,37 @@ JavaCritical_org_lwjgl_glfw_CallbackBridge_nativeSetInputReady(jboolean ready) {
 
 JNIEXPORT void JNICALL
 Java_org_lwjgl_glfw_CallbackBridge_nativeSetGrabbing(JNIEnv *env, jclass cls, jboolean grab) {
+    (void)env;
     (void)cls;
     if (!pojav_environ) return;
     pojav_environ->isGrabbing = grab;
-    if (pojav_environ->bridgeClazz && pojav_environ->method_onGrabStateChanged && env) {
-        (*env)->CallStaticVoidMethod(
-            env, pojav_environ->bridgeClazz, pojav_environ->method_onGrabStateChanged, grab);
+
+    /* HotSpot calls this; UI reads ART's CallbackBridge.isGrabbing.
+     * Must notify ART — never call ART jclass with a HotSpot JNIEnv. */
+    JavaVM *dalvik = pojav_environ->dalvikJavaVMPtr;
+    if (!dalvik || !pojav_environ->bridgeClazz || !pojav_environ->method_onGrabStateChanged) {
+        return;
+    }
+    JNIEnv *artEnv = NULL;
+    int attached = 0;
+    jint rc = (*dalvik)->GetEnv(dalvik, (void **)&artEnv, JNI_VERSION_1_6);
+    if (rc == JNI_EDETACHED) {
+        if ((*dalvik)->AttachCurrentThread(dalvik, &artEnv, NULL) != 0 || !artEnv) {
+            LOGW("nativeSetGrabbing: AttachCurrentThread ART failed");
+            return;
+        }
+        attached = 1;
+    } else if (rc != JNI_OK || !artEnv) {
+        return;
+    }
+    (*artEnv)->CallStaticVoidMethod(
+        artEnv, pojav_environ->bridgeClazz, pojav_environ->method_onGrabStateChanged, grab);
+    if ((*artEnv)->ExceptionCheck(artEnv)) {
+        (*artEnv)->ExceptionDescribe(artEnv);
+        (*artEnv)->ExceptionClear(artEnv);
+    }
+    if (attached) {
+        (*dalvik)->DetachCurrentThread(dalvik);
     }
 }
 
@@ -100,7 +122,7 @@ Java_org_lwjgl_glfw_CallbackBridge_nativeClipboard(JNIEnv *env, jclass cls, jint
     return (*env)->NewStringUTF(env, "");
 }
 
-/* CriticalNative send_* — ART links JavaCritical_* by name; also RegisterNatives. */
+/* @CriticalNative entry points (JavaCritical_* + RegisterNatives). */
 JNIEXPORT void JNICALL
 Java_org_lwjgl_glfw_CallbackBridge_nativeSetUseInputStackQueue(JNIEnv *env, jclass cls, jboolean use) {
     (void)env; (void)cls;
@@ -314,7 +336,7 @@ Java_org_lwjgl_vulkan_VK_getFpsAddress(JNIEnv *env, jclass cls) {
     return 0;
 }
 
-/* Optional CriticalNative probe — keep FCL class name for transitional ART path. */
+/* Old ABI probe; package name is hardcoded in some load paths. */
 JNIEXPORT void JNICALL
 Java_com_tungsten_fclauncher_CriticalNativeTest_testCriticalNative(JNIEnv *env, jclass cls, jint a, jint b) {
     (void)env; (void)cls; (void)a; (void)b;
@@ -392,25 +414,26 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
     if ((*vm)->GetEnv(vm, (void **)&env, JNI_VERSION_1_6) != JNI_OK) {
         return JNI_VERSION_1_6;
     }
-    /* First load is usually ART; second is HotSpot. */
+    /* ART first, then HotSpot. */
     if (!pojav_environ->dalvikJavaVMPtr) {
         pojav_environ->dalvikJavaVMPtr = vm;
         pojav_environ->dalvikJNIEnvPtr_ANDROID = env;
         LOGI("JNI_OnLoad ART/dalvik");
+        /* Cache ART CallbackBridge only — HotSpot must not overwrite bridgeClazz. */
+        cache_bridge_methods(env);
     } else if (!pojav_environ->runtimeJavaVMPtr || pojav_environ->runtimeJavaVMPtr != vm) {
         pojav_environ->runtimeJavaVMPtr = vm;
         pojav_environ->runtimeJNIEnvPtr_JRE = env;
         LOGI("JNI_OnLoad HotSpot");
     }
-    cache_bridge_methods(env);
-    /* Bind whenever GLFW DirectByteBuffers exist (no-op on ART). */
+    /* HotSpot GLFW buffers are what the game polls — rebind on both VMs safely. */
     booxin_bind_glfw_input_buffers(env);
     critical_set_stackqueue(JNI_TRUE);
     pojav_environ->isInputReady = true;
     return JNI_VERSION_1_6;
 }
 
-/* Stubs kept for symbol parity with older launch paths. */
+/* Unused stubs some callers still dlsym. */
 void installEMUIIteratorMititgation(JNIEnv *env) { (void)env; }
 void installLwjglDlopenHook(JNIEnv *env) { (void)env; }
 void hookExec(JNIEnv *env) { (void)env; }

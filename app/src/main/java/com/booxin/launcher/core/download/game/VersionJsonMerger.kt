@@ -6,9 +6,9 @@ import org.json.JSONObject
 import java.io.File
 
 /**
- * Merges a mod-loader version JSON with its [inheritsFrom] chain (HMCL/FCL/PC launcher pattern).
+ * Merges a mod-loader version JSON with its [inheritsFrom] chain.
  *
- * FCL [Version.merge]: child libraries first, then parent; [Arguments.merge] concatenates
+ * Child libraries first, then parent; game/jvm argument lists concatenate
  * parent+child jvm/game argument lists (child must not replace parent game args).
  */
 object VersionJsonMerger {
@@ -96,10 +96,10 @@ object VersionJsonMerger {
 
         val mergedParent = mergeChain(parent, inheritName, visited)
 
-        // FCL Version.merge: Lang.merge(this.libraries, parent.libraries)
+        // Child libraries first, then parent.
         // = concatenate child then parent. NO group:artifact dedupe
         // (classifiers like forge:client vs forge:universal must both remain).
-        // Path duplicates are collapsed later via LinkedHashSet classpath (FCL getClasspath).
+        // Path duplicates are collapsed later via LinkedHashSet classpath.
         val mergedLibraries = JSONArray()
         appendAll(mergedLibraries, current.optJSONArray("libraries"))
         appendAll(mergedLibraries, mergedParent.optJSONArray("libraries"))
@@ -120,7 +120,7 @@ object VersionJsonMerger {
         return result
     }
 
-    /** FCL Arguments.merge: concatenate parent then child for game/jvm lists. */
+    /** Parent args, then child args. */
     private fun mergeArguments(parent: JSONObject?, child: JSONObject?): JSONObject? {
         if (parent == null) return child?.let { JSONObject(it.toString()) }
         if (child == null) return JSONObject(parent.toString())
