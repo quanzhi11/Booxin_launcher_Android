@@ -27,7 +27,7 @@ class VanillaGameInstaller(
 ) {
 
     private val mutex = Mutex()
-    /** Separate from [mutex] so launch-time asset repair never blocks / deadlocks install. */
+    /** 与安装锁分开，避免启动补资源死锁。 */
     private val assetsMutex = Mutex()
     private val _progress = MutableStateFlow<GameInstallProgress?>(null)
     val progress: StateFlow<GameInstallProgress?> = _progress.asStateFlow()
@@ -81,7 +81,7 @@ class VanillaGameInstaller(
                     )
                 }
                 val objects = GameJsonParser.parseAssetIndex(indexFile.readText())
-                // Existence only — size/SHA mismatches are rare and full rescans blocked launch.
+                // 只检查存在；完整校验会拖慢启动。
                 val missing = objects.filter { obj ->
                     val file = File(LauncherPaths.assetsDir, "objects/${obj.hashPath}")
                     !file.isFile || file.length() <= 0L
@@ -266,19 +266,27 @@ class VanillaGameInstaller(
         val candidates = urlCandidates ?: DownloadProviders.current().candidateUrls(rawUrl)
         if (candidates.isEmpty()) error("缺少下载地址: $rawUrl")
 
-        // Pass the full candidate list so non-final hosts fail fast (short timeout).
+        // 客户端大 jar 可多分片；库/资源不开。
+        val accelerate = phase == GameInstallPhase.CLIENT
+
+        // 整表候选源；非末位短超时。
         var remaining = candidates
         var lastError: Throwable? = null
         while (remaining.isNotEmpty()) {
-            val result = downloader.download(remaining, destination) { downloaded, total ->
-                _progress.value = GameInstallProgress(
-                    versionId = versionId,
-                    phase = phase,
-                    message = message,
-                    downloadedBytes = downloaded,
-                    totalBytes = total
-                )
-            }
+            val result = downloader.download(
+                remaining,
+                destination,
+                onProgress = { downloaded, total ->
+                    _progress.value = GameInstallProgress(
+                        versionId = versionId,
+                        phase = phase,
+                        message = message,
+                        downloadedBytes = downloaded,
+                        totalBytes = total
+                    )
+                },
+                accelerate = accelerate
+            )
             if (result.isFailure) {
                 throw result.exceptionOrNull() ?: IOException("下载失败: $rawUrl")
             }

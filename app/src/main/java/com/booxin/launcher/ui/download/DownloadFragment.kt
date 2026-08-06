@@ -518,8 +518,7 @@ class DownloadFragment : Fragment() {
                 b.progressPanel.isVisible = true
                 b.textProgress.text = getString(R.string.download_installing)
 
-                // Download page must run the real install pipeline — prepare()/ensureVersionReady
-                // short-circuits when files already look present and shows a fake "done".
+                // 下载页走完整安装，避免误判「已完成」。
                 val alreadyInstalled = AppContainer.repository.installedVersions.value
                     .any { it.id == version.id } || version.installed
                 AppContainer.javaEnvironment.ensureForMinecraft(version.id).getOrElse {

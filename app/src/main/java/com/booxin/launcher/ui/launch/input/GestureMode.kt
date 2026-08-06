@@ -1,15 +1,10 @@
 package com.booxin.launcher.ui.launch.input
 
-/**
- * In-world (grabbed) screen-tap mode.
- *
- * BUILD: short tap / light touch = right click (place / use). No long-press.
- * FIGHT: short tap / light touch = left click (attack). No long-press.
- * Dragging the finger always looks around and does not click.
- */
+/** 抓取视角时：BUILD 右键 / FIGHT 左键 / COMBINED 看准星与手持。 */
 enum class GestureMode {
     BUILD,
-    FIGHT;
+    FIGHT,
+    COMBINED;
 
     companion object {
         fun fromName(name: String?, fallback: GestureMode = BUILD): GestureMode =

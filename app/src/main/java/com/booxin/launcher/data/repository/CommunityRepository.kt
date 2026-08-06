@@ -56,7 +56,7 @@ class CommunityRepository(
     }
 
     /**
-     * Prefer versions matching installed MC versions (smaller Modrinth payload).
+     * 优先匹配已安装 MC 版本。
      * Falls back to unfiltered if the filtered list is empty.
      */
     suspend fun getProjectVersions(projectId: String): Result<List<ModrinthProjectVersion>> {

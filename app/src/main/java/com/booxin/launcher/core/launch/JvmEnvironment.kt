@@ -77,10 +77,10 @@ object JvmEnvironment {
     }
 
     /**
-     * GLES translator is loaded by LWJGL via libname — do not early-dlopen here.
+     * GLES 翻译库由 LWJGL libname 加载，这里不要提前 dlopen。
      */
     fun loadGraphicsLibrary(stagedNatives: String) {
-        // MobileGlues constructors fight ART; gl4es may be disguised. Leave to LWJGL.
+        // MobileGlues 构造别在 ART 侧提前加载，交给 LWJGL。
         return
     }
 
@@ -88,7 +88,7 @@ object JvmEnvironment {
         val candidates = linkedSetOf<String>()
         // Load in dependency order: jli → jvm → core JDK libs → extras
         findLibrary(javaHome, "libjli.so")?.let { candidates += it.absolutePath }
-        // Prefer server/libjvm.so, then client/libjvm.so
+        // 优先 server/libjvm.so
         listOf("server", "client", "").forEach { sub ->
             val dir = if (sub.isEmpty()) jvmLibDir else File(jvmLibDir.parentFile ?: javaHome, sub)
             File(dir, "libjvm.so").takeIf { it.isFile }?.let { candidates += it.absolutePath }
@@ -112,7 +112,7 @@ object JvmEnvironment {
             findLibrary(javaHome, name)?.let { candidates += it.absolutePath }
         }
         // Exec bridge is loaded via ExecBridgeLoader (single staged copy).
-        // Don't preload LWJGL — Forge 1.21+ module layer loads it itself.
+        // 不要预加载 LWJGL，Forge 1.21+ 自己加载。
         listOf("libc++_shared.so").forEach { name ->
             File(nativeLibDir, name).takeIf { it.isFile }?.let { candidates += it.absolutePath }
         }

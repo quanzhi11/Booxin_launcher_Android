@@ -90,8 +90,7 @@ class HomeFragment : Fragment() {
                 selected = true
             )
         val joiningRoom = AppContainer.multiplayerAuth.activeLobby.value != null
-        // Offline guests are supported (same as PC). Host LAN must allow offline
-        // (online-mode=false / 关闭正版验证); otherwise Minecraft shows「无效会话」.
+        // 离线进房可以；主机需关正版验证，否则会「无效会话」。
         if (joiningRoom && account.type == AccountType.OFFLINE) {
             Toast.makeText(
                 requireContext(),

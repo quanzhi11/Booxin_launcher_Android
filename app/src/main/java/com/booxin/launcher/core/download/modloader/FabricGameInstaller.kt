@@ -21,7 +21,7 @@ import org.json.JSONObject
 import java.io.File
 
 /**
- * Fabric install via fabric-meta profile JSON — no installer.jar.
+ * Fabric 安装（fabric-meta JSON，无 installer.jar）。
  */
 class FabricGameInstaller(
     private val vanillaInstaller: VanillaGameInstaller = VanillaGameInstaller(),
@@ -41,7 +41,7 @@ class FabricGameInstaller(
     val progress: StateFlow<GameInstallProgress?> = _progress.asStateFlow()
 
     fun isInstalled(versionId: String): Boolean {
-        // Pure Mojang ids (1.21.11) are never Fabric profiles — even if a stub json has inheritsFrom.
+        // 纯原版 id 不是 Fabric profile。
         if (!versionId.contains('-') && !versionId.contains('_')) return false
         VersionJsonMerger.resolveInheritsFrom(versionId) ?: return false
         VersionJsonMerger.versionJsonFile(versionId) ?: return false

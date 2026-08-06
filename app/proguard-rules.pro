@@ -19,6 +19,10 @@
 # LWJGL / bridge may reflect on these
 -keep class org.lwjgl.** { *; }
 
+# Official zlib SDL Android Java — JNI_OnLoad FindClass by string name.
+-keep class org.libsdl.app.** { *; }
+-keepclassmembers class org.libsdl.app.** { *; }
+
 # App entry / multi-process
 -keep class com.booxin.launcher.BooxinApp { *; }
 -keep class com.booxin.launcher.ui.launch.LaunchActivity { *; }

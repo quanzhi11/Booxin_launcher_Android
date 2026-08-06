@@ -60,7 +60,7 @@ class BmclApiDownloadProvider(
             "https://launcher.mojang.com" to DEFAULT_API_ROOT,
             "https://libraries.minecraft.net" to "$DEFAULT_API_ROOT/libraries",
             "https://resources.download.minecraft.net" to "$DEFAULT_API_ROOT/assets",
-            // Forge installer processor deps (asm / trove / fml*) — official Maven often 403 in CN.
+            // Forge 处理器依赖国内官方 Maven 常 403。
             "https://maven.minecraftforge.net" to "$DEFAULT_API_ROOT/maven",
             "https://files.minecraftforge.net/maven" to "$DEFAULT_API_ROOT/maven",
             // NeoForge libs / installer artifacts.
@@ -69,7 +69,7 @@ class BmclApiDownloadProvider(
             // Fabric loader / intermediary / mixin (profile libraries use this base).
             "https://maven.fabricmc.net/" to "$DEFAULT_API_ROOT/maven/",
             "https://maven.fabricmc.net" to "$DEFAULT_API_ROOT/maven",
-            // Quilt Maven (some artifacts 404 on BMCL — Cascade still falls back to official).
+            // Quilt Maven；BMCL 缺货时回退官方。
             "https://maven.quiltmc.org/repository/release/" to "$DEFAULT_API_ROOT/maven/",
             "https://maven.quiltmc.org/repository/release" to "$DEFAULT_API_ROOT/maven",
             "https://maven.quiltmc.org/repository/snapshot/" to "$DEFAULT_API_ROOT/maven/",

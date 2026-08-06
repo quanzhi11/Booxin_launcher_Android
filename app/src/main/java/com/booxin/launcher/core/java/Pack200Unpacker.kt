@@ -11,7 +11,7 @@ import java.util.jar.Pack200
 /**
  * Unpacks Java 8 pack200 `.jar.pack` files.
  *
- * Prefer in-process [Pack200.Unpacker] (no native binary in the APK).
+ * 优先进程内 Pack200（APK 无原生 unpacker）。
  * Fall back to JRE's `bin/unpack200` via `/system/bin/linker64` because
  * Android 10+ SELinux blocks direct exec from app data.
  */

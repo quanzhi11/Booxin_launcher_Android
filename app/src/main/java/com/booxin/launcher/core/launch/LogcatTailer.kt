@@ -23,7 +23,7 @@ class LogcatTailer(
             val pid = android.os.Process.myPid()
             val verbose = RealtimeLaunchLog.isEnabled()
             val cmd = if (verbose) {
-                // Full process stream — only while user opted into realtime capture.
+                // 仅在开启实时日志时拉全量。
                 listOf(
                     "logcat",
                     "--pid=$pid",

@@ -10,9 +10,19 @@
 
 内置仅打包 GL4ES / MobileGlues；其余五个从 GitHub Releases 下载 FCL/Zalith 兼容插件 APK 并解压 `.so`。
 
+## Windowing (Minecraft 26.3+)
+
+| Library | File | Upstream | License | Closed-source |
+|---------|------|----------|---------|---------------|
+| SDL3 | `libSDL3.so` | [libsdl-org/SDL](https://github.com/libsdl-org/SDL) official Android AAR | **zlib** | 可闭源商用；保留 `assets/licenses/SDL3_LICENSE.txt` |
+| LWJGL SDL bindings | `lwjgl-sdl.jar` + 游戏 libraries | [LWJGL](https://www.lwjgl.org) Maven `org.lwjgl:lwjgl-sdl` | **BSD-3** | 可闭源；内置 `assets/app_runtime/lwjgl/lwjgl-sdl.jar`，NOTICE 见 `assets/licenses/LWJGL_SDL_LICENSE.txt` |
+
+**不要**从 FoldCraft / Pojav / Amethyst APK 抽取 SDL（其启动器壳常为 GPL）。官方 SDL3 Android 包与 LWJGL Maven 工件可单独用于闭源发行。LWJGL 3.4 的 SDL 模块直接加载 `libSDL3.so`，无需另打 `liblwjgl_sdl.so`。
+
 ## 去 Pojav 壳策略
 
 1. 渲染选型只通过 `RendererBackend` / `GlRendererKind`（Booxin API）；设置项可覆盖为手动选择。
 2. `LaunchCommandBuilder` 经 `RuntimeEnv` 写出 `BOOXIN_RENDERER`，并镜像旧 `POJAV_RENDERER` 供过渡 native 读取。
 3. 自研 bridge 就绪后：直接 `dlopen` 翻译库，删除对 `libpojavexec` 渲染初始化路径的依赖。
 4. Sodium 等「检测 Pojav」：短期仍可用 Podium；长期用自有 runtime 指纹，避免被识别为 Pojav。
+5. 26.3+：`BOOXIN_WINDOWING=sdl`，跳过 GLFW preinit；`org.lwjgl.sdl.libname` 指向内置 zlib `libSDL3.so`。

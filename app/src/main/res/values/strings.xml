@@ -47,10 +47,13 @@
     <string name="control_menu_edit">自定义布局</string>
     <string name="control_menu_gesture_build">建造模式（点按=右键）</string>
     <string name="control_menu_gesture_fight">战斗模式（点按=左键）</string>
+    <string name="control_menu_gesture_combined">综合模式（方块：点放/长挖）</string>
     <string name="control_menu_gesture_build_current">✓ 建造模式（点按=右键）</string>
     <string name="control_menu_gesture_fight_current">✓ 战斗模式（点按=左键）</string>
+    <string name="control_menu_gesture_combined_current">✓ 综合模式（方块：点放/长挖）</string>
     <string name="control_toast_gesture_build">已切换：建造模式（点按屏幕=右键）</string>
     <string name="control_toast_gesture_fight">已切换：战斗模式（点按屏幕=左键）</string>
+    <string name="control_toast_gesture_combined">已切换：综合模式（点按放置，长按挖掘；对准生物攻击）</string>
     <string name="control_floating_ball_build">建</string>
     <string name="control_floating_ball_fight">战</string>
     <string name="control_menu_hide">隐藏按键</string>
@@ -103,21 +106,27 @@
     <string name="version_manage_title">版本管理</string>
     <string name="version_manage_tab_details">版本详情</string>
     <string name="version_manage_tab_mods">模组列表</string>
+    <string name="version_manage_tab_resourcepacks">资源包管理</string>
     <string name="version_manage_base_version">基础 Minecraft 版本</string>
     <string name="version_manage_loader_type">版本类型</string>
     <string name="version_manage_json_type">version.json 类型</string>
     <string name="version_manage_version_path">版本目录</string>
     <string name="version_manage_mods_path">模组目录</string>
+    <string name="version_manage_resourcepacks_path">资源包目录</string>
     <string name="version_manage_loader_vanilla">原版</string>
     <string name="version_manage_loader_modded">模组加载器版本</string>
     <string name="version_manage_vanilla_no_mods">该版本无法下载模组</string>
     <string name="version_manage_mods_empty">当前没有已安装模组</string>
+    <string name="version_manage_packs_empty">当前没有已安装资源包</string>
     <string name="version_manage_download_url">URL 下载</string>
     <string name="version_manage_download_url_title">从 URL 下载模组</string>
     <string name="version_manage_download_url_hint">粘贴模组直链（http/https，.jar）</string>
+    <string name="version_manage_download_pack_url_title">从 URL 下载资源包</string>
+    <string name="version_manage_download_pack_url_hint">粘贴资源包直链（http/https，.zip）</string>
     <string name="version_manage_download_url_start">开始下载</string>
     <string name="version_manage_download_url_invalid">请输入有效的 http/https 链接</string>
     <string name="version_manage_download_url_progress">正在下载模组…</string>
+    <string name="version_manage_download_pack_url_progress">正在下载资源包…</string>
     <string name="version_manage_download_url_done">已下载：%1$s</string>
     <string name="version_manage_download_url_failed">下载失败：%1$s</string>
     <string name="version_manage_mod_enabled">已启用</string>
@@ -128,6 +137,14 @@
     <string name="version_manage_mod_uninstall_confirm">确定卸载 %1$s？</string>
     <string name="version_manage_mod_uninstalled">模组已卸载</string>
     <string name="version_manage_mod_toggled">模组状态已更新</string>
+    <string name="version_manage_pack_enabled">已启用</string>
+    <string name="version_manage_pack_disabled">已禁用</string>
+    <string name="version_manage_pack_disable">禁用</string>
+    <string name="version_manage_pack_enable">启用</string>
+    <string name="version_manage_pack_uninstall">删除</string>
+    <string name="version_manage_pack_uninstall_confirm">确定删除资源包 %1$s？</string>
+    <string name="version_manage_pack_uninstalled">资源包已删除</string>
+    <string name="version_manage_pack_toggled">资源包状态已更新</string>
     <string name="version_manage_action_failed">操作失败：%1$s</string>
     <string name="version_manage_unknown">未知</string>
 

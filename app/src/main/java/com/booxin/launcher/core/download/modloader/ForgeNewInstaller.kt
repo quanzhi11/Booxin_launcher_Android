@@ -202,7 +202,7 @@ object ForgeNewInstaller {
         if (!mcJar.isFile) error("缺少基础版本 client.jar: $mcVersion")
         vars["SIDE"] = "client"
         vars["MINECRAFT_JAR"] = mcJar.absolutePath
-        // Must be the MC version id (e.g. "1.20.1"), never the jar path.
+        // 必须是 MC 版本 id，不能是 jar 路径。
         vars["MINECRAFT_VERSION"] = mcVersion
         vars["ROOT"] = LauncherPaths.rootDir.absolutePath
         vars["INSTALLER"] = installerJar.absolutePath

@@ -19,7 +19,7 @@ import java.net.Socket
 import java.nio.charset.StandardCharsets
 
 /**
- * Scaffolding control-plane client — matches PC ScaffoldingClient protocol
+ * Scaffolding 控制面客户端（对齐 PC 协议）
  * (player_ping heartbeat + player_profiles_list).
  */
 class ScaffoldingClient(

@@ -275,10 +275,50 @@ public class CallbackBridge {
         return isGrabbing;
     }
 
+    /**
+     * HotSpot reflection: HitResult type (0 unknown, 1 miss, 2 block, 3 entity).
+     * Safe to call from the UI thread; returns UNKNOWN if the game is not ready.
+     */
+    public static int queryHitResultType() {
+        try {
+            return nativeQueryHitResultType();
+        } catch (UnsatisfiedLinkError e) {
+            if (!queryLinkWarned) {
+                queryLinkWarned = true;
+                Log.e(TAG, "nativeQueryHitResultType missing — rebuild/refresh libbooxin_bridge", e);
+            }
+            return 0;
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    /**
+     * HotSpot reflection: main-hand kind
+     * (0 unknown, 1 empty, 2 block, 3 weapon, 4 other).
+     */
+    public static int queryHeldItemKind() {
+        try {
+            return nativeQueryHeldItemKind();
+        } catch (UnsatisfiedLinkError e) {
+            if (!queryLinkWarned) {
+                queryLinkWarned = true;
+                Log.e(TAG, "nativeQueryHeldItemKind missing — rebuild/refresh libbooxin_bridge", e);
+            }
+            return 0;
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    private static volatile boolean queryLinkWarned;
+
     public static native void nativeSendData(boolean isAndroid, int type, String data);
     public static native boolean nativeSetInputReady(boolean ready);
     public static native String nativeClipboard(int action, byte[] copy);
     public static native void nativeSetGrabbing(boolean grab);
+    public static native int nativeQueryHitResultType();
+    public static native int nativeQueryHeldItemKind();
 
     // @CriticalNative: wrong ABI = broken touch. Keep private.
     @CriticalNative

@@ -15,6 +15,8 @@ object NativeJvmLauncher {
 
     fun setupBridgeWindow(surface: Surface): Boolean = nativeSetupBridgeWindow(surface)
 
+    fun clearBridgeWindow() = nativeClearBridgeWindow()
+
     fun initializeHooks(): Boolean = nativeInitializeHooks()
 
     fun launchJvm(args: Array<String>, majorVersion: Int): Int {
@@ -23,7 +25,6 @@ object NativeJvmLauncher {
         return nativeLaunchJvm(args, full, dot)
     }
 
-    /** Forge processors etc. — no game input/GLFW hooks. */
     fun launchToolJvm(args: Array<String>): Int = nativeLaunchToolJvm(args)
 
     fun chdir(path: String): Boolean = nativeChdir(path)
@@ -46,6 +47,8 @@ object NativeJvmLauncher {
     private external fun nativeDlopen(absolutePath: String): Boolean
 
     private external fun nativeSetupBridgeWindow(surface: Surface): Boolean
+
+    private external fun nativeClearBridgeWindow()
 
     private external fun nativeInitializeHooks(): Boolean
 

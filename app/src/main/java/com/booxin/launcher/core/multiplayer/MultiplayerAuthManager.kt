@@ -39,8 +39,17 @@ class MultiplayerAuthManager(
         _session.value ?: error("未登录联机账号")
 
     private fun remember(session: BooxinAuthSession) {
+        // StateFlow skips equal values; still guard against churn from volatile fields.
+        val cur = _session.value
+        if (cur == session) return
         store.save(session)
         _session.value = session
+    }
+
+    private fun rememberUser(user: BooxinUser) {
+        val session = _session.value ?: return
+        if (session.user == user) return
+        remember(session.copy(user = user))
     }
 
     suspend fun login(username: String, password: String): Result<BooxinAuthSession> {
@@ -76,7 +85,7 @@ class MultiplayerAuthManager(
         val session = _session.value
             ?: return Result.failure(IllegalStateException("未登录联机账号"))
         val result = api.fetchMe(session)
-        result.onSuccess { remember(session.copy(user = it)) }
+        result.onSuccess { rememberUser(it) }
         return result
     }
 
@@ -106,9 +115,20 @@ class MultiplayerAuthManager(
     suspend fun dismissInvite(inviteId: String) =
         runCatching { api.dismissInvite(requireSession(), inviteId).getOrThrow() }
 
-    suspend fun bumpPresence(isInRoom: Boolean = false, roomCode: String? = null) =
+    @Volatile
+    private var lastPresenceAtMs = 0L
+
+    suspend fun bumpPresence(
+        isInRoom: Boolean = false,
+        roomCode: String? = null,
+        force: Boolean = false
+    ) =
         runCatching {
+            val now = System.currentTimeMillis()
+            // Server rate-limits /friends/presence; keep online heartbeats ≥30s apart.
+            if (!force && now - lastPresenceAtMs < 30_000L) return@runCatching
             api.updatePresence(requireSession(), isInRoom = isInRoom, roomCode = roomCode).getOrThrow()
+            lastPresenceAtMs = now
         }
 
     suspend fun listConversations() =
@@ -129,7 +149,7 @@ class MultiplayerAuthManager(
     suspend fun updateSignature(signature: String): Result<BooxinUser> {
         val session = requireSession()
         val result = api.updateSignature(session, signature)
-        result.onSuccess { remember(session.copy(user = it)) }
+        result.onSuccess { rememberUser(it) }
         return result
     }
 
@@ -142,28 +162,28 @@ class MultiplayerAuthManager(
     suspend fun verifyBindEmail(email: String, code: String): Result<BooxinUser> {
         val session = requireSession()
         val result = api.verifyBindEmail(session, email, code)
-        result.onSuccess { remember(session.copy(user = it)) }
+        result.onSuccess { rememberUser(it) }
         return result
     }
 
     suspend fun unbindEmail(): Result<BooxinUser> {
         val session = requireSession()
         val result = api.unbindEmail(session)
-        result.onSuccess { remember(session.copy(user = it)) }
+        result.onSuccess { rememberUser(it) }
         return result
     }
 
     suspend fun uploadAvatar(bytes: ByteArray, mime: String): Result<BooxinUser> {
         val session = requireSession()
         val result = api.uploadAvatar(session, bytes, mime)
-        result.onSuccess { remember(session.copy(user = it)) }
+        result.onSuccess { rememberUser(it) }
         return result
     }
 
     suspend fun deleteAvatar(): Result<BooxinUser> {
         val session = requireSession()
         val result = api.deleteAvatar(session)
-        result.onSuccess { remember(session.copy(user = it)) }
+        result.onSuccess { rememberUser(it) }
         return result
     }
 
@@ -231,7 +251,7 @@ class MultiplayerAuthManager(
             DiagEventLog.i("MultiplayerAuth", "scaffolding playerName=$playerName")
             val result = coordinator.join(rawCode.trim(), playerName)
             roomApi.joinRoom(session, result.lobby.roomCode, playerName)
-            bumpPresence(isInRoom = true, roomCode = result.lobby.roomCode)
+            bumpPresence(isInRoom = true, roomCode = result.lobby.roomCode, force = true)
             _activeLobby.value = result.lobby
             _directConnect.value = result.directConnectAddress
             _roomMembers.value = result.members
@@ -258,7 +278,7 @@ class MultiplayerAuthManager(
         joinCoordinator?.leave()
         joinCoordinator = null
         EasyTierSessionHolder.stop()
-        bumpPresence(isInRoom = false, roomCode = null)
+        bumpPresence(isInRoom = false, roomCode = null, force = true)
         _activeLobby.value = null
         _directConnect.value = null
         _roomMembers.value = emptyList()

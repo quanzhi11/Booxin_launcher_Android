@@ -35,7 +35,14 @@ class GameProcessRunner(
             }
         }
 
-    suspend fun start(command: LaunchCommand, java: InstalledJavaRuntime): Result<Int> = withContext(Dispatchers.IO) {
+    /**
+     * @param applyEnvironment false 表示调用方已配好环境，不再重复 preload。
+     */
+    suspend fun start(
+        command: LaunchCommand,
+        java: InstalledJavaRuntime,
+        applyEnvironment: Boolean = true
+    ): Result<Int> = withContext(Dispatchers.IO) {
         runCatching {
             stop()
             running = true
@@ -45,7 +52,9 @@ class GameProcessRunner(
             emit("clientJarHint=${command.jvmArgs.firstOrNull { it.startsWith("-Dminecraft.client.jar=") } ?: command.jvmArgs.firstOrNull { it.startsWith("-Dfabric.gameJarPath=") } ?: "MISSING"}")
 
             val backend = GameRuntimeBackends.current()
-            backend.applyJvmEnvironment(context, java, command.env)
+            if (applyEnvironment) {
+                backend.applyJvmEnvironment(context, java, command.env)
+            }
             if (!NativeJvmLauncher.chdir(command.workingDir.absolutePath)) {
                 emit("警告: 无法切换工作目录到 ${command.workingDir.absolutePath}")
             }

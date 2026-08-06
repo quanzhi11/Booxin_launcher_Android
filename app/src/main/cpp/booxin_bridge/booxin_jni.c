@@ -406,6 +406,22 @@ void booxin_bind_glfw_input_buffers(JNIEnv *env) {
     (*env)->DeleteLocalRef(env, glfwCls);
 }
 
+/* Published by HotSpot pump thread; ART only reads these. */
+int booxinGetHitResultType(void);
+int booxinGetHeldItemKind(void);
+
+JNIEXPORT jint JNICALL
+Java_org_lwjgl_glfw_CallbackBridge_nativeQueryHitResultType(JNIEnv *env, jclass cls) {
+    (void)env; (void)cls;
+    return (jint)booxinGetHitResultType();
+}
+
+JNIEXPORT jint JNICALL
+Java_org_lwjgl_glfw_CallbackBridge_nativeQueryHeldItemKind(JNIEnv *env, jclass cls) {
+    (void)env; (void)cls;
+    return (jint)booxinGetHeldItemKind();
+}
+
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
     (void)reserved;
     g_vm = vm;

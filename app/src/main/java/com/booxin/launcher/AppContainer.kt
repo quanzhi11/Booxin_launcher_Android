@@ -11,7 +11,7 @@ import com.booxin.launcher.core.multiplayer.MultiplayerSessionStore
 import com.booxin.launcher.data.repository.LauncherRepository
 
 /**
- * Simple process-wide service locator for the scaffold.
+ * 进程内服务定位。
  * Replace with Hilt/Koin when the project grows.
  */
 object AppContainer {

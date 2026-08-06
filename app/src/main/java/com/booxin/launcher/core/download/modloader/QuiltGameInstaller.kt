@@ -21,7 +21,7 @@ import org.json.JSONObject
 import java.io.File
 
 /**
- * Quilt install via quilt-meta profile JSON (same shape as Fabric) — no installer.jar.
+ * Quilt 安装（quilt-meta JSON，无 installer.jar）。
  */
 class QuiltGameInstaller(
     private val vanillaInstaller: VanillaGameInstaller = VanillaGameInstaller(),

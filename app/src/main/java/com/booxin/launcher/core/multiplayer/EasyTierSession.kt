@@ -247,7 +247,7 @@ class EasyTierSession private constructor(
     }
 
     /**
-     * Wait until CLI can talk to core. TCP accept alone is insufficient — the
+     * 等到 CLI 能连上 core；仅 TCP accept 不够 —
      * WebClient/PeerManager services register slightly later, which is what
      * produces "failed to get manage client" on slow phones.
      */

@@ -44,7 +44,7 @@ class LauncherRepository(
     private val _remoteVersions = MutableStateFlow<List<GameVersion>>(emptyList())
     val remoteVersions: StateFlow<List<GameVersion>> = _remoteVersions.asStateFlow()
 
-    /** @deprecated Prefer [remoteVersions] / [installedVersions]. Kept for callers. */
+    /** @deprecated 请用 [remoteVersions] / [installedVersions]。 */
     val versions: StateFlow<List<GameVersion>> = _remoteVersions.asStateFlow()
 
     private val _installedVersions = MutableStateFlow<List<GameVersion>>(emptyList())
@@ -162,7 +162,7 @@ class LauncherRepository(
      * Ensure a version is ready to launch. Loader wrappers are never fed to the
      * vanilla installer (their ids are not Mojang versions).
      *
-     * Incomplete profiles that only have `inheritsFrom` must not count as ready —
+     * 只有 inheritsFrom 的残缺 profile 不算已就绪 —
      * that previously made taps on the download page report "安装完成" with no work.
      */
     suspend fun ensureVersionReady(versionId: String): Result<Unit> {
@@ -189,7 +189,7 @@ class LauncherRepository(
 
     /**
      * Resolve vanilla/parent id and download any missing asset objects.
-     * Must succeed before starting the HotSpot JVM — incomplete assets crash at TextureManager.
+     * 启动前必须补全资源，否则 TextureManager 会崩。
      */
     suspend fun ensureGameAssets(versionId: String): Result<Unit> {
         val id = VersionJsonMerger.resolveMinecraftVersionId(versionId)
@@ -229,7 +229,7 @@ class LauncherRepository(
         )
         if (result.isSuccess) {
             val versionId = result.getOrThrow()
-            // Forge/NeoForge vanilla base is a dependency only — do not list it as a separate version.
+            // Forge/NeoForge 的原版基座不当成独立版本列出。
             markExplicitVersion(versionId)
             refreshInstalledVersions()
             selectVersion(versionId)

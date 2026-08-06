@@ -3,7 +3,7 @@ package com.booxin.launcher.core.multiplayer
 import java.security.SecureRandom
 
 /**
- * Terracotta (陶瓦) room-code codec — port of PC TerracottaRoomCode.
+ * 陶瓦房间码编解码（移植自 PC）。
  */
 object TerracottaRoomCode {
     private const val BASE_CHARS = "0123456789ABCDEFGHJKLMNPQRSTUVWXYZ"

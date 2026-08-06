@@ -26,7 +26,7 @@ class ForgeVersionClient {
         }
     }
 
-    /** BMCL /forge/download?installer=true often 404s — use Maven paths. */
+    /** BMCL installer 下载常 404，改走 Maven。 */
     fun installerUrls(mcVersion: String, loaderVersion: String): List<String> {
         val coordinate = "$mcVersion-$loaderVersion"
         val artifact = "forge-$coordinate-installer.jar"

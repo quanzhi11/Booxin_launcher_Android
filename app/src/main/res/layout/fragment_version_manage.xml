@@ -67,6 +67,11 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="@string/version_manage_tab_mods" />
+
+        <com.google.android.material.tabs.TabItem
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/version_manage_tab_resourcepacks" />
     </com.google.android.material.tabs.TabLayout>
 
     <LinearLayout
@@ -155,9 +160,25 @@
             android:id="@+id/textModsPath"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:layout_marginBottom="10dp"
             android:textColor="@color/booxin_navy"
             android:textSize="12sp"
             tools:text="/data/data/.../versions/1.21.1-forge-xxx/mods" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/version_manage_resourcepacks_path"
+            android:textColor="@color/md_theme_light_outline"
+            android:textSize="12sp" />
+
+        <TextView
+            android:id="@+id/textResourcePacksPath"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="@color/booxin_navy"
+            android:textSize="12sp"
+            tools:text="/data/data/.../versions/1.21.1/resourcepacks" />
     </LinearLayout>
 
     <androidx.constraintlayout.widget.ConstraintLayout
@@ -216,6 +237,53 @@
             app:layout_constraintEnd_toEndOf="@id/recyclerMods"
             app:layout_constraintStart_toStartOf="@id/recyclerMods"
             app:layout_constraintTop_toTopOf="@id/recyclerMods"
+            tools:visibility="visible" />
+    </androidx.constraintlayout.widget.ConstraintLayout>
+
+    <androidx.constraintlayout.widget.ConstraintLayout
+        android:id="@+id/panelResourcePacks"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:layout_marginTop="8dp"
+        android:visibility="gone"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/tabManage">
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/buttonDownloadPackUrl"
+            style="@style/Widget.Booxin.SecondaryButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:text="@string/version_manage_download_url"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toTopOf="parent" />
+
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/recyclerResourcePacks"
+            android:layout_width="0dp"
+            android:layout_height="0dp"
+            android:layout_marginTop="8dp"
+            android:clipToPadding="false"
+            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@id/buttonDownloadPackUrl"
+            tools:listitem="@layout/item_version_mod" />
+
+        <TextView
+            android:id="@+id/textPacksEmpty"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/version_manage_packs_empty"
+            android:textColor="@color/md_theme_light_outline"
+            android:visibility="gone"
+            app:layout_constraintBottom_toBottomOf="@id/recyclerResourcePacks"
+            app:layout_constraintEnd_toEndOf="@id/recyclerResourcePacks"
+            app:layout_constraintStart_toStartOf="@id/recyclerResourcePacks"
+            app:layout_constraintTop_toTopOf="@id/recyclerResourcePacks"
             tools:visibility="visible" />
     </androidx.constraintlayout.widget.ConstraintLayout>
 

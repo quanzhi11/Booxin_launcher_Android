@@ -13,23 +13,15 @@ import java.util.Date
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 
-/**
- * Cross-process log bridge: [GameLaunchService] (:game) broadcasts lines,
- * [LaunchActivity] (main / :game UI) receives them.
- *
- * Always appends to [latestLogFile] so diagnostics exported from the main
- * process can include :game launch failures.
- *
- * After the loading overlay hides, [muteUi] stops Binder spam — mirroring every
- * Minecraft log line onto the UI thread was the main cause of touch lag / heat.
- */
+/** :game 启动日志广播；同时写入 latest-launch.log。 */
 object GameLaunchLogBus {
     const val ACTION_LOG = "com.booxin.launcher.LOG_LINE"
     const val ACTION_FINISHED = "com.booxin.launcher.LOG_FINISHED"
+    const val ACTION_FAILED = "com.booxin.launcher.LOG_FAILED"
     const val ACTION_MUTE_UI = "com.booxin.launcher.LOG_MUTE_UI"
     const val EXTRA_LINE = "line"
+    const val EXTRA_REASON = "reason"
 
-    /** Process-local (:game). Cleared on each new launch. */
     val muteUi: AtomicBoolean = AtomicBoolean(false)
 
     private val writeLock = Any()
@@ -66,6 +58,17 @@ object GameLaunchLogBus {
         context.sendBroadcast(
             Intent(ACTION_FINISHED).apply {
                 setPackage(context.packageName)
+            }
+        )
+    }
+
+    fun emitFailed(context: Context, reason: String) {
+        appendToFile("=== launch failed: $reason ===")
+        context.sendBroadcast(
+            Intent(ACTION_FAILED).apply {
+                setPackage(context.packageName)
+                putExtra(EXTRA_REASON, reason)
+                putExtra(EXTRA_LINE, "启动失败: $reason")
             }
         )
     }
@@ -111,13 +114,19 @@ object GameLaunchLogBus {
     fun register(
         context: Context,
         onLine: (String) -> Unit,
-        onFinished: () -> Unit
+        onFinished: () -> Unit,
+        onFailed: ((String) -> Unit)? = null
     ): BroadcastReceiver {
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(ctx: Context?, intent: Intent?) {
                 when (intent?.action) {
                     ACTION_LOG -> onLine(intent.getStringExtra(EXTRA_LINE).orEmpty())
                     ACTION_FINISHED -> onFinished()
+                    ACTION_FAILED -> {
+                        val reason = intent.getStringExtra(EXTRA_REASON).orEmpty()
+                        intent.getStringExtra(EXTRA_LINE)?.takeIf { it.isNotBlank() }?.let(onLine)
+                        onFailed?.invoke(reason.ifBlank { "unknown" })
+                    }
                     ACTION_MUTE_UI -> muteUi.set(true)
                 }
             }
@@ -128,6 +137,7 @@ object GameLaunchLogBus {
             IntentFilter().apply {
                 addAction(ACTION_LOG)
                 addAction(ACTION_FINISHED)
+                addAction(ACTION_FAILED)
                 addAction(ACTION_MUTE_UI)
             },
             ContextCompat.RECEIVER_NOT_EXPORTED

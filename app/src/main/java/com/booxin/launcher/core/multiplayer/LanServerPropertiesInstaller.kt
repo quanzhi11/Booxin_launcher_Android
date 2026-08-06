@@ -12,7 +12,7 @@ import org.json.JSONObject
 
 /**
  * Auto-installs [mcwifipnp](https://modrinth.com/mod/mcwifipnp) (LAN World Plug-n-Play)
- * so hosts can disable online-mode when opening to LAN — required for offline accounts.
+ * 开局域网时关 online-mode，离线账号才能进。
  *
  * Also writes per-world `mcwifipnp.json` with OnlineMode=false by default.
  */
@@ -133,7 +133,7 @@ object LanServerPropertiesInstaller {
     }
 
     /**
-     * Prefer inheritsFrom (Fabric/Forge wrappers), else strip loader suffixes from id.
+     * 优先 inheritsFrom，否则去掉 id 上的加载器后缀。
      */
     fun resolveGameVersion(versionId: String, root: JSONObject): String {
         val inherits = root.optString("inheritsFrom").ifBlank { null }
@@ -187,7 +187,7 @@ object LanServerPropertiesInstaller {
         return best?.let { primaryFile(it.third) }
     }
 
-    /** Prefer same major.minor, then nearest patch; otherwise absolute distance. */
+    /** 先同 major.minor，再近 patch。 */
     fun versionDistance(target: Triple<Int, Int, Int>, candidate: Triple<Int, Int, Int>): Int {
         val (a, b, c) = target
         val (x, y, z) = candidate

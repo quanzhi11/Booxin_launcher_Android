@@ -9,7 +9,7 @@ import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 
 /**
- * Owns dynamic virtual buttons + joystick edit mode (add / move / resize / delete).
+ * 虚拟按键 / 摇杆编辑。
  */
 class ControlLayoutController(
     private val context: Context,

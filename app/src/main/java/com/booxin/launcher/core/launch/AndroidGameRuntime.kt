@@ -14,6 +14,8 @@ object AndroidGameRuntime {
 
     private const val ASSET_LWJGL = "app_runtime/lwjgl/lwjgl.jar"
     private const val ASSET_LWJGL_PATCH = "app_runtime/lwjgl/lwjgl-bridge-patch.jar"
+    private const val ASSET_LWJGL_CORE_34 = "app_runtime/lwjgl/lwjgl-core-3.4.jar"
+    private const val ASSET_LWJGL_SDL = "app_runtime/lwjgl/lwjgl-sdl.jar"
     private const val ASSET_LWJGL_VERSION = "app_runtime/lwjgl/version"
     private const val ASSET_JNA_PREFIX = "app_runtime/jna/"
 
@@ -24,6 +26,7 @@ object AndroidGameRuntime {
         "liblwjgl_tinyfd.so",
         "liblwjgl_vma.so",
         "liblwjgl_nanovg.so",
+        "libSDL3.so",
         "libmobileglues.so",
         "libmobileglues_info_getter.so",
         "libgl4es_114.so",
@@ -40,10 +43,15 @@ object AndroidGameRuntime {
 
     fun lwjglJar(): File = File(LauncherPaths.runtimeDir, "lwjgl/lwjgl.jar")
 
+    /** LWJGL 3.4 core（SDL 路径需排在 [lwjglJar] 前）。 */
+    fun lwjglCore34Jar(): File = File(LauncherPaths.runtimeDir, "lwjgl/lwjgl-core-3.4.jar")
+
+    /** LWJGL SDL 绑定（MC 26.3+）。 */
+    fun lwjglSdlJar(): File = File(LauncherPaths.runtimeDir, "lwjgl/lwjgl-sdl.jar")
+
     /**
-     * Legacy separate patch jar (kept on disk for older installs).
-     * Forge 1.21+ must NOT put this on the classpath — merge bridge classes into
-     * [lwjglJar] instead so there is only one `org.lwjgl` module.
+     * 旧版独立 bridge-patch jar。
+     * Forge 1.21+ 不要单独上 classpath，应合并进 [lwjglJar]。
      */
     fun lwjglBridgePatchJar(): File = File(LauncherPaths.runtimeDir, "lwjgl/lwjgl-bridge-patch.jar")
 
@@ -61,12 +69,16 @@ object AndroidGameRuntime {
         val destDir = File(LauncherPaths.runtimeDir, "lwjgl").also { it.mkdirs() }
         val destJar = File(destDir, "lwjgl.jar")
         val destPatch = File(destDir, "lwjgl-bridge-patch.jar")
+        val destCore34 = File(destDir, "lwjgl-core-3.4.jar")
+        val destSdl = File(destDir, "lwjgl-sdl.jar")
         val destVer = File(destDir, "version")
         val assetVer = runCatching {
             context.assets.open(ASSET_LWJGL_VERSION).bufferedReader().use { it.readText().trim() }
         }.getOrDefault("")
         val needCopy = !destJar.isFile || destJar.length() == 0L ||
             !destPatch.isFile || destPatch.length() == 0L ||
+            !destCore34.isFile || destCore34.length() == 0L ||
+            !destSdl.isFile || destSdl.length() == 0L ||
             (assetVer.isNotEmpty() && destVer.takeIf { it.isFile }?.readText()?.trim() != assetVer)
         if (!needCopy) return
         context.assets.open(ASSET_LWJGL).use { input ->
@@ -76,6 +88,20 @@ object AndroidGameRuntime {
             context.assets.open(ASSET_LWJGL_PATCH).use { input ->
                 destPatch.outputStream().use { output -> input.copyTo(output) }
             }
+        }
+        runCatching {
+            context.assets.open(ASSET_LWJGL_CORE_34).use { input ->
+                destCore34.outputStream().use { output -> input.copyTo(output) }
+            }
+        }.onFailure {
+            android.util.Log.w("BooxinRuntime", "lwjgl-core-3.4.jar missing from assets: ${it.message}")
+        }
+        runCatching {
+            context.assets.open(ASSET_LWJGL_SDL).use { input ->
+                destSdl.outputStream().use { output -> input.copyTo(output) }
+            }
+        }.onFailure {
+            android.util.Log.w("BooxinRuntime", "lwjgl-sdl.jar missing from assets: ${it.message}")
         }
         if (assetVer.isNotEmpty()) {
             destVer.writeText(assetVer)
@@ -134,13 +160,14 @@ object AndroidGameRuntime {
     fun ensureNatives(context: Context) {
         val dest = nativesDir().also { it.mkdirs() }
         val marker = File(dest, ".ready")
-        val expected = "v13:${NATIVE_NAMES.size}:${preferredAbiFolder()}"
-        val markerOk = marker.isFile && marker.readText().trim().startsWith("v13:")
+        val expected = "v20:${NATIVE_NAMES.size}:${preferredAbiFolder()}"
+        val markerOk = marker.isFile && marker.readText().trim().startsWith("v20:")
         val missingRequired = !File(dest, "liblwjgl.so").isFile ||
             !File(dest, "libbooxin_bridge.so").isFile ||
             !File(dest, "libpojavexec.so").isFile ||
             !File(dest, "libmobileglues.so").isFile ||
-            !File(dest, "libgl4es_114.so").isFile
+            !File(dest, "libgl4es_114.so").isFile ||
+            !File(dest, "libSDL3.so").isFile
         if (markerOk && !missingRequired) {
             syncMissingNatives(context, dest)
             ensureHolyGl4esBackup(context, dest)
@@ -232,7 +259,7 @@ object AndroidGameRuntime {
         }
     }
 
-    /** Backup real gl4es — libgl4es_114.so may be swapped to MobileGlues. */
+    /** 备份真实 gl4es（libgl4es_114 可能被换成 MobileGlues）。 */
     private fun ensureHolyGl4esBackup(context: Context, dest: File) {
         val holy = File(dest, "libgl4es_holy.so")
         val gl4 = File(dest, "libgl4es_114.so")
@@ -353,7 +380,7 @@ object AndroidGameRuntime {
     private fun extractMissingFromApk(context: Context, dest: File, abiFolder: String): Int {
         var copied = 0
         val needNames = NATIVE_NAMES.filter { !File(dest, it).isFile }.toMutableSet()
-        // Always allow any liblwjgl* from the APK.
+        // 允许 APK 内任意 liblwjgl*。
         val apk = File(context.applicationInfo.sourceDir)
         if (!apk.isFile || (needNames.isEmpty())) return 0
         ZipFile(apk).use { zip ->

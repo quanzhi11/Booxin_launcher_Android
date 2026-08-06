@@ -7,7 +7,12 @@ object HttpClients {
     const val USER_AGENT = "BooxinLauncher/0.0.2 (Android)"
 
     val shared: OkHttpClient by lazy {
+        val dispatcher = okhttp3.Dispatcher().apply {
+            maxRequests = 64
+            maxRequestsPerHost = 16
+        }
         OkHttpClient.Builder()
+            .dispatcher(dispatcher)
             .dns(ResilientDns())
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(5, TimeUnit.MINUTES)
@@ -17,10 +22,7 @@ object HttpClients {
             .build()
     }
 
-    /**
-     * Short-lived attempts when cascading mirrors: fail fast so the next
-     * candidate is tried instead of hanging on a throttled primary.
-     */
+    /** 镜像切换用短超时，避免主源卡住。 */
     val cascadeAttempt: OkHttpClient by lazy {
         shared.newBuilder()
             .connectTimeout(8, TimeUnit.SECONDS)

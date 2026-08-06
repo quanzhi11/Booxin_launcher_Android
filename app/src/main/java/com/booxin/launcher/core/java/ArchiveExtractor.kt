@@ -150,7 +150,7 @@ object ArchiveExtractor {
         val children = destinationDir.listFiles()?.filter { it.name != "." && it.name != ".." } ?: return
         if (children.size != 1 || !children[0].isDirectory) return
         val root = children[0]
-        // Prefer flatten only when it looks like a JRE root.
+        // 看起来像 JRE 根目录时才展平。
         val looksLikeJre = File(root, "bin").exists() || File(root, "lib").exists()
         if (!looksLikeJre) return
         root.listFiles()?.forEach { child ->

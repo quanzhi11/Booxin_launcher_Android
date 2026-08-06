@@ -5,7 +5,7 @@ import android.view.Choreographer;
 import org.lwjgl.glfw.CallbackBridge;
 
 /**
- * App-facing input bridge. UI should use this, not {@link CallbackBridge} directly.
+ * 应用侧输入桥（UI 走这里，不要直接用 CallbackBridge）。
  */
 public final class BooxinBridge {
     private BooxinBridge() {}
@@ -89,5 +89,15 @@ public final class BooxinBridge {
 
     public static void sendUpdateWindowSize(int w, int h) {
         CallbackBridge.sendUpdateWindowSize(w, h);
+    }
+
+    /** Crosshair hit type for COMBINED gestures. See GestureContext.HIT_*. */
+    public static int queryHitResultType() {
+        return CallbackBridge.queryHitResultType();
+    }
+
+    /** Main-hand item kind for COMBINED gestures. See GestureContext.HELD_*. */
+    public static int queryHeldItemKind() {
+        return CallbackBridge.queryHeldItemKind();
     }
 }

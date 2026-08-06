@@ -139,7 +139,7 @@ class OfficialServerJoinService(
                 onProgress(base, "下载官服模组：$fileName")
             }
             // guanfu.txt uses http://; Android blocks cleartext unless allowlisted.
-            // Prefer https when the host supports it (boonix.art does).
+            // 支持 https 时优先。
             val downloadUrl = preferHttps(url)
             val progressCb: (Long, Long) -> Unit = { downloaded, totalBytes ->
                 if (totalBytes > 0L) {

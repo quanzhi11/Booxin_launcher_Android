@@ -7,7 +7,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /**
- * In-game (:game process) lobby controller — create / join / members.
+ * 游戏内大厅：创建 / 加入 / 成员。
  * Loads Booxin session from disk so it works outside the main-process AppContainer.
  */
 class InGameLobbyController(

@@ -21,13 +21,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
-/**
- * Run a short-lived tool JVM (Forge install processors).
- *
- * Prefers isolated `:forge` process; falls back to in-process tool JVM if the
- * service never comes up (common MIUI / FGS edge cases) so install does not
- * sit forever on “重命名 MC jar”.
- */
+/** Forge 安装等短生命周期工具 JVM（优先 :forge 进程）。 */
 object EmbeddedJavaRunner {
     private const val TAG = "EmbeddedJavaRunner"
     private const val PROCESS_START_GRACE_MS = 8_000L
@@ -245,8 +239,7 @@ object EmbeddedJavaRunner {
     }
 
     /**
-     * Clear leftover :forge quickly. Do not block ~60s on :game — that made Forge
-     * install look stuck on the first processor while a zombie game process lingered.
+     * 清残留 :forge，不要卡在 :game 上。
      */
     private fun waitForSiblingProcesses() {
         killStaleForgeProcesses()

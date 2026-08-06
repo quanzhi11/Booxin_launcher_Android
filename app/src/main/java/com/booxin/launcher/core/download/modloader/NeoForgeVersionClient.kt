@@ -140,7 +140,7 @@ class NeoForgeVersionClient {
             if (neoForgeVersion.isBlank() || gameVersion.isBlank()) return false
             return if (neoForgeVersion.contains('-')) {
                 val mcPart = neoForgeVersion.substringBefore('-')
-                // Exact MC id match — startsWith would treat 1.21.11 as compatible with 1.21.1.
+                // 必须精确匹配 MC 版本。
                 gameVersion == mcPart
             } else {
                 val parts = neoForgeVersion.split('.')
@@ -155,7 +155,7 @@ class NeoForgeVersionClient {
         }
 
         private fun compareVersionParts(a: String, b: String): Int {
-            // Prefer full legacy ids when comparing mixed shapes.
+            // 混合格式时优先完整 legacy id。
             if (a.contains('-') != b.contains('-')) {
                 return a.contains('-').compareTo(b.contains('-'))
             }

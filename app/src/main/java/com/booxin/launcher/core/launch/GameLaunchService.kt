@@ -9,8 +9,11 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.PowerManager
+import android.os.Process
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import com.booxin.launcher.AppContainer
@@ -20,17 +23,18 @@ import com.booxin.launcher.core.diag.PerfSnapshot
 import com.booxin.launcher.core.runtime.GameRuntimeBackends
 import com.booxin.launcher.core.runtime.RuntimeEnv
 import com.booxin.launcher.ui.launch.LaunchActivity
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import java.io.File
 
 /**
- * Headless foreground service in `:game` process.
- * Must stay foreground — otherwise LMK kills it (oom_score_adj ~800).
+ * :game 前台服务。必须 foreground，否则 LMK 很容易杀掉。
  */
 class GameLaunchService : Service() {
 
@@ -39,12 +43,18 @@ class GameLaunchService : Service() {
     private var launchJob: Job? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var muteReceiver: android.content.BroadcastReceiver? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
+    @Volatile private var hardKillScheduled = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
         ensureChannel()
+        GameSurfaceBridge.onSurfaceLostWhileRunning = {
+            appendLog("Surface 已销毁，结束游戏进程")
+            requestStop("surface_lost")
+        }
         muteReceiver = object : android.content.BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
                 if (intent?.action == GameLaunchLogBus.ACTION_MUTE_UI) {
@@ -64,9 +74,7 @@ class GameLaunchService : Service() {
         when (intent?.action) {
             ACTION_STOP -> {
                 appendLog("收到停止请求")
-                runner.stop()
-                launchJob?.cancel()
-                finishAndStop(startId)
+                requestStop("user_stop")
                 return START_NOT_STICKY
             }
         }
@@ -79,43 +87,131 @@ class GameLaunchService : Service() {
         val serverAddress = intent?.getStringExtra(EXTRA_SERVER_ADDRESS)?.takeIf { it.isNotBlank() }
         val windowWidth = intent?.getIntExtra(EXTRA_WINDOW_WIDTH, 0) ?: 0
         val windowHeight = intent?.getIntExtra(EXTRA_WINDOW_HEIGHT, 0) ?: 0
+
+        // FGS：尽快 startForeground
+        startAsForeground(
+            if (versionId.isBlank()) "缺少版本 ID" else getString(R.string.launch_fg_text)
+        )
+
         if (versionId.isBlank()) {
-            // Still enter FGS briefly so startForegroundService contract is met.
-            startAsForeground("缺少版本 ID")
             appendLog("缺少版本 ID")
-            finishAndStop(startId)
+            softStopSelf(startId)
             return START_NOT_STICKY
         }
 
-        startAsForeground(getString(R.string.launch_fg_text))
+        if (!LaunchSession.tryBegin()) {
+            appendLog("已有启动任务（${LaunchSession.current()}）")
+            return START_NOT_STICKY
+        }
+
         acquireWakeLock()
-
-        if (launchJob?.isActive == true) {
-            appendLog("已有启动任务在运行")
-            return START_NOT_STICKY
-        }
+        hardKillScheduled = false
 
         launchJob = scope.launch {
+            var outcome: LaunchOutcome = LaunchOutcome.Failed("未知错误")
             try {
-                runLaunch(
-                    versionId = versionId,
-                    username = username,
-                    windowWidth = windowWidth,
-                    windowHeight = windowHeight,
-                    uuid = uuid,
-                    accessToken = accessToken,
-                    userType = userType,
-                    serverAddress = serverAddress
-                )
+                coroutineScope {
+                    outcome = runLaunch(
+                        versionId = versionId,
+                        username = username,
+                        windowWidth = windowWidth,
+                        windowHeight = windowHeight,
+                        uuid = uuid,
+                        accessToken = accessToken,
+                        userType = userType,
+                        serverAddress = serverAddress
+                    )
+                }
+            } catch (e: CancellationException) {
+                outcome = if (LaunchSession.hotspotEntered || hardKillScheduled) {
+                    LaunchOutcome.HardExit("已取消")
+                } else {
+                    LaunchOutcome.Failed("已取消")
+                }
+                throw e
+            } catch (t: Throwable) {
+                outcome = if (LaunchSession.hotspotEntered) {
+                    LaunchOutcome.HardExit(t.message ?: t.javaClass.simpleName)
+                } else {
+                    LaunchOutcome.Failed(t.message ?: t.javaClass.simpleName)
+                }
             } finally {
-                finishAndStop(startId)
+                if (!hardKillScheduled) {
+                    settleOutcome(outcome, startId)
+                }
             }
         }
 
         return START_NOT_STICKY
     }
 
-    private suspend fun runLaunch(
+    private sealed class LaunchOutcome(val message: String) {
+        class Failed(message: String) : LaunchOutcome(message)
+        class HardExit(message: String) : LaunchOutcome(message)
+        class Success(message: String) : LaunchOutcome(message)
+    }
+
+    private fun settleOutcome(outcome: LaunchOutcome, startId: Int) {
+        when (outcome) {
+            is LaunchOutcome.HardExit, is LaunchOutcome.Success -> {
+                appendLog(outcome.message)
+                scheduleHardKill(outcome.message)
+            }
+            is LaunchOutcome.Failed -> {
+                appendLog("启动失败: ${outcome.message}")
+                LaunchSession.fail(outcome.message)
+                GameLaunchLogBus.emitFailed(applicationContext, outcome.message)
+                softStopSelf(startId)
+            }
+        }
+    }
+
+    private fun requestStop(reason: String) {
+        when (LaunchSession.requestStop()) {
+            LaunchSession.StopKind.None -> {
+                if (reason == "user_stop") {
+                    scheduleHardKill(reason)
+                } else {
+                    softStopSelf(null)
+                }
+            }
+            LaunchSession.StopKind.CancelJob -> {
+                appendLog("取消启动: $reason")
+                runner.stop()
+                launchJob?.cancel()
+                scheduleHardKill(reason)
+            }
+            LaunchSession.StopKind.HardKill -> {
+                appendLog("结束游戏进程: $reason")
+                runner.stop()
+                launchJob?.cancel()
+                scheduleHardKill(reason)
+            }
+        }
+    }
+
+    private fun scheduleHardKill(reason: String) {
+        if (hardKillScheduled) return
+        hardKillScheduled = true
+        GameLaunchLogBus.finished(applicationContext)
+        releaseWakeLock()
+        mainHandler.post {
+            runCatching {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+            }
+            appendLog("killProcess :game ($reason)")
+            Process.killProcess(Process.myPid())
+        }
+    }
+
+    private fun softStopSelf(startId: Int?) {
+        releaseWakeLock()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        if (startId != null) stopSelf(startId) else stopSelf()
+    }
+
+    private suspend fun CoroutineScope.runLaunch(
         versionId: String,
         username: String,
         windowWidth: Int,
@@ -124,21 +220,20 @@ class GameLaunchService : Service() {
         accessToken: String? = null,
         userType: String? = null,
         serverAddress: String? = null
-    ) {
+    ): LaunchOutcome {
         appendLog("准备 Java 与游戏文件…")
         GameLaunchLogBus.muteUi.set(false)
         GameLaunchLogBus.beginSession(versionId)
         if (RealtimeLaunchLog.isEnabled()) {
-            appendLog("启动实时日志：已开启（完整 logcat → 磁盘，设置里可结束并导出）")
+            appendLog("实时日志已开启")
         }
         val prepare = AppContainer.gameRuntime.prepare(versionId)
         if (prepare.isFailure) {
-            appendLog("准备失败: ${prepare.exceptionOrNull()?.message}")
-            return
+            return LaunchOutcome.Failed("准备失败: ${prepare.exceptionOrNull()?.message}")
         }
 
         appendLog("校验并补全游戏资源（缺资源会闪退）…")
-        val progressJob = scope.launch {
+        val progressJob = launch {
             AppContainer.repository.installProgress.collect { progress ->
                 if (progress == null) return@collect
                 if (progress.phase != com.booxin.launcher.core.download.game.GameInstallPhase.ASSETS) {
@@ -152,34 +247,38 @@ class GameLaunchService : Service() {
                 appendLog(detail)
             }
         }
-        val assets = runCatching {
-            AppContainer.repository.ensureGameAssets(versionId).getOrThrow()
+        val assets = try {
+            runCatching {
+                AppContainer.repository.ensureGameAssets(versionId).getOrThrow()
+            }
+        } finally {
+            progressJob.cancel()
         }
-        progressJob.cancel()
         if (assets.isFailure) {
-            appendLog("资源补全失败: ${assets.exceptionOrNull()?.message}")
-            appendLog("请到「下载」页对该版本点重新安装，或检查网络后重试")
-            return
+            return LaunchOutcome.Failed(
+                "资源补全失败: ${assets.exceptionOrNull()?.message}"
+            )
         }
         appendLog("游戏资源就绪")
 
-        SodiumPodiumInstaller.ensure(this, versionId)?.let { appendLog(it) }
+        SodiumPodiumInstaller.ensure(this@GameLaunchService, versionId)?.let { appendLog(it) }
 
         val java = AppContainer.javaEnvironment.ensureForMinecraft(versionId).getOrElse {
-            appendLog("Java 不可用: ${it.message}")
-            return
+            return LaunchOutcome.Failed("Java 不可用: ${it.message}")
         }
         appendLog("Java 就绪: ${java.homeDir.absolutePath}")
 
         val backend = GameRuntimeBackends.current()
-        backend.prepare(this)
+        backend.prepare(this@GameLaunchService)
         appendLog("运行时后端: ${backend.id}")
 
-        // Prefer real Surface size (written after TextureView is ready).
+        LaunchSession.enterBinding()
         appendLog("等待游戏 Surface…")
-        val surface = runCatching { GameSurfaceBridge.awaitSurface() }.getOrElse {
-            appendLog("Surface 超时: ${it.message}")
-            return
+        val surface = runCatching { GameSurfaceBridge.awaitValidSurface() }.getOrElse {
+            return LaunchOutcome.Failed("Surface 超时: ${it.message}")
+        }
+        if (!surface.isValid) {
+            return LaunchOutcome.Failed("Surface 无效")
         }
         val width = when {
             GameSurfaceBridge.width > 1 -> GameSurfaceBridge.width
@@ -192,9 +291,9 @@ class GameLaunchService : Service() {
             else -> resources.displayMetrics.heightPixels
         }
         GameSurfaceBridge.onSurfaceSizeChanged(width, height)
-        appendLog(PerfSnapshot.launchLine(this, width, height))
+        appendLog(PerfSnapshot.launchLine(this@GameLaunchService, width, height))
         runCatching {
-            DiagEventLog.i("Perf", PerfSnapshot.launchLine(this, width, height))
+            DiagEventLog.i("Perf", PerfSnapshot.launchLine(this@GameLaunchService, width, height))
         }
         runCatching {
             val gameDir = File(
@@ -207,11 +306,23 @@ class GameLaunchService : Service() {
             appendLog("options.txt 写入失败: ${it.message}")
         }
         appendLog("构建启动命令…（窗口 ${width}x${height}，内存 ${com.booxin.launcher.core.LauncherPrefs.maxMemoryMb()} MB）")
+        if (com.booxin.launcher.core.java.MinecraftJavaRequirement.usesSdlWindowing(versionId)) {
+            val sdl = File(com.booxin.launcher.core.launch.AndroidGameRuntime.nativesDir(), "libSDL3.so")
+            val sdlJar = com.booxin.launcher.core.launch.AndroidGameRuntime.lwjglSdlJar()
+            appendLog(
+                if (sdl.isFile) "SDL3（${sdl.length()} bytes）"
+                else "窗口系统: SDL3 需要但缺少 libSDL3.so"
+            )
+            appendLog(
+                if (sdlJar.isFile) "LWJGL SDL 绑定: ${sdlJar.name}（${sdlJar.length()} bytes）"
+                else "LWJGL SDL 绑定缺失: ${sdlJar.absolutePath}"
+            )
+        }
         if (!serverAddress.isNullOrBlank()) {
             appendLog("自动加入服务器: $serverAddress")
         }
         val command = runCatching {
-            LaunchCommandBuilder(this).build(
+            LaunchCommandBuilder(this@GameLaunchService).build(
                 versionId = versionId,
                 username = username,
                 java = java,
@@ -224,32 +335,29 @@ class GameLaunchService : Service() {
                 serverAddress = serverAddress
             )
         }.getOrElse {
-            appendLog("命令构建失败: ${it.message}")
-            return
+            return LaunchOutcome.Failed("命令构建失败: ${it.message}")
         }
 
         appendLog("配置运行时环境…")
-        backend.applyJvmEnvironment(this, java, command.env)
+        backend.applyJvmEnvironment(this@GameLaunchService, java, command.env)
         appendLog(
             "渲染环境: ${RuntimeEnv.RENDERER}=${command.env[RuntimeEnv.RENDERER]} " +
                 "LIBGL_STRING=${command.env["LIBGL_STRING"]} " +
                 "${RuntimeEnv.EGL}=${command.env[RuntimeEnv.EGL]} " +
                 "libname=${command.jvmArgs.firstOrNull { it.startsWith("-Dorg.lwjgl.opengl.libname=") }}"
-            )
+        )
         System.getProperty("booxin.renderer.fallback")?.let {
             appendLog("渲染器回退: $it")
             System.clearProperty("booxin.renderer.fallback")
         }
 
-        // Forge: skip ART preload (fights securejarhandler). Fabric needs it early.
         val skipArtPreload = shouldSkipArtExecPreload(versionId, command.mainClass)
         if (skipArtPreload) {
             appendLog("Forge/NeoForge：跳过 ART 侧 exec bridge 预加载")
         } else {
             appendLog("初始化 exec bridge（ART hooks）…")
             backend.ensureExecBridgeLoaded(skipArtPreload = false).onFailure { err ->
-                appendLog("exec bridge 初始化失败: ${err.message}")
-                return
+                return LaunchOutcome.Failed("exec bridge 初始化失败: ${err.message}")
             }
         }
         val inputOk = backend.enableInput()
@@ -258,20 +366,54 @@ class GameLaunchService : Service() {
             else "输入桥警告：stack queue 未确认，触控可能卡死"
         )
 
-        appendLog("绑定 GLFW 窗口…")
-        runCatching {
-            if (!backend.attachSurface(surface)) {
-                error("native setupBridgeWindow failed")
+        appendLog("绑定游戏窗口…")
+        var bound = false
+        run {
+            repeat(40) { attempt ->
+                val candidate = runCatching {
+                    GameSurfaceBridge.awaitValidSurface(timeoutMs = 3_000L)
+                }.getOrNull()
+                if (candidate == null || !candidate.isValid) {
+                    appendLog("Surface 无效，重试 ${attempt + 1}/40…")
+                    kotlinx.coroutines.delay(200)
+                    return@repeat
+                }
+                val ok = kotlinx.coroutines.withContext(Dispatchers.Main) {
+                    runCatching { backend.attachSurface(candidate) }.getOrDefault(false)
+                }
+                if (ok) {
+                    bound = true
+                    if (GameSurfaceBridge.width > 0 && GameSurfaceBridge.height > 0) {
+                        GameSurfaceBridge.onSurfaceSizeChanged(
+                            GameSurfaceBridge.width,
+                            GameSurfaceBridge.height
+                        )
+                    }
+                    appendLog(if (attempt == 0) "游戏窗口已绑定" else "游戏窗口已绑定（重试 ${attempt + 1}）")
+                    return@run
+                }
+                appendLog("窗口绑定未就绪，重试 ${attempt + 1}/40…")
+                kotlinx.coroutines.delay(300)
             }
-            if (GameSurfaceBridge.width > 0 && GameSurfaceBridge.height > 0) {
-                GameSurfaceBridge.onSurfaceSizeChanged(GameSurfaceBridge.width, GameSurfaceBridge.height)
-            }
-        }.onFailure { err ->
-            appendLog("setupBridgeWindow 失败: ${err.javaClass.simpleName}: ${err.message}")
-            err.cause?.let { appendLog("  cause: ${it.message}") }
-            return
         }
-        appendLog("GLFW 窗口已绑定")
+        if (!bound) {
+            return LaunchOutcome.Failed("setupBridgeWindow 失败: ANativeWindow 为空（Surface 未就绪）")
+        }
+        if (com.booxin.launcher.core.java.MinecraftJavaRequirement.usesSdlWindowing(versionId)) {
+            runCatching {
+                val act = LaunchActivity.foregroundOrNull()
+                val surf = GameSurfaceBridge.currentSurface()
+                if (act != null && surf != null) {
+                    appendLog("初始化 SDL3 Android JNI…")
+                    BooxinSdlBootstrap.maybePrepare(act, versionId, surf, width, height)
+                    appendLog("SDL3 Android JNI 就绪")
+                } else {
+                    appendLog("跳过 SDL JNI：activity=${act != null} surface=${surf != null}")
+                }
+            }.onFailure {
+                appendLog("SDL3 Android JNI 失败: ${it.javaClass.simpleName}: ${it.message}")
+            }
+        }
         runCatching {
             if (NativeJvmLauncher.initializeHooks()) {
                 appendLog("输入 native 钩子已就绪")
@@ -286,24 +428,26 @@ class GameLaunchService : Service() {
         appendLog("探测 Java 运行时…")
         val probe = runner.probeJava(java, command.env)
         if (probe.isFailure) {
-            appendLog("Java 探测失败: ${probe.exceptionOrNull()?.message}")
-            return
+            return LaunchOutcome.Failed("Java 探测失败: ${probe.exceptionOrNull()?.message}")
         }
         appendLog(probe.getOrThrow())
 
         appendLog("启动 Minecraft JVM（前台 :game 进程）…")
         updateNotification("Minecraft 正在加载…")
 
-        val logJob = scope.launch {
-            runner.logs.collect { appendLog(it) }
+        if (!LaunchSession.enterRunning()) {
+            return LaunchOutcome.Failed("已停止")
         }
 
-        try {
-            val exit = runner.start(command, java)
+        val logJob = launch {
+            runner.logs.collect { appendLog(it) }
+        }
+        return try {
+            val exit = runner.start(command, java, applyEnvironment = false)
             if (exit.isFailure) {
-                appendLog("启动失败: ${exit.exceptionOrNull()?.message}")
+                LaunchOutcome.HardExit("启动失败: ${exit.exceptionOrNull()?.message}")
             } else {
-                appendLog("进程已结束，退出码 ${exit.getOrNull() ?: -1}")
+                LaunchOutcome.Success("进程已结束，退出码 ${exit.getOrNull() ?: -1}")
             }
         } finally {
             logJob.cancel()
@@ -375,7 +519,7 @@ class GameLaunchService : Service() {
         val pm = getSystemService(PowerManager::class.java) ?: return
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "booxin:game").apply {
             setReferenceCounted(false)
-            acquire(3 * 60 * 60 * 1000L) // 3 hours max
+            acquire(3 * 60 * 60 * 1000L)
         }
     }
 
@@ -390,14 +534,8 @@ class GameLaunchService : Service() {
         GameLaunchLogBus.emit(applicationContext, line)
     }
 
-    private fun finishAndStop(startId: Int) {
-        GameLaunchLogBus.finished(applicationContext)
-        releaseWakeLock()
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf(startId)
-    }
-
     override fun onDestroy() {
+        GameSurfaceBridge.onSurfaceLostWhileRunning = null
         muteReceiver?.let { runCatching { unregisterReceiver(it) } }
         muteReceiver = null
         runner.stop()
@@ -452,16 +590,10 @@ class GameLaunchService : Service() {
             val intent = Intent(context, GameLaunchService::class.java).apply {
                 action = ACTION_STOP
             }
-            // stop action also goes through onStartCommand; use startService
-            // (FGS already running) so we don't re-trigger FGS start contract.
             context.startService(intent)
         }
     }
 
-    /**
-     * True only for Forge/NeoForge ModLauncher. Fabric/Quilt Knot must preload
-     * the exec bridge on ART so input stack-queue is armed before HotSpot starts.
-     */
     private fun shouldSkipArtExecPreload(versionId: String, mainClass: String): Boolean {
         val id = versionId.lowercase()
         val main = mainClass.lowercase()

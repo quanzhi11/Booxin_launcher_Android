@@ -13,20 +13,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.security.MessageDigest
 
-/**
- * Owns Java environment discovery, download, extract, and selection.
- *
- * Booxin JRE layout:
- * ```
- * filesDir/minecraft/java/
- *   java-8/
- *   java-17/
- *   java-21/
- *   java-25/
- * filesDir/minecraft/cache/java/
- *   jreN-*.zip  (upstream filename may still say pojav)
- * ```
- */
+/** Java 运行时发现 / 下载 / 解压 / 选择。 */
 class JavaEnvironmentManager(
     private val downloader: FileDownloader = FileDownloader()
 ) {
@@ -60,10 +47,7 @@ class JavaEnvironmentManager(
         return locateInstalled(id, majorVersion)
     }
 
-    /**
-     * Ensures a Java runtime suitable for [mcVersionId] is present.
-     * Downloads + extracts when missing.
-     */
+    /** 确保 [mcVersionId] 所需 Java 已安装。 */
     suspend fun ensureForMinecraft(mcVersionId: String): Result<InstalledJavaRuntime> {
         val major = MinecraftJavaRequirement.requiredMajor(mcVersionId)
         return ensureMajor(major)
@@ -159,15 +143,19 @@ class JavaEnvironmentManager(
                 val name = url.substringAfterLast('/').ifBlank { cacheFile.name }
                 File(LauncherPaths.javaCacheDir, name)
             }
-            val result = downloader.download(url, target) { downloaded, total ->
-                _progress.value = JavaInstallProgress(
-                    componentId = pkg.componentId,
-                    state = JavaInstallState.DOWNLOADING,
-                    downloadedBytes = downloaded,
-                    totalBytes = total,
-                    message = label
-                )
-            }
+            val result = downloader.download(
+                url = url,
+                destination = target,
+                onProgress = { downloaded, total ->
+                    _progress.value = JavaInstallProgress(
+                        componentId = pkg.componentId,
+                        state = JavaInstallState.DOWNLOADING,
+                        downloadedBytes = downloaded,
+                        totalBytes = total,
+                        message = label
+                    )
+                }
+            )
             if (result.isSuccess) return result.getOrThrow()
             lastError = result.exceptionOrNull()
         }
@@ -207,7 +195,7 @@ class JavaEnvironmentManager(
     private fun locateInstalled(componentId: String, majorVersion: Int): InstalledJavaRuntime? {
         val home = LauncherPaths.javaRuntimeDir(componentId)
         if (!home.exists()) return null
-        // Pack200 not finished yet — treat as incomplete so install/finalize can finish it.
+        // Pack200 未完成，继续收尾。
         if (Pack200Unpacker.needsUnpack(home)) return null
         val binary = findJavaBinary(home) ?: return null
         return InstalledJavaRuntime(

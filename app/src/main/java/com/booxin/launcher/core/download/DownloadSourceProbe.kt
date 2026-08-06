@@ -27,7 +27,7 @@ data class DownloadProbeResult(
  * On-device mirror probe (do not trust PC results with a system proxy).
  *
  * Scores each endpoint by real download throughput of a small sample,
- * not TTFB alone — CDN edge nodes can answer fast then throttle.
+ * 不只看 TTFB，CDN 可能先快后限速。
  */
 object DownloadSourceProbe {
     private const val TAG = "DownloadProbe"
@@ -35,7 +35,7 @@ object DownloadSourceProbe {
     /** Bytes to pull for a throughput sample (cap). */
     private const val SAMPLE_BYTES = 64 * 1024
     /**
-     * Prefer mirror when within this relative margin of official.
+     * 镜像与官方差距在此内则优先镜像。
      * Ties / near-ties → BMCL (CN mobile default).
      */
     private const val HYSTERESIS_RATIO = 0.15

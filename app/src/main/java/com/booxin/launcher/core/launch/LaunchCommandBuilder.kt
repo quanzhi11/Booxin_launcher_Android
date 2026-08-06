@@ -61,7 +61,7 @@ data class LaunchCommand(
                     }
                 }
                 .firstOrNull()
-            // Fabric/Quilt normally have no JPMS module-path — MISSING is OK for Knot.
+            // Fabric/Quilt 通常无 module-path。
             appendLine("modulePath=${modulePath?.let { "yes (${it.split(File.pathSeparator).size} entries)" } ?: "n/a"}")
             appendLine("ignoreList=${jvmArgs.firstOrNull { it.startsWith("-DignoreList=") } ?: "default"}")
             appendLine("game=${gameArgs.joinToString(" ")}")
@@ -120,11 +120,20 @@ class LaunchCommandBuilder(
         }
 
         val isForgeOrLoader = VersionJsonMerger.isModLoaderVersion(versionId)
+        val needsSdl = MinecraftJavaRequirement.usesSdlWindowing(mcVersionId)
 
         val classpath = linkedSetOf<File>()
         val missingLibs = mutableListOf<String>()
-        // One lwjgl.jar only — a second org.lwjgl module breaks ForgeBootstrap.
+        // One Android fat lwjgl.jar (3.3.x natives + SDL hybrid Java patches).
+        // 不要把桌面 lwjgl-core 3.4 放最前，JNI 会不匹配。
         classpath += androidLwjgl
+        if (needsSdl) {
+            val sdlJar = AndroidGameRuntime.lwjglSdlJar()
+            require(sdlJar.isFile) {
+                "Minecraft $mcVersionId 需要 LWJGL SDL 绑定（BSD）: ${sdlJar.absolutePath}"
+            }
+            classpath += sdlJar
+        }
         val libraries = root.optJSONArray("libraries") ?: JSONArray()
         for (i in 0 until libraries.length()) {
             val lib = libraries.getJSONObject(i)
@@ -168,7 +177,7 @@ class LaunchCommandBuilder(
         val assetsDir = LauncherPaths.assetsDir
         val resolvedUuid = uuid?.replace("-", "")?.ifBlank { null }
             ?: OfflineAuth.uuidNoDash(username)
-        // Offline / empty token must stay legacy — never launch offline as msa (invalid session).
+        // 离线/空 token 用 legacy。
         val resolvedToken = accessToken?.ifBlank { null } ?: "0"
         val resolvedUserType = when {
             resolvedToken == "0" -> "legacy"
@@ -309,13 +318,31 @@ class LaunchCommandBuilder(
             envBase["force_glsl_extensions_warn"] = "true"
         }
         RuntimeEnv.pluginExtraEnv(renderer).forEach { (k, v) -> envBase[k] = v }
+        if (MinecraftJavaRequirement.usesSdlWindowing(mcVersionId)) {
+            envBase["BOOXIN_WINDOWING"] = "sdl"
+            val sdl3 = File(stagedNativesDir, "libSDL3.so")
+            require(sdl3.isFile) {
+                "Minecraft $mcVersionId 需要 SDL3（zlib）。缺少 ${sdl3.absolutePath}"
+            }
+            envBase["SDL_VIDEODRIVER"] = "android"
+            envBase["BOOXIN_SDL3_LIB"] = sdl3.absolutePath
+            // Help SDL Android find the app (official zlib path; still no SDLActivity yet).
+            envBase["SDL_ANDROID_APK_EXPANSION_MAIN_FILE_VERSION"] = "1"
+        }
         val env = RuntimeEnv.withNativeAliases(envBase, stagedNatives, renderer)
+
+        val injectorArg = InjectorMapResolver.resolveArg(context, versionId, mcVersionId)
+        val finalJvmArgs = if (injectorArg.isNullOrBlank()) {
+            jvmArgs
+        } else {
+            jvmArgs + "-Dbooxin.injector=$injectorArg"
+        }
 
         return LaunchCommand(
             javaBinary = java.javaBinary,
             javaHome = java.homeDir,
             workingDir = gameDir,
-            jvmArgs = jvmArgs,
+            jvmArgs = finalJvmArgs,
             mainClass = mainClass,
             gameArgs = gameArgs,
             classpath = existingClasspath,
@@ -386,7 +413,7 @@ class LaunchCommandBuilder(
      * HotSpot preinit already System.loads the bridge/LWJGL via AppClassLoader;
      * if Knot reloads org.lwjgl.* it hits "already loaded in another classloader".
      *
-     * Fabric uses `fabric.*` props; Quilt uses `loader.*` — set both for safety.
+     * Fabric/Quilt 属性都写上。
      */
     private fun buildKnotJvmArgs(
         jarFile: File,
@@ -515,7 +542,7 @@ class LaunchCommandBuilder(
         val versionJvm = parseVersionJvmArgs(versionRoot, tokens, nativeDir)
         val ignoreExtras = listOfNotNull(
             jarFile.name,
-            // Parent vanilla jar e.g. 1.20.1.jar — must not become module "_1._20._1"
+            // 原版 jar 不要变成模块名 _1._20._1
             // next to forge client module "minecraft" (ResolutionException / flywheel).
             File(LauncherPaths.versionsDir, "$mcVersionId/$mcVersionId.jar")
                 .takeIf { it.isFile }
@@ -654,6 +681,10 @@ class LaunchCommandBuilder(
             add("-Dorg.lwjgl.vulkan.libname=libvulkan.so")
             add("-Dorg.lwjgl.spvc.libname=spirv-cross-c-shared")
             add("-Dorg.lwjgl.shaderc.libname=shaderc")
+            val sdl3 = File(nativeDir, "libSDL3.so")
+            if (sdl3.isFile) {
+                add("-Dorg.lwjgl.sdl.libname=${sdl3.absolutePath}")
+            }
             add("-Djna.boot.library.path=$jnaPath:$nativeDir")
             add("-Djna.nosys=true")
             add("-Djna.nounpack=true")
@@ -799,7 +830,7 @@ class LaunchCommandBuilder(
     /**
      * Auto-join EasyTier local forward / official server after lobby join.
      * 1.20+ prefers --quickPlayMultiplayer; older clients use --server/--port.
-     * Always replaces any existing server/quickPlay args so a blank/spaced
+     * 覆盖已有 server/quickPlay 参数，避免空白
      * placeholder from version.json cannot win.
      */
     private fun appendServerArgs(
@@ -876,7 +907,7 @@ class LaunchCommandBuilder(
             val feature = rule.optJSONObject("features")
             // Skip feature-gated args (demo, custom resolution) unless we set features.
             if (feature != null) continue
-            // We report as Linux — accept unrestricted / linux / unix rules.
+            // 按 Linux 规则过滤 libraries。
             val matches = when {
                 os == null -> true
                 else -> {
@@ -895,7 +926,7 @@ class LaunchCommandBuilder(
         pluginNatives: String? = null
     ): String {
         val parts = mutableListOf<String>()
-        // Staged natives first so libmobileglues / disguised libgl4es win over APK holy-gl4es.
+        // staged natives 优先于 APK 内 holy-gl4es。
         parts += stagedNatives
         if (!pluginNatives.isNullOrBlank()) parts += pluginNatives
         listOf(
@@ -908,7 +939,7 @@ class LaunchCommandBuilder(
             File(javaHome, "jre/lib/aarch64"),
             File(javaHome, "jre/lib/arm")
         ).forEach { if (it.exists()) parts += it.absolutePath }
-        // APK nativeLibraryDir last (real libgl4es_114.so must not win dlopen).
+        // APK nativeLibraryDir 放最后，避免系统/APK 的 gl4es 抢先。
         parts += context.applicationInfo.nativeLibraryDir
         parts += "/system/lib64"
         parts += "/system/lib"

@@ -5,12 +5,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 
-/**
- * Merges a mod-loader version JSON with its [inheritsFrom] chain.
- *
- * Child libraries first, then parent; game/jvm argument lists concatenate
- * parent+child jvm/game argument lists (child must not replace parent game args).
- */
+/** 合并 inheritsFrom 链上的 version JSON（libraries 子优先，参数父子拼接）。 */
 object VersionJsonMerger {
 
     fun readVersionJson(versionId: String): JSONObject? {
@@ -96,10 +91,7 @@ object VersionJsonMerger {
 
         val mergedParent = mergeChain(parent, inheritName, visited)
 
-        // Child libraries first, then parent.
-        // = concatenate child then parent. NO group:artifact dedupe
-        // (classifiers like forge:client vs forge:universal must both remain).
-        // Path duplicates are collapsed later via LinkedHashSet classpath.
+        // 子库在前；不要按 group:artifact 去重（client/universal 都要留）。
         val mergedLibraries = JSONArray()
         appendAll(mergedLibraries, current.optJSONArray("libraries"))
         appendAll(mergedLibraries, mergedParent.optJSONArray("libraries"))

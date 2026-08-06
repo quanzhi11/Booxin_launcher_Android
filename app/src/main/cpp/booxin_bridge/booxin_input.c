@@ -207,4 +207,22 @@ void pojavPumpEvents(void *window) {
 }
 
 void pojavSetInjectorCallback(void *cb) { (void)cb; }
-void pojavSetHitResultType(int type) { (void)type; }
+
+static _Atomic int g_cached_hit_type = 0;
+static _Atomic int g_cached_held_kind = 0;
+
+void pojavSetHitResultType(int type) {
+    atomic_store(&g_cached_hit_type, type);
+}
+
+void booxinSetHeldItemKind(int kind) {
+    atomic_store(&g_cached_held_kind, kind);
+}
+
+int booxinGetHitResultType(void) {
+    return atomic_load(&g_cached_hit_type);
+}
+
+int booxinGetHeldItemKind(void) {
+    return atomic_load(&g_cached_held_kind);
+}

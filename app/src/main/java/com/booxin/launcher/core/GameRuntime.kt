@@ -111,8 +111,7 @@ class BooxinGameRuntime(
                         username = account.name,
                         versionGameDir = gameDir
                     )
-                    // Always emit offline auth (PC: AccessToken=0, legacy, OfflinePlayer UUID).
-                    // Never leave these null — Intent omission used to skip defaults on some paths.
+                    // 离线账号固定写 token/uuid。
                     putExtra(
                         LaunchActivity.EXTRA_UUID,
                         account.uuid?.replace("-", "")?.ifBlank { null }
@@ -125,7 +124,7 @@ class BooxinGameRuntime(
                     account.accessToken?.let { putExtra(LaunchActivity.EXTRA_ACCESS_TOKEN, it) }
                     putExtra(LaunchActivity.EXTRA_USER_TYPE, account.userType)
                 }
-                // Prefer explicit address (官服); else lobby tunnel. :game is a separate process.
+                // 优先显式地址，否则用大厅隧道。
                 (
                     serverAddress?.takeIf { it.isNotBlank() }
                         ?: AppContainer.multiplayerAuth.directConnectAddress.value?.takeIf { it.isNotBlank() }

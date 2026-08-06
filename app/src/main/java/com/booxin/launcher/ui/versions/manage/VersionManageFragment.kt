@@ -17,6 +17,8 @@ import com.booxin.launcher.core.LauncherPaths
 import com.booxin.launcher.core.download.game.VersionJsonMerger
 import com.booxin.launcher.core.version.VersionModFile
 import com.booxin.launcher.core.version.VersionModsManager
+import com.booxin.launcher.core.version.VersionResourcePackFile
+import com.booxin.launcher.core.version.VersionResourcePacksManager
 import com.booxin.launcher.databinding.FragmentVersionManageBinding
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.textfield.TextInputEditText
@@ -30,7 +32,8 @@ class VersionManageFragment : Fragment() {
     private var _binding: FragmentVersionManageBinding? = null
     private val binding get() = _binding!!
     private lateinit var versionId: String
-    private lateinit var adapter: VersionModsAdapter
+    private lateinit var modsAdapter: VersionModsAdapter
+    private lateinit var packsAdapter: VersionResourcePacksAdapter
     private var downloadDialog: AlertDialog? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -55,22 +58,26 @@ class VersionManageFragment : Fragment() {
 
         setupTabs()
         setupModsList()
-        binding.buttonDownloadUrl.setOnClickListener { showUrlDownloadDialog() }
+        setupPacksList()
+        binding.buttonDownloadUrl.setOnClickListener { showModUrlDownloadDialog() }
+        binding.buttonDownloadPackUrl.setOnClickListener { showPackUrlDownloadDialog() }
         bindDetails()
         refreshMods()
+        refreshPacks()
     }
 
     override fun onResume() {
         super.onResume()
         refreshMods()
+        refreshPacks()
     }
 
     private fun setupTabs() {
         binding.tabManage.addOnTabSelectedListener(object : com.google.android.material.tabs.TabLayout.OnTabSelectedListener {
             override fun onTabSelected(tab: com.google.android.material.tabs.TabLayout.Tab) {
-                val detail = tab.position == 0
-                binding.panelDetails.isVisible = detail
-                binding.panelMods.isVisible = !detail
+                binding.panelDetails.isVisible = tab.position == 0
+                binding.panelMods.isVisible = tab.position == 1
+                binding.panelResourcePacks.isVisible = tab.position == 2
             }
 
             override fun onTabUnselected(tab: com.google.android.material.tabs.TabLayout.Tab) = Unit
@@ -79,12 +86,21 @@ class VersionManageFragment : Fragment() {
     }
 
     private fun setupModsList() {
-        adapter = VersionModsAdapter(
+        modsAdapter = VersionModsAdapter(
             onToggle = { toggleMod(it) },
-            onUninstall = { confirmUninstall(it) }
+            onUninstall = { confirmUninstallMod(it) }
         )
         binding.recyclerMods.layoutManager = LinearLayoutManager(requireContext())
-        binding.recyclerMods.adapter = adapter
+        binding.recyclerMods.adapter = modsAdapter
+    }
+
+    private fun setupPacksList() {
+        packsAdapter = VersionResourcePacksAdapter(
+            onToggle = { togglePack(it) },
+            onUninstall = { confirmUninstallPack(it) }
+        )
+        binding.recyclerResourcePacks.layoutManager = LinearLayoutManager(requireContext())
+        binding.recyclerResourcePacks.adapter = packsAdapter
     }
 
     private fun bindDetails() {
@@ -93,6 +109,7 @@ class VersionManageFragment : Fragment() {
         val base = VersionJsonMerger.resolveMinecraftVersionId(versionId)
         val versionRoot = File(LauncherPaths.versionsDir, versionId)
         val modsDir = File(versionRoot, "mods")
+        val packsDir = VersionResourcePacksManager.resourcePacksDir(versionId)
 
         binding.textBaseVersion.text = base
         binding.textVersionType.text = if (isModded) {
@@ -102,6 +119,7 @@ class VersionManageFragment : Fragment() {
         }
         binding.textVersionPath.text = versionRoot.absolutePath
         binding.textModsPath.text = modsDir.absolutePath
+        binding.textResourcePacksPath.text = packsDir.absolutePath
         binding.textJsonType.text = resolveJsonType(json)
 
         binding.textVanillaHint.isVisible = !isModded
@@ -114,28 +132,48 @@ class VersionManageFragment : Fragment() {
         binding.buttonDownloadUrl.isEnabled = isModded
         binding.buttonDownloadUrl.alpha = if (isModded) 1f else 0.45f
         if (!isModded) {
-            adapter.submit(emptyList())
+            modsAdapter.submit(emptyList())
             binding.recyclerMods.isVisible = false
             binding.textModsEmpty.isVisible = false
             binding.textVanillaHint.isVisible = true
             return
         }
         val list = VersionModsManager.list(versionId)
-        adapter.submit(list)
+        modsAdapter.submit(list)
         binding.recyclerMods.isVisible = true
         binding.textVanillaHint.isVisible = false
         binding.textModsEmpty.isVisible = list.isEmpty()
     }
 
-    private fun showUrlDownloadDialog() {
+    private fun refreshPacks() {
+        val list = VersionResourcePacksManager.list(versionId)
+        packsAdapter.submit(list)
+        binding.textPacksEmpty.isVisible = list.isEmpty()
+    }
+
+    private fun showModUrlDownloadDialog() {
         if (!VersionJsonMerger.isModLoaderVersion(versionId)) {
             Toast.makeText(requireContext(), R.string.version_manage_vanilla_no_mods, Toast.LENGTH_SHORT).show()
             return
         }
+        showUrlInputDialog(
+            titleRes = R.string.version_manage_download_url_title,
+            hintRes = R.string.version_manage_download_url_hint
+        ) { url -> downloadModFromUrl(url) }
+    }
+
+    private fun showPackUrlDownloadDialog() {
+        showUrlInputDialog(
+            titleRes = R.string.version_manage_download_pack_url_title,
+            hintRes = R.string.version_manage_download_pack_url_hint
+        ) { url -> downloadPackFromUrl(url) }
+    }
+
+    private fun showUrlInputDialog(titleRes: Int, hintRes: Int, onConfirm: (String) -> Unit) {
         val density = resources.displayMetrics.density
         val pad = (20 * density).toInt()
         val inputLayout = TextInputLayout(requireContext()).apply {
-            hint = getString(R.string.version_manage_download_url_hint)
+            hint = getString(hintRes)
             setPadding(pad, pad / 2, pad, 0)
         }
         val edit = TextInputEditText(inputLayout.context).apply {
@@ -145,36 +183,25 @@ class VersionManageFragment : Fragment() {
         }
         inputLayout.addView(edit)
         MaterialAlertDialogBuilder(requireContext())
-            .setTitle(R.string.version_manage_download_url_title)
+            .setTitle(titleRes)
             .setView(inputLayout)
             .setNegativeButton(android.R.string.cancel, null)
             .setPositiveButton(R.string.version_manage_download_url_start) { _, _ ->
-                downloadModFromUrl(edit.text?.toString().orEmpty().trim())
+                onConfirm(edit.text?.toString().orEmpty().trim())
             }
             .show()
         edit.requestFocus()
     }
 
     private fun downloadModFromUrl(url: String) {
-        if (url.isBlank() ||
-            (!url.startsWith("http://", ignoreCase = true) &&
-                !url.startsWith("https://", ignoreCase = true))
-        ) {
+        if (!isHttpUrl(url)) {
             Toast.makeText(requireContext(), R.string.version_manage_download_url_invalid, Toast.LENGTH_SHORT).show()
             return
         }
-        downloadDialog?.dismiss()
-        downloadDialog = MaterialAlertDialogBuilder(requireContext())
-            .setTitle(R.string.version_manage_download_url)
-            .setMessage(R.string.version_manage_download_url_progress)
-            .setCancelable(false)
-            .create()
-            .also { it.show() }
-
+        showDownloadProgress(R.string.version_manage_download_url_progress)
         viewLifecycleOwner.lifecycleScope.launch {
             val result = VersionModsManager.downloadFromUrl(versionId, url)
-            downloadDialog?.dismiss()
-            downloadDialog = null
+            dismissDownloadProgress()
             if (_binding == null) return@launch
             result.fold(
                 onSuccess = { file ->
@@ -188,16 +215,63 @@ class VersionManageFragment : Fragment() {
                 onFailure = { err ->
                     Toast.makeText(
                         requireContext(),
-                        getString(
-                            R.string.version_manage_download_url_failed,
-                            err.message ?: "unknown"
-                        ),
+                        getString(R.string.version_manage_download_url_failed, err.message ?: "unknown"),
                         Toast.LENGTH_LONG
                     ).show()
                 }
             )
         }
     }
+
+    private fun downloadPackFromUrl(url: String) {
+        if (!isHttpUrl(url)) {
+            Toast.makeText(requireContext(), R.string.version_manage_download_url_invalid, Toast.LENGTH_SHORT).show()
+            return
+        }
+        showDownloadProgress(R.string.version_manage_download_pack_url_progress)
+        viewLifecycleOwner.lifecycleScope.launch {
+            val result = VersionResourcePacksManager.downloadFromUrl(versionId, url)
+            dismissDownloadProgress()
+            if (_binding == null) return@launch
+            result.fold(
+                onSuccess = { file ->
+                    refreshPacks()
+                    Toast.makeText(
+                        requireContext(),
+                        getString(R.string.version_manage_download_url_done, file.name),
+                        Toast.LENGTH_SHORT
+                    ).show()
+                },
+                onFailure = { err ->
+                    Toast.makeText(
+                        requireContext(),
+                        getString(R.string.version_manage_download_url_failed, err.message ?: "unknown"),
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            )
+        }
+    }
+
+    private fun showDownloadProgress(messageRes: Int) {
+        downloadDialog?.dismiss()
+        downloadDialog = MaterialAlertDialogBuilder(requireContext())
+            .setTitle(R.string.version_manage_download_url)
+            .setMessage(messageRes)
+            .setCancelable(false)
+            .create()
+            .also { it.show() }
+    }
+
+    private fun dismissDownloadProgress() {
+        downloadDialog?.dismiss()
+        downloadDialog = null
+    }
+
+    private fun isHttpUrl(url: String): Boolean =
+        url.isNotBlank() &&
+            (url.startsWith("http://", ignoreCase = true) ||
+                url.startsWith("https://", ignoreCase = true))
 
     private fun toggleMod(mod: VersionModFile) {
         val result = VersionModsManager.toggle(mod)
@@ -213,7 +287,7 @@ class VersionManageFragment : Fragment() {
         }
     }
 
-    private fun confirmUninstall(mod: VersionModFile) {
+    private fun confirmUninstallMod(mod: VersionModFile) {
         MaterialAlertDialogBuilder(requireContext())
             .setTitle(R.string.version_manage_mod_uninstall)
             .setMessage(getString(R.string.version_manage_mod_uninstall_confirm, mod.displayName))
@@ -223,6 +297,44 @@ class VersionManageFragment : Fragment() {
                 if (result.isSuccess) {
                     refreshMods()
                     Toast.makeText(requireContext(), R.string.version_manage_mod_uninstalled, Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(
+                        requireContext(),
+                        getString(
+                            R.string.version_manage_action_failed,
+                            result.exceptionOrNull()?.message ?: "unknown"
+                        ),
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+            .show()
+    }
+
+    private fun togglePack(pack: VersionResourcePackFile) {
+        val result = VersionResourcePacksManager.toggle(pack)
+        if (result.isSuccess) {
+            refreshPacks()
+            Toast.makeText(requireContext(), R.string.version_manage_pack_toggled, Toast.LENGTH_SHORT).show()
+        } else {
+            Toast.makeText(
+                requireContext(),
+                getString(R.string.version_manage_action_failed, result.exceptionOrNull()?.message ?: "unknown"),
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
+    private fun confirmUninstallPack(pack: VersionResourcePackFile) {
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle(R.string.version_manage_pack_uninstall)
+            .setMessage(getString(R.string.version_manage_pack_uninstall_confirm, pack.displayName))
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(R.string.version_manage_pack_uninstall) { _, _ ->
+                val result = VersionResourcePacksManager.uninstall(pack)
+                if (result.isSuccess) {
+                    refreshPacks()
+                    Toast.makeText(requireContext(), R.string.version_manage_pack_uninstalled, Toast.LENGTH_SHORT).show()
                 } else {
                     Toast.makeText(
                         requireContext(),

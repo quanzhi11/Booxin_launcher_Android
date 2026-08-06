@@ -149,6 +149,7 @@ object PerfSnapshot {
         for (name in listOf(
             "libbooxin_bridge.so",
             "libpojavexec.so",
+            "libSDL3.so",
             "libmobileglues.so",
             "libgl4es_114.so",
             "libgl4es_holy.so",

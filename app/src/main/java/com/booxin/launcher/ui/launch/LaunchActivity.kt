@@ -2,6 +2,7 @@ package com.booxin.launcher.ui.launch
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.app.KeyguardManager
 import android.content.BroadcastReceiver
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -17,6 +18,7 @@ import android.view.SurfaceHolder
 import android.view.View
 import android.view.WindowManager
 import android.widget.FrameLayout
+import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -28,6 +30,8 @@ import com.booxin.launcher.R
 import com.booxin.launcher.core.launch.GameLaunchLogBus
 import com.booxin.launcher.core.launch.GameLaunchService
 import com.booxin.launcher.core.launch.GameSurfaceBridge
+import com.booxin.launcher.core.launch.LaunchPhase
+import com.booxin.launcher.core.launch.LaunchSession
 import com.booxin.launcher.databinding.ActivityLaunchBinding
 import com.booxin.launcher.ui.launch.input.ControlLayoutController
 import com.booxin.launcher.ui.launch.input.GameInput
@@ -36,10 +40,7 @@ import com.booxin.launcher.ui.launch.input.MouseMoveMode
 import com.booxin.runtime.BooxinBridge
 import kotlin.math.abs
 
-/**
- * Runs in `:game` with [SurfaceView] + JVM so the exec bridge can bind ANativeWindow.
- * Touch / virtual controls inject GLFW events via [BooxinBridge].
- */
+/** :game 进程：Surface + 嵌入 JVM。 */
 class LaunchActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityLaunchBinding
@@ -55,7 +56,7 @@ class LaunchActivity : AppCompatActivity() {
     private var pendingAccessToken: String? = null
     private var pendingUserType: String? = null
     private var pendingServerAddress: String? = null
-    private var serviceStarted = false
+    private var canRetryLaunch = false
     private var surfaceWidth = 0
     private var surfaceHeight = 0
     private var controlsVisible = true
@@ -84,7 +85,7 @@ class LaunchActivity : AppCompatActivity() {
         }
     }
 
-    // Hide loading only on these — early GLFW/GL lines flash a black screen.
+    // 这些日志出现后再藏加载遮罩。
     private val overlayReadyPatterns = listOf(
         "Setting user",
         "Reloading ResourceManager",
@@ -96,10 +97,8 @@ class LaunchActivity : AppCompatActivity() {
         "OpenGL debug",
     )
 
-    /** True once Minecraft log shows we're past early black Surface. */
     private var gameProgressSeen = false
 
-    /** Coarse stage → percent mapping from our launcher + Minecraft logs. */
     private val loadingStages = listOf(
         "等待 Surface" to 5,
         "启动游戏前台服务" to 8,
@@ -151,9 +150,26 @@ class LaunchActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
+        // 锁屏/ADB 启动也要保住 Surface。
+        if (Build.VERSION.SDK_INT >= 27) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        } else {
+            @Suppress("DEPRECATION")
+            window.addFlags(
+                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                    WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+                    WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
+            )
+        }
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        runCatching {
+            getSystemService(KeyguardManager::class.java)
+                ?.requestDismissKeyguard(this, null)
+        }
         binding = ActivityLaunchBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        foreground = this
         hideSystemBars()
 
         pendingVersionId = intent.getStringExtra(EXTRA_VERSION_ID).orEmpty()
@@ -182,16 +198,23 @@ class LaunchActivity : AppCompatActivity() {
 
         // Manual dismiss once game has progressed far enough (Surface isn't pure black).
         binding.panelOverlay.setOnClickListener {
+            if (canRetryLaunch) {
+                canRetryLaunch = false
+                appendLog("重试启动…")
+                updateLoadingUi(0, getString(R.string.launch_loading_status_init))
+                maybeStartGameService(forceRetry = true)
+                return@setOnClickListener
+            }
             if (loadingPercent >= 60 || gameProgressSeen || BooxinBridge.areNativesLinked()) {
                 hideOverlayIfNeeded(force = true, allowWithoutBridge = true)
             } else {
-                appendLog("仍在加载（${loadingPercent}%），请稍候再点进入")
+                appendLog("仍在加载（${loadingPercent}%）")
             }
         }
 
         setupControls()
         GameInput.bindSoftKeyboard(binding.touchCharInput)
-        // TouchPad size is fixed once constructed — never leave 0.
+        // TouchPad 尺寸初始化。
         GameInput.initScreenSize(
             resources.displayMetrics.widthPixels,
             resources.displayMetrics.heightPixels
@@ -208,6 +231,22 @@ class LaunchActivity : AppCompatActivity() {
             },
             onFinished = {
                 runOnUiThread { returnToLauncher() }
+            },
+            onFailed = { reason ->
+                runOnUiThread {
+                    canRetryLaunch = true
+                    if (::binding.isInitialized) {
+                        binding.panelOverlay.visibility = View.VISIBLE
+                        binding.panelOverlay.alpha = 1f
+                        binding.panelOverlay.isClickable = true
+                        binding.panelOverlay.isFocusable = true
+                    }
+                    overlayHidden = false
+                    updateLoadingUi(
+                        loadingPercent.coerceAtMost(40),
+                        "失败: ${reason.take(80)}（点击重试）"
+                    )
+                }
             }
         )
 
@@ -220,6 +259,12 @@ class LaunchActivity : AppCompatActivity() {
         } else {
             maybeStartGameService()
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // SurfaceView only keeps a live Surface while resumed; retry start after unlock/focus.
+        maybeStartGameService()
     }
 
     private fun setupControls() {
@@ -272,19 +317,18 @@ class LaunchActivity : AppCompatActivity() {
 
         setupFloatingBall()
 
-        // Grab sync fires immediately on register (often grabbing=false) — must not
-        // hide the loading cover there. Only a later grab=true means the game is up.
+        // 仅 grab=true 时藏遮罩。
         BooxinBridge.setGrabListener { grabbing ->
             Log.i(TAG, "grabListener grabbing=$grabbing overlayHidden=$overlayHidden")
             if (!overlayHidden) {
                 if (grabbing) {
-                    // Cursor grab = in-world / menu ready — enter without requiring a tap.
+                    // 已 grab，可进游戏。
                     hideOverlayIfNeeded(force = true, allowWithoutBridge = true)
                 }
                 return@setGrabListener
             }
             refreshMoveVisibility()
-            // Prevent stuck LMB/RMB from freezing the game until chat opens.
+            // 释放卡住的鼠标键。
             binding.touchPad.resetTouchState()
             GameInput.releaseAllMouseButtons()
             GameInput.refreshCursorVisibility()
@@ -325,7 +369,7 @@ class LaunchActivity : AppCompatActivity() {
     }
 
     private fun updateLoadingFromLog(line: String) {
-        // Prefer explicit "xx%" in Minecraft / installer output.
+        // 优先解析日志里的百分比。
         val pctMatch = PERCENT_IN_LOG.find(line)
         if (pctMatch != null) {
             val pct = pctMatch.groupValues[1].toIntOrNull()?.coerceIn(0, 99)
@@ -396,7 +440,7 @@ class LaunchActivity : AppCompatActivity() {
 
     private fun scheduleOverlayFallbackHide() {
         overlayHideTimeout?.let { mainHandler.removeCallbacks(it) }
-        // Safety net — prefer ready logs / first grab; do not leave users on a black cover.
+        // 兜底：超时后也关掉遮罩。
         overlayHideTimeout = Runnable {
             appendLog("加载超时，自动进入游戏画面")
             updateLoadingUi(99, "进入游戏")
@@ -487,9 +531,15 @@ class LaunchActivity : AppCompatActivity() {
         } else {
             getString(R.string.control_menu_gesture_fight)
         }
+        val combinedLabel = if (binding.touchPad.gestureMode == GestureMode.COMBINED) {
+            getString(R.string.control_menu_gesture_combined_current)
+        } else {
+            getString(R.string.control_menu_gesture_combined)
+        }
         val items = arrayOf(
             buildLabel,
             fightLabel,
+            combinedLabel,
             getString(R.string.control_menu_multiplayer),
             getString(R.string.control_menu_edit),
             hideLabel,
@@ -499,23 +549,33 @@ class LaunchActivity : AppCompatActivity() {
             .setTitle(R.string.control_menu_title)
             .setItems(items) { _, which ->
                 when (which) {
-                    0 -> binding.touchPad.gestureMode = GestureMode.BUILD
-                    1 -> binding.touchPad.gestureMode = GestureMode.FIGHT
-                    2 -> multiplayerPanel.show()
-                    3 -> {
+                    0 -> {
+                        binding.touchPad.gestureMode = GestureMode.BUILD
+                        Toast.makeText(this, R.string.control_toast_gesture_build, Toast.LENGTH_SHORT).show()
+                    }
+                    1 -> {
+                        binding.touchPad.gestureMode = GestureMode.FIGHT
+                        Toast.makeText(this, R.string.control_toast_gesture_fight, Toast.LENGTH_SHORT).show()
+                    }
+                    2 -> {
+                        binding.touchPad.gestureMode = GestureMode.COMBINED
+                        Toast.makeText(this, R.string.control_toast_gesture_combined, Toast.LENGTH_SHORT).show()
+                    }
+                    3 -> multiplayerPanel.show()
+                    4 -> {
                         setControlsVisible(true)
                         controlLayout.enterEditMode()
                     }
-                    4 -> setControlsVisible(!controlsVisible)
-                    5 -> returnToLauncher()
+                    5 -> setControlsVisible(!controlsVisible)
+                    6 -> returnToLauncher()
                 }
             }
             .show()
     }
 
-    /** Stop game, bring MainActivity to front, kill :game process (HotSpot cannot be stopped cleanly). */
     private fun returnToLauncher() {
         if (isFinishing || isDestroyed) return
+        canRetryLaunch = false
         runCatching { multiplayerPanel.dispose() }
         runCatching { GameLaunchService.stop(this) }
         val intent = Intent(this, com.booxin.launcher.ui.MainActivity::class.java).apply {
@@ -527,10 +587,9 @@ class LaunchActivity : AppCompatActivity() {
         }
         startActivity(intent)
         finish()
-        // Embedded JVM keeps the process alive after Activity finish — force exit.
         mainHandler.postDelayed({
             android.os.Process.killProcess(android.os.Process.myPid())
-        }, 200L)
+        }, 350L)
     }
 
     @Deprecated("Deprecated in Java")
@@ -660,8 +719,12 @@ class LaunchActivity : AppCompatActivity() {
             WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
     }
 
-    private fun maybeStartGameService() {
-        if (serviceStarted || pendingVersionId.isBlank()) return
+    private fun maybeStartGameService(forceRetry: Boolean = false) {
+        if (pendingVersionId.isBlank()) return
+        if (lifecycle.currentState < androidx.lifecycle.Lifecycle.State.RESUMED) {
+            appendLog("等待回到前台…")
+            return
+        }
         if (!GameSurfaceBridge.hasSurface()) {
             appendLog("等待 Surface…")
             return
@@ -670,8 +733,17 @@ class LaunchActivity : AppCompatActivity() {
             appendLog("等待 Surface 尺寸…")
             return
         }
-        serviceStarted = true
-        appendLog("启动游戏前台服务（:game 进程，${surfaceWidth}x${surfaceHeight}）…")
+        when (LaunchSession.current()) {
+            LaunchPhase.Starting, LaunchPhase.Binding, LaunchPhase.Running, LaunchPhase.Stopping -> {
+                return
+            }
+            LaunchPhase.Failed -> {
+                if (!forceRetry) return
+            }
+            LaunchPhase.Idle -> Unit
+        }
+        canRetryLaunch = false
+        appendLog("启动游戏前台服务（:game 进程，${surfaceWidth}x${surfaceHeight}，${LaunchSession.current()}）…")
         scheduleOverlayFallbackHide()
         GameLaunchService.start(
             this,
@@ -709,7 +781,7 @@ class LaunchActivity : AppCompatActivity() {
 
     private fun appendLog(line: String) {
         if (line.isBlank()) return
-        // After play starts: never touch TextView — that was starving touch input.
+        // 进游戏后别再改 TextView，会影响触控。
         if (overlayHidden) return
         if (logBuffer.length > 48_000) {
             logBuffer.delete(0, logBuffer.length - 24_000)
@@ -724,6 +796,7 @@ class LaunchActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        if (foreground === this) foreground = null
         overlayHideTimeout?.let { mainHandler.removeCallbacks(it) }
         mainHandler.removeCallbacks(inputArmRunnable)
         BooxinBridge.setGrabListener(null)
@@ -747,6 +820,11 @@ class LaunchActivity : AppCompatActivity() {
         /** EasyTier local forward, e.g. 127.0.0.1:37859 */
         const val EXTRA_SERVER_ADDRESS = "server_address"
         private const val TAG = "LaunchActivity"
+
+        @Volatile
+        private var foreground: LaunchActivity? = null
+
+        fun foregroundOrNull(): LaunchActivity? = foreground
 
         private val PERCENT_IN_LOG = Regex("""(?<![\d.])(\d{1,3})\s*%""")
     }

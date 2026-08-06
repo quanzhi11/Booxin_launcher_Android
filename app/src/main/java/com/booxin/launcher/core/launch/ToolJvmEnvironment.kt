@@ -7,7 +7,7 @@ import com.booxin.launcher.core.java.InstalledJavaRuntime
 import com.booxin.launcher.core.runtime.RuntimeEnv
 import java.io.File
 
-/** Env for Forge install processors — JRE only, no game bridge. */
+/** Forge 安装处理器环境（仅 JRE）。 */
 object ToolJvmEnvironment {
 
     fun apply(context: Context, java: InstalledJavaRuntime, tmpDir: File) {

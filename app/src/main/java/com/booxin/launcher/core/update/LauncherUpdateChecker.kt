@@ -16,7 +16,7 @@ object LauncherUpdateChecker {
 
     suspend fun fetch(): Result<LauncherUpdateInfo> = withContext(Dispatchers.IO) {
         runCatching {
-            // Bust CDN/browser caches — stale phones.json caused "already latest".
+            // 绕过 CDN 缓存，避免旧 phones.json。
             val url = "$UPDATE_URL?_=${System.currentTimeMillis()}"
             val request = Request.Builder()
                 .url(url)

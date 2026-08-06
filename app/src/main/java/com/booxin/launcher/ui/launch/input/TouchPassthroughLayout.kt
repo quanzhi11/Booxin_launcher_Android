@@ -7,23 +7,13 @@ import android.view.MotionEvent
 import android.view.View
 import android.widget.FrameLayout
 
-/**
- * Full-screen button host with per-pointer routing.
- *
- * Each finger that lands on a child button goes to that button; fingers on blank
- * area are forwarded to [fallbackTarget] (usually [GameTouchPad]). This keeps
- * multi-touch working: hold jump/sneak while looking, or press several keys at once.
- *
- * Plain FrameLayout cannot do this — once a child owns ACTION_DOWN, a second
- * finger on empty space is swallowed and never reaches the sibling touch pad.
- */
+/** 按指针把空白区触控转发给 fallback（触控板）。 */
 class TouchPassthroughLayout @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
     defStyleAttr: Int = 0
 ) : FrameLayout(context, attrs, defStyleAttr) {
 
-    /** Sibling look / mouse pad under this layer. */
     var fallbackTarget: View? = null
 
     private val targets = SparseArray<View>()

@@ -98,7 +98,8 @@ class LibraryDownloadHelper(
         var remaining = candidates
         var lastError: Throwable? = null
         while (remaining.isNotEmpty()) {
-            val result = downloader.download(remaining, destination)
+            // 小 jar 不开多分片。
+            val result = downloader.download(remaining, destination, accelerate = false)
             if (result.isFailure) {
                 lastError = result.exceptionOrNull()
                 Log.w(TAG, "all candidates failed $label : ${lastError?.message}")

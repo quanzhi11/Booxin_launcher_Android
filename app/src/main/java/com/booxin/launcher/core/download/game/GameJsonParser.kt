@@ -176,7 +176,7 @@ object GameJsonParser {
             val matches = if (os == null) {
                 true
             } else {
-                // Never match desktop OS names on Android.
+                // Android 上不要匹配桌面 OS 名。
                 false
             }
             if (matches) {

@@ -22,7 +22,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Scaffolding control-plane host — port of PC ScaffoldingServer.
+ * Scaffolding 控制面主机（移植自 PC）。
  * Protocol matches [ScaffoldingClient]: type-length body frames over TCP loopback.
  */
 class ScaffoldingServer(

@@ -734,6 +734,15 @@ static JNIEnv *booxin_get_hotspot_env(struct booxin_pojav_environ_s *e, int *att
 
 static jclass g_hooks_cls = NULL;
 static jmethodID g_hooks_deliver = NULL;
+static jmethodID g_hooks_refresh = NULL;
+static jmethodID g_hooks_hit = NULL;
+static jmethodID g_hooks_held = NULL;
+
+typedef void (*booxin_set_hit_fn)(int);
+typedef void (*booxin_set_held_fn)(int);
+static booxin_set_hit_fn g_set_hit_type = NULL;
+static booxin_set_held_fn g_set_held_kind = NULL;
+static bool g_snapshot_syms_resolved = false;
 
 typedef void (*booxin_mouse_btn_fn)(void *window, int button, int action, int mods);
 typedef void (*booxin_cursor_pos_fn)(void *window, double x, double y);
@@ -825,29 +834,67 @@ static jclass load_booxin_input_hooks(JNIEnv *env) {
 }
 
 static bool cache_input_hooks_deliver(JNIEnv *env) {
-    if (g_hooks_cls && g_hooks_deliver) return true;
+    if (g_hooks_cls && g_hooks_refresh && g_hooks_hit && g_hooks_held) return true;
     jclass local = load_booxin_input_hooks(env);
     if (!local) {
         static int warned;
         if (!warned++) LOGW("BooxinInputHooks class not found on HotSpot classpath");
         return false;
     }
-    jmethodID mid = (*env)->GetStaticMethodID(env, local, "deliverInput", "(JDDIII)V");
-    if (!mid || (*env)->ExceptionCheck(env)) {
-        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
-        static int warned;
-        if (!warned++) LOGW("BooxinInputHooks.deliverInput not found — rebuild lwjgl-bridge-patch.jar");
-        (*env)->DeleteLocalRef(env, local);
-        return false;
-    }
     if (!g_hooks_cls) {
         g_hooks_cls = (jclass)(*env)->NewGlobalRef(env, local);
     }
-    g_hooks_deliver = mid;
+    if (!g_hooks_deliver) {
+        jmethodID mid = (*env)->GetStaticMethodID(env, local, "deliverInput", "(JDDIII)V");
+        if (!mid || (*env)->ExceptionCheck(env)) {
+            if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+        } else {
+            g_hooks_deliver = mid;
+        }
+    }
+    if (!g_hooks_refresh) {
+        jmethodID mid = (*env)->GetStaticMethodID(env, local, "refreshSnapshot", "()V");
+        if (!mid || (*env)->ExceptionCheck(env)) {
+            if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+            static int warned;
+            if (!warned++) LOGW("BooxinInputHooks.refreshSnapshot not found — rebuild lwjgl jars");
+        } else {
+            g_hooks_refresh = mid;
+        }
+    }
+    if (!g_hooks_hit) {
+        jmethodID mid = (*env)->GetStaticMethodID(env, local, "queryHitResultType", "()I");
+        if (!mid || (*env)->ExceptionCheck(env)) {
+            if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+        } else {
+            g_hooks_hit = mid;
+        }
+    }
+    if (!g_hooks_held) {
+        jmethodID mid = (*env)->GetStaticMethodID(env, local, "queryHeldItemKind", "()I");
+        if (!mid || (*env)->ExceptionCheck(env)) {
+            if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+        } else {
+            g_hooks_held = mid;
+        }
+    }
     (*env)->DeleteLocalRef(env, local);
-    LOGI("cached BooxinInputHooks.deliverInput cls=%p", (void *)g_hooks_cls);
-    return true;
+    LOGI("cached BooxinInputHooks refresh=%p hit=%p held=%p cls=%p",
+         (void *)g_hooks_refresh, (void *)g_hooks_hit, (void *)g_hooks_held, (void *)g_hooks_cls);
+    return g_hooks_cls && g_hooks_refresh && g_hooks_hit && g_hooks_held;
 }
+
+static void resolve_snapshot_publish_syms(void) {
+    if (g_snapshot_syms_resolved) return;
+    g_snapshot_syms_resolved = true;
+    void *lib = open_pojavexec();
+    if (!lib) return;
+    g_set_hit_type = (booxin_set_hit_fn)dlsym(lib, "pojavSetHitResultType");
+    g_set_held_kind = (booxin_set_held_fn)dlsym(lib, "booxinSetHeldItemKind");
+    LOGI("snapshot publish syms hit=%p held=%p", (void *)g_set_hit_type, (void *)g_set_held_kind);
+}
+
+static void booxin_refresh_game_snapshot(void);
 
 static struct booxin_pojav_environ_s *booxin_get_environ(void) {
     void *lib = open_pojavexec();
@@ -1003,6 +1050,46 @@ static void booxin_stop_pumping(void) {
 static void booxin_pump_events(void *window) {
     if (!g_pojav_pump_events) resolve_pojav_pump_syms();
     if (g_pojav_pump_events) g_pojav_pump_events(window);
+    booxin_refresh_game_snapshot();
+}
+
+static void booxin_refresh_game_snapshot(void) {
+    struct booxin_pojav_environ_s *e = booxin_get_environ();
+    if (!e || !e->runtimeJavaVMPtr) return;
+
+    int attached = 0;
+    JNIEnv *env = booxin_get_hotspot_env(e, &attached);
+    if (!env) return;
+    e->runtimeJNIEnvPtr_JRE = env;
+    if (!cache_input_hooks_deliver(env)) {
+        if (attached) (*e->runtimeJavaVMPtr)->DetachCurrentThread(e->runtimeJavaVMPtr);
+        return;
+    }
+    (*env)->CallStaticVoidMethod(env, g_hooks_cls, g_hooks_refresh);
+    if ((*env)->ExceptionCheck(env)) {
+        log_exception(env, "BooxinInputHooks.refreshSnapshot");
+        if (attached) (*e->runtimeJavaVMPtr)->DetachCurrentThread(e->runtimeJavaVMPtr);
+        return;
+    }
+    jint hit = (*env)->CallStaticIntMethod(env, g_hooks_cls, g_hooks_hit);
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionClear(env);
+        hit = 0;
+    }
+    jint held = (*env)->CallStaticIntMethod(env, g_hooks_cls, g_hooks_held);
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionClear(env);
+        held = 0;
+    }
+    resolve_snapshot_publish_syms();
+    if (g_set_hit_type) g_set_hit_type((int)hit);
+    if (g_set_held_kind) g_set_held_kind((int)held);
+    static int pub_log;
+    if (pub_log < 16) {
+        pub_log++;
+        LOGI("publish snapshot#%d hit=%d held=%d", pub_log, (int)hit, (int)held);
+    }
+    if (attached) (*e->runtimeJavaVMPtr)->DetachCurrentThread(e->runtimeJavaVMPtr);
 }
 
 static bool patch_glfw_fn_field(JNIEnv *env, jclass fnCls, const char *field, void *addr) {
@@ -1199,7 +1286,17 @@ static bool call_setup_bridge_window(JNIEnv *env, jobject surface) {
         return false;
     }
     (*env)->DeleteLocalRef(env, cbCls);
-    LOGI("setupBridgeWindow ok");
+    {
+        typedef void *(*ensure_fn)(void);
+        ensure_fn ensure = (ensure_fn)dlsym(lib, "booxin_ensure_native_window");
+        void *win = ensure ? ensure() : NULL;
+        if (!win) {
+            LOGW("setupBridgeWindow: ANativeWindow still null after bind");
+            log_pojav_environ("after setupBridgeWindow (null window)");
+            return false;
+        }
+        LOGI("setupBridgeWindow ok window=%p", win);
+    }
     log_pojav_environ("after setupBridgeWindow");
     return true;
 }
@@ -1282,15 +1379,20 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_pojav) {
          strstr(pa.mainClass, "ForgeBootstrap") ||
          strstr(pa.mainClass, "bootstraplauncher") ||
          strstr(pa.mainClass, "modlauncher"));
-    if (!forge_like) {
+    /* 26.3+ uses SDL3 — skip GLFW preinit (our stub would load the wrong window stack). */
+    const char *windowing = getenv("BOOXIN_WINDOWING");
+    int sdl_like = windowing && strcmp(windowing, "sdl") == 0;
+    if (!forge_like && !sdl_like) {
         if (!preinit_hotspot_glfw(jenv)) {
             LOGW("GLFW preinit failed — continuing with System.load anyway");
         }
+    } else if (sdl_like) {
+        LOGI("SDL windowing — skip GLFW preinit");
     } else {
         LOGI("Forge-like main=%s — skip GLFW preinit (avoid double-load liblwjgl)",
              pa.mainClass);
     }
-    if (!forge_like) {
+    if (!forge_like && !sdl_like) {
         if (!hotspot_system_load_pojavexec(jenv)) {
             LOGW("HotSpot System.load(pojavexec) failed — trying manual JNI_OnLoad");
             if (!call_pojav_jni_onload(jvm, jenv, "HotSpot")) {
@@ -1314,6 +1416,26 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_pojav) {
             }
         }
         force_input_bridge_ready("after HotSpot pojavexec load");
+    } else if (sdl_like) {
+        LOGI("SDL windowing — skip HotSpot GLFW System.load; ensure ANativeWindow");
+        {
+            void *lib = open_pojavexec();
+            typedef void *(*ensure_fn)(void);
+            ensure_fn ensure = lib
+                ? (ensure_fn)dlsym(lib, "booxin_ensure_native_window")
+                : NULL;
+            void *win = ensure ? ensure() : NULL;
+            LOGI("SDL-like ensure native window=%p", win);
+            struct booxin_pojav_environ_s **pp = lib
+                ? (struct booxin_pojav_environ_s **)dlsym(lib, "pojav_environ")
+                : NULL;
+            if (pp && *pp) {
+                (*pp)->runtimeJavaVMPtr = jvm;
+                (*pp)->runtimeJNIEnvPtr_JRE = jenv;
+            }
+        }
+        log_pojav_environ("after SDL HotSpot ensure");
+        force_input_bridge_ready("after SDL HotSpot ensure");
     } else {
         LOGI("Forge-like — skip HotSpot System.load(pojavexec) to avoid classloader split");
         /* Skip JNI_OnLoad: it FindClass(GLFW) and can load liblwjgl too early. */
@@ -1339,12 +1461,14 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_pojav) {
         log_pojav_environ("after Forge HotSpot ensure");
         force_input_bridge_ready("after Forge HotSpot ensure");
     }
-    if (!forge_like) {
+    if (!forge_like && !sdl_like) {
         log_hotspot_pump_diag(jenv);
         if (!patch_hotspot_pump_function_pointers(jenv)) {
             LOGW("GLFW pump pointer patch failed — touch may not reach Minecraft");
         }
         log_hotspot_pump_diag(jenv);
+    } else if (sdl_like) {
+        LOGI("SDL windowing — defer input pump until SDL/LWJGL loads");
     } else {
         LOGI("Forge-like — defer GLFW pump patch until module-layer LWJGL loads");
     }
@@ -1425,6 +1549,30 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_pojav) {
         LOGI("POJAV_RENDERER=%s",
              renderer && renderer[0] ? renderer : "(unset)");
         log_pojav_environ("before Invoking main");
+        /* Minecraft/LWJGL call SDL_Init without SDL_main. Prefer ART preload
+         * (BooxinSdlBootstrap) so JNI_OnLoad sees org.libsdl.app.*; here only
+         * dlopen the same absolute path and call SDL_SetMainReady. */
+        {
+            const char *windowing = getenv("BOOXIN_WINDOWING");
+            if (windowing && strcmp(windowing, "sdl") == 0) {
+                const char *sdl_path = getenv("BOOXIN_SDL3_LIB");
+                if (!sdl_path || !sdl_path[0]) sdl_path = "libSDL3.so";
+                void *sdl = dlopen(sdl_path, RTLD_NOW | RTLD_NOLOAD);
+                if (!sdl) sdl = dlopen(sdl_path, RTLD_NOW | RTLD_GLOBAL);
+                if (!sdl) {
+                    LOGW("dlopen(%s) failed: %s", sdl_path, dlerror());
+                } else {
+                    void (*set_ready)(void) =
+                        (void (*)(void))dlsym(sdl, "SDL_SetMainReady");
+                    if (set_ready) {
+                        set_ready();
+                        LOGI("SDL_SetMainReady() OK path=%s", sdl_path);
+                    } else {
+                        LOGW("SDL_SetMainReady missing in %s", sdl_path);
+                    }
+                }
+            }
+        }
     }
     (*jenv)->CallStaticVoidMethod(jenv, mainCls, mainMethod, argsArr);
     if ((*jenv)->ExceptionCheck(jenv)) {
@@ -1819,6 +1967,47 @@ Java_com_booxin_launcher_core_launch_NativeJvmLauncher_nativeSetupBridgeWindow(
     force_input_bridge_ready("after ART setupBridgeWindow");
 
     return call_setup_bridge_window(env, surface) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT void JNICALL
+Java_com_booxin_launcher_core_launch_NativeJvmLauncher_nativeClearBridgeWindow(
+    JNIEnv *env, jclass clazz)
+{
+    (void)clazz;
+    pthread_mutex_lock(&g_bridge_mutex);
+    if (g_bridge_surface) {
+        (*env)->DeleteGlobalRef(env, g_bridge_surface);
+        g_bridge_surface = NULL;
+    }
+    pthread_mutex_unlock(&g_bridge_mutex);
+
+    void *lib = open_pojavexec();
+    if (!lib) {
+        lib = dlopen("libbooxin_bridge.so", RTLD_LAZY | RTLD_NOLOAD);
+        if (!lib) lib = dlopen("libbooxin_bridge.so", RTLD_LAZY);
+    }
+    if (!lib) {
+        LOGW("clearBridgeWindow: bridge not loaded");
+        return;
+    }
+    typedef void (*retain_fn)(void *);
+    retain_fn retain = (retain_fn)dlsym(lib, "booxin_retain_native_window");
+    if (retain) {
+        retain(NULL);
+        LOGI("clearBridgeWindow: released retained ANativeWindow");
+    } else {
+        /* setupBridgeWindow(null) 兜底 */
+        SetupBridgeWindow_fn fn = resolve_setup_bridge_window(lib);
+        jclass cbCls = (*env)->FindClass(env, "org/lwjgl/glfw/CallbackBridge");
+        if (fn && cbCls && !(*env)->ExceptionCheck(env)) {
+            fn(env, cbCls, NULL);
+            (*env)->DeleteLocalRef(env, cbCls);
+            LOGI("clearBridgeWindow: via setupBridgeWindow(null)");
+        } else {
+            if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+            LOGW("clearBridgeWindow: no release symbol");
+        }
+    }
 }
 
 JNIEXPORT jboolean JNICALL

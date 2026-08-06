@@ -213,15 +213,22 @@ class MultiplayerFragment : Fragment() {
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 launch {
+                    var lastAuthKey: String? = null
                     AppContainer.multiplayerAuth.session.collect { session ->
                         if (_binding == null) return@collect
                         renderSession(session)
-                        if (session != null) {
-                            refreshFriends()
-                            refreshLobby()
-                            refreshRooms()
-                            refreshMessages()
-                            refreshRewards()
+                        val authKey = session?.let { "${it.apiRoot}|${it.accessToken}" }
+                        // Only bulk-refresh on login / token change — profile updates
+                        // 在线状态/头像更新不要刷爆 API。
+                        if (authKey != lastAuthKey) {
+                            lastAuthKey = authKey
+                            if (session != null) {
+                                refreshFriends()
+                                refreshLobby()
+                                refreshRooms()
+                                refreshMessages()
+                                refreshRewards()
+                            }
                         }
                     }
                 }

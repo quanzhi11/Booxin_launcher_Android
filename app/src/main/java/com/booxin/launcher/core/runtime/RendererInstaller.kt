@@ -116,7 +116,7 @@ object RendererInstaller {
     }
 
     private fun downloadCandidates(rawUrl: String): List<String> {
-        // CN networks often cannot reach github.com — try common proxies first.
+        // 国内直连 github 困难，先试代理。
         return listOf(
             "https://ghproxy.net/$rawUrl",
             "https://mirror.ghproxy.com/$rawUrl",

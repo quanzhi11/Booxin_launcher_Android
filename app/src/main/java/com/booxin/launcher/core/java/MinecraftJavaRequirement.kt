@@ -64,7 +64,7 @@ object MinecraftJavaRequirement {
         val major = match.groupValues[1].toIntOrNull() ?: return null
         val minor = match.groupValues[2].toIntOrNull() ?: return null
         val patch = match.groupValues[3].takeIf { it.isNotBlank() }?.toIntOrNull() ?: 0
-        // Prefer Minecraft-like 1.x over loader 0.x when both appear.
+        // 同时出现时优先 Minecraft 的 1.x。
         if (major == 0) {
             val minecraftish = Regex("""(?<!\d)(1)\.(\d+)(?:\.(\d+))?""")
                 .findAll(id)
@@ -94,5 +94,15 @@ object MinecraftJavaRequirement {
         if (a != major) return a > major
         if (b != minor) return b > minor
         return c >= patch
+    }
+
+    /**
+     * Minecraft 26.3 Snapshot 4+ replaced GLFW with SDL3 for window/input.
+     * Ids like "26.3-snapshot-6" parse as 26.3.
+     */
+    fun usesSdlWindowing(mcVersionId: String): Boolean {
+        val parsed = parseVersion(mcVersionId) ?: return false
+        if (parsed.first >= 27) return true
+        return parsed.first == 26 && parsed.second >= 3
     }
 }

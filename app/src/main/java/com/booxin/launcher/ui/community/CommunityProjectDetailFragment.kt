@@ -212,7 +212,7 @@ class CommunityProjectDetailFragment : Fragment() {
                 selected != null && labels[it.id] == selected
             }.thenByDescending { it.datePublished.orEmpty() }
         )
-        // Cap UI list — full Modrinth history is huge and rarely needed for install.
+        // 限制列表长度。
         return sorted.take(MAX_VERSIONS_SHOWN).map { version ->
             version to labels[version.id]
         }

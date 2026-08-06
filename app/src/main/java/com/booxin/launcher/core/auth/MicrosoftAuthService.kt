@@ -313,7 +313,7 @@ object MicrosoftAuthService {
         val name = profile.optString("name").ifBlank { error("档案无角色名") }
         val uuid = profile.optString("id").ifBlank { error("档案无 UUID") }
         val now = System.currentTimeMillis()
-        // Prefer Minecraft token lifetime (usually ~24h); do not use MS OAuth expires_in.
+        // 用 Minecraft token 有效期，不用 MS OAuth expires_in。
         val expiresInSec = mcExpiresIn.coerceIn(60, 7 * 24 * 3600)
         log.log("mc token expires_in=${expiresInSec}s name=$name uuid=$uuid")
         return LauncherAccount(

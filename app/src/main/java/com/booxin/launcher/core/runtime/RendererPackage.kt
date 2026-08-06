@@ -12,7 +12,7 @@ data class RendererPackage(
     val downloadUrl: String,
     /** Primary GL translator / OSMesa soname inside the APK. */
     val glLib: String,
-    /** EGL provider — `libEGL.so` means system EGL. */
+    /** EGL 提供者；libEGL.so 表示系统 EGL。 */
     val eglLib: String,
     val rendererToken: String,
     val libGlEs: String,

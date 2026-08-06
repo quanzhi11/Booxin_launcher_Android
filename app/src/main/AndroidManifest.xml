@@ -47,6 +47,8 @@
             android:parentActivityName=".ui.MainActivity"
             android:process=":game"
             android:screenOrientation="sensorLandscape"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
             android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize"
             android:windowSoftInputMode="adjustResize" />
 

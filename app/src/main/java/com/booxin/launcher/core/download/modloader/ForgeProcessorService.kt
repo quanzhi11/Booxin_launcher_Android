@@ -26,7 +26,7 @@ import java.net.InetSocketAddress
  * Run Forge processors in an isolated process.
  *
  * Job is passed via files (not large Intent extras) to avoid binder limits and
- * lost UDP races — exit code is written to a file and also sent over UDP.
+ * 退出码写文件并 UDP 发送，避免丢包。
  */
 class ForgeProcessorService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
