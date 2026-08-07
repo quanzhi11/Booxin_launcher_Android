@@ -74,7 +74,13 @@ object ForgeNewInstaller {
                         0,
                         totalSteps
                     )
-                    libraryDownloader.downloadLibraries(profileLibraries, mcVersion) { done, total, _ ->
+                    // Do not LibraryFilter-dedupe by group:artifact — Forge processors need
+                    // multiple versions (e.g. jopt-simple 5.0.4 + 6.0-alpha-3).
+                    libraryDownloader.downloadLibraries(
+                        profileLibraries,
+                        mcVersion,
+                        applyUpgrade = false
+                    ) { done, total, _ ->
                         if (total > 0) {
                             onProgress(
                                 "Forge 安装流程：$roadmap\n准备：下载安装工具依赖 $done / $total",

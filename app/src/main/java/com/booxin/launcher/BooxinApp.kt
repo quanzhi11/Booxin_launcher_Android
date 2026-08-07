@@ -18,8 +18,8 @@ class BooxinApp : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
-        LauncherPaths.init(this)
         LauncherPrefs.init(this)
+        LauncherPaths.init(this)
         DownloadProviders.init(this)
         runCatching { AndroidGameRuntime.ensure(this) }
         appScope.launch {

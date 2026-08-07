@@ -1,10 +1,23 @@
 package com.booxin.launcher.ui.settings
 
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.os.Process
+import android.provider.Settings
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.ImageButton
+import android.widget.LinearLayout
+import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.core.view.isVisible
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.Lifecycle
@@ -13,8 +26,12 @@ import androidx.lifecycle.repeatOnLifecycle
 import com.booxin.launcher.AppContainer
 import com.booxin.launcher.BuildConfig
 import com.booxin.launcher.R
+import com.booxin.launcher.core.GameDirItem
+import com.booxin.launcher.core.GameDirLocation
+import com.booxin.launcher.core.GameDirRegistry
 import com.booxin.launcher.core.LauncherPaths
 import com.booxin.launcher.core.LauncherPrefs
+import com.booxin.launcher.core.SafTreePath
 import com.booxin.launcher.core.diag.DiagnosticLogExporter
 import com.booxin.launcher.core.download.DownloadProviders
 import com.booxin.launcher.core.download.DownloadSource
@@ -30,11 +47,69 @@ import com.google.android.material.slider.Slider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 
 class SettingsFragment : Fragment() {
 
     private var _binding: FragmentSettingsBinding? = null
     private val binding get() = _binding!!
+
+    private var gameDirListDialog: androidx.appcompat.app.AlertDialog? = null
+    private var refreshGameDirListUi: (() -> Unit)? = null
+    private var pendingAfterStoragePermission: (() -> Unit)? = null
+
+    private val requestLegacyStoragePermission =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
+            val granted = result.values.all { it }
+            val next = pendingAfterStoragePermission
+            pendingAfterStoragePermission = null
+            if (granted) {
+                next?.invoke()
+            } else {
+                Toast.makeText(
+                    requireContext(),
+                    R.string.settings_game_dir_permission_denied,
+                    Toast.LENGTH_LONG
+                ).show()
+                // Still proceed — internal / app-external paths do not need it.
+                next?.invoke()
+            }
+        }
+
+    private val requestManageAllFiles =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+            val next = pendingAfterStoragePermission
+            pendingAfterStoragePermission = null
+            if (!hasFullStorageAccess()) {
+                Toast.makeText(
+                    requireContext(),
+                    R.string.settings_game_dir_permission_denied,
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+            next?.invoke()
+        }
+
+    private val pickGameDirFolder =
+        registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+            if (uri == null) return@registerForActivityResult
+            val ctx = requireContext()
+            runCatching {
+                val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                ctx.contentResolver.takePersistableUriPermission(uri, flags)
+            }
+            val path = SafTreePath.toAbsolutePath(uri)
+            if (path.isNullOrBlank()) {
+                Toast.makeText(
+                    ctx,
+                    R.string.settings_game_dir_pick_folder_failed,
+                    Toast.LENGTH_LONG
+                ).show()
+                return@registerForActivityResult
+            }
+            addAndMaybeSelect(path)
+        }
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -47,7 +122,7 @@ class SettingsFragment : Fragment() {
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
-        binding.textGameDir.text = LauncherPaths.rootDir.absolutePath
+        refreshGameDir()
         binding.textAbout.text = getString(R.string.settings_version, BuildConfig.VERSION_NAME)
         refreshDownloadSource()
         refreshJavaStatus()
@@ -56,8 +131,12 @@ class SettingsFragment : Fragment() {
         setupMemorySlider()
         refreshRealtimeLog()
 
+        binding.buttonGameDir.setOnClickListener {
+            ensureStoragePermissionThen { showGameDirListDialog() }
+        }
         binding.buttonRenderer.setOnClickListener { showRendererPicker() }
         binding.buttonDownloadRenderer.setOnClickListener { downloadSelectedRenderer() }
+
 
         binding.buttonRealtimeLogStart.setOnClickListener {
             RealtimeLaunchLog.enable()
@@ -179,6 +258,301 @@ class SettingsFragment : Fragment() {
                 }
             }
         }
+    }
+
+    private fun refreshGameDir() {
+        val b = _binding ?: return
+        b.textGameDir.text = LauncherPaths.currentLocationLabel(requireContext())
+    }
+
+    private fun hasFullStorageAccess(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            Environment.isExternalStorageManager()
+        } else {
+            true
+        }
+    }
+
+    private fun ensureStoragePermissionThen(onReady: () -> Unit) {
+        val ctx = requireContext()
+        when {
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.R -> {
+                if (Environment.isExternalStorageManager()) {
+                    onReady()
+                    return
+                }
+                Toast.makeText(ctx, R.string.settings_game_dir_manage_storage, Toast.LENGTH_LONG)
+                    .show()
+                pendingAfterStoragePermission = onReady
+                val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                    data = Uri.parse("package:${ctx.packageName}")
+                }
+                runCatching { requestManageAllFiles.launch(intent) }
+                    .onFailure {
+                        pendingAfterStoragePermission = null
+                        // Fallback: open generic all-files page, then continue.
+                        runCatching {
+                            startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+                        }
+                        onReady()
+                    }
+            }
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.M -> {
+                val need = mutableListOf<String>()
+                if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.READ_EXTERNAL_STORAGE)
+                    != PackageManager.PERMISSION_GRANTED
+                ) {
+                    need += Manifest.permission.READ_EXTERNAL_STORAGE
+                }
+                if (Build.VERSION.SDK_INT <= 28 &&
+                    ContextCompat.checkSelfPermission(ctx, Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                    != PackageManager.PERMISSION_GRANTED
+                ) {
+                    need += Manifest.permission.WRITE_EXTERNAL_STORAGE
+                }
+                if (need.isEmpty()) {
+                    onReady()
+                } else {
+                    Toast.makeText(ctx, R.string.settings_game_dir_permission_needed, Toast.LENGTH_SHORT)
+                        .show()
+                    pendingAfterStoragePermission = onReady
+                    requestLegacyStoragePermission.launch(need.toTypedArray())
+                }
+            }
+            else -> onReady()
+        }
+    }
+
+    private fun showGameDirListDialog() {
+        val ctx = requireContext()
+        val content = layoutInflater.inflate(R.layout.dialog_game_dir_list, null, false)
+        val listHost = content.findViewById<LinearLayout>(R.id.layoutGameDirList)
+        val addButton = content.findViewById<MaterialButton>(R.id.buttonGameDirAdd)
+
+        fun bindList() {
+            listHost.removeAllViews()
+            val selected = GameDirRegistry.selectedPath(ctx)
+            GameDirRegistry.list(ctx).forEach { item ->
+                listHost.addView(inflateGameDirRow(listHost, item, selected == item.path))
+            }
+        }
+
+        refreshGameDirListUi = { bindList() }
+        addButton.setOnClickListener { showAddGameDirPicker() }
+        bindList()
+
+        gameDirListDialog?.dismiss()
+        gameDirListDialog = MaterialAlertDialogBuilder(ctx)
+            .setTitle(R.string.settings_game_dir_pick)
+            .setView(content)
+            .setNegativeButton(android.R.string.cancel, null)
+            .setOnDismissListener {
+                gameDirListDialog = null
+                refreshGameDirListUi = null
+            }
+            .show()
+    }
+
+    private fun refreshOpenGameDirList() {
+        refreshGameDirListUi?.invoke()
+    }
+
+    private fun inflateGameDirRow(
+        parent: ViewGroup,
+        item: GameDirItem,
+        isSelected: Boolean
+    ): View {
+        val row = layoutInflater.inflate(R.layout.item_game_dir, parent, false)
+        val title = row.findViewById<TextView>(R.id.textGameDirTitle)
+        val pathView = row.findViewById<TextView>(R.id.textGameDirPath)
+        val select = row.findViewById<View>(R.id.layoutGameDirSelect)
+        val remove = row.findViewById<ImageButton>(R.id.buttonGameDirRemove)
+
+        val label = when {
+            item.isDefault -> getString(R.string.settings_game_dir_internal)
+            else -> displayNameForPath(item.path)
+        }
+        title.text = if (isSelected) {
+            "$label ${getString(R.string.settings_game_dir_current_mark)}"
+        } else {
+            label
+        }
+        pathView.text = item.path
+
+        select.setOnClickListener { confirmSwitchToPath(item.path) }
+        if (item.isDefault) {
+            remove.isVisible = false
+        } else {
+            remove.isVisible = true
+            remove.setOnClickListener { confirmRemoveGameDir(item.path) }
+        }
+        return row
+    }
+
+    private fun displayNameForPath(path: String): String {
+        val ctx = requireContext()
+        val external = GameDirLocation.EXTERNAL_APP.resolve(ctx, null).absolutePath
+        val publicGames = GameDirLocation.PUBLIC_GAMES.resolve(ctx, null).absolutePath
+        return when (File(path).absolutePath) {
+            external -> getString(R.string.settings_game_dir_external)
+            publicGames -> getString(R.string.settings_game_dir_public)
+            else -> getString(R.string.settings_game_dir_custom)
+        }
+    }
+
+    private fun showAddGameDirPicker() {
+        val options = listOf(
+            GameDirLocation.EXTERNAL_APP,
+            GameDirLocation.PUBLIC_GAMES,
+            GameDirLocation.CUSTOM
+        )
+        val labels = options.map { getString(it.labelRes()) }.toTypedArray()
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle(R.string.settings_game_dir_add_pick)
+            .setItems(labels) { _, which ->
+                when (val picked = options[which]) {
+                    GameDirLocation.CUSTOM -> openFolderPicker()
+                    else -> addAndMaybeSelect(picked.resolve(requireContext(), null).absolutePath)
+                }
+            }
+            .show()
+    }
+
+    private fun openFolderPicker() {
+        // Prefer starting in shared storage root when the system supports it.
+        val initial = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            runCatching {
+                android.provider.DocumentsContract.buildDocumentUri(
+                    "com.android.externalstorage.documents",
+                    "primary:"
+                )
+            }.getOrNull()
+        } else {
+            null
+        }
+        pickGameDirFolder.launch(initial)
+    }
+
+    private fun addAndMaybeSelect(path: String) {
+        val ctx = requireContext()
+        GameDirRegistry.addPath(ctx, path).fold(
+            onSuccess = {
+                Toast.makeText(ctx, R.string.settings_game_dir_added, Toast.LENGTH_SHORT).show()
+                refreshOpenGameDirList()
+            },
+            onFailure = { err ->
+                Toast.makeText(
+                    ctx,
+                    getString(R.string.settings_game_dir_failed, err.message ?: "unknown"),
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        )
+    }
+
+    private fun confirmRemoveGameDir(path: String) {
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle(R.string.settings_game_dir_remove_title)
+            .setMessage(getString(R.string.settings_game_dir_remove_message, path))
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(android.R.string.ok) { _, _ ->
+                val ctx = requireContext()
+                val wasSelected = GameDirRegistry.isSelected(ctx, path)
+                GameDirRegistry.removePath(ctx, path).fold(
+                    onSuccess = {
+                        if (wasSelected) {
+                            // Persist default and restart so runtime picks it up.
+                            applySwitchToPath(GameDirRegistry.defaultPath(ctx).absolutePath)
+                        } else {
+                            refreshOpenGameDirList()
+                            refreshGameDir()
+                        }
+                    },
+                    onFailure = { err ->
+                        Toast.makeText(
+                            ctx,
+                            getString(R.string.settings_game_dir_failed, err.message ?: "unknown"),
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                )
+            }
+            .show()
+    }
+
+    private fun confirmSwitchToPath(path: String) {
+        val ctx = requireContext()
+        val abs = File(path).absolutePath
+        if (abs == LauncherPaths.rootDir.absolutePath &&
+            abs == GameDirRegistry.selectedPath(ctx)
+        ) {
+            Toast.makeText(ctx, R.string.settings_game_dir_same, Toast.LENGTH_SHORT).show()
+            return
+        }
+        MaterialAlertDialogBuilder(ctx)
+            .setTitle(R.string.settings_game_dir_confirm_title)
+            .setMessage(getString(R.string.settings_game_dir_confirm_message, abs))
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(android.R.string.ok) { _, _ ->
+                applySwitchToPath(abs)
+            }
+            .show()
+    }
+
+    private fun applySwitchToPath(path: String) {
+        val ctx = requireContext().applicationContext
+        val result = LauncherPaths.switchToRegistered(ctx, path)
+        result.fold(
+            onSuccess = { root ->
+                runCatching {
+                    com.booxin.launcher.core.launch.AndroidGameRuntime.ensure(ctx)
+                }
+                refreshGameDir()
+                Toast.makeText(ctx, root.absolutePath, Toast.LENGTH_SHORT).show()
+                restartApp(ctx)
+            },
+            onFailure = { err ->
+                // Path may not be in registry yet (legacy callers) — try switchRoot CUSTOM.
+                val fallback = LauncherPaths.switchRoot(
+                    ctx,
+                    GameDirLocation.CUSTOM,
+                    path
+                )
+                fallback.fold(
+                    onSuccess = { root ->
+                        runCatching {
+                            com.booxin.launcher.core.launch.AndroidGameRuntime.ensure(ctx)
+                        }
+                        refreshGameDir()
+                        Toast.makeText(ctx, root.absolutePath, Toast.LENGTH_SHORT).show()
+                        restartApp(ctx)
+                    },
+                    onFailure = { e2 ->
+                        Toast.makeText(
+                            requireContext(),
+                            getString(
+                                R.string.settings_game_dir_failed,
+                                e2.message ?: err.message ?: "unknown"
+                            ),
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                )
+            }
+        )
+    }
+
+    private fun restartApp(context: android.content.Context) {
+        val launch = context.packageManager.getLaunchIntentForPackage(context.packageName)
+        if (launch != null) {
+            launch.addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP
+            )
+            context.startActivity(launch)
+        }
+        Process.killProcess(Process.myPid())
     }
 
     private fun setupRendererModeToggle() {
@@ -446,6 +820,10 @@ class SettingsFragment : Fragment() {
     }
 
     override fun onDestroyView() {
+        gameDirListDialog?.dismiss()
+        gameDirListDialog = null
+        refreshGameDirListUi = null
+        pendingAfterStoragePermission = null
         super.onDestroyView()
         _binding = null
     }

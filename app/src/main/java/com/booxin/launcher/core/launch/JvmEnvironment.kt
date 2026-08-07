@@ -31,7 +31,7 @@ object JvmEnvironment {
             "TMPDIR" to context.cacheDir.absolutePath,
             com.booxin.launcher.core.runtime.RuntimeEnv.NATIVEDIR to stagedNatives,
             com.booxin.launcher.core.runtime.RuntimeEnv.LEGACY_POJAV_NATIVEDIR to stagedNatives,
-            com.booxin.launcher.core.runtime.RuntimeEnv.LEGACY_FCL_NATIVEDIR to stagedNatives,
+            com.booxin.launcher.core.runtime.RuntimeEnv.LEGACY_NATIVEDIR_ALT to stagedNatives,
             "_JAVA_VERSION_SET" to "true"
         )
         env.putAll(extraEnv)
@@ -86,6 +86,8 @@ object JvmEnvironment {
 
     private fun preloadLibraries(javaHome: File, jvmLibDir: File, nativeLibDir: String) {
         val candidates = linkedSetOf<String>()
+        // libjsig first: HotSpot signal chaining with ART (avoids CreateJavaVM hangs/crashes)
+        findLibrary(javaHome, "libjsig.so")?.let { candidates += it.absolutePath }
         // Load in dependency order: jli → jvm → core JDK libs → extras
         findLibrary(javaHome, "libjli.so")?.let { candidates += it.absolutePath }
         // 优先 server/libjvm.so

@@ -10,7 +10,8 @@ object RuntimeEnv {
     const val EGL = "BOOXIN_EGL"
 
     const val LEGACY_POJAV_NATIVEDIR = "POJAV_NATIVEDIR"
-    const val LEGACY_FCL_NATIVEDIR = "FCL_NATIVEDIR"
+    /** Legacy native-dir env alias required by some renderer plugins. */
+    const val LEGACY_NATIVEDIR_ALT = "FCL_NATIVEDIR"
     const val LEGACY_POJAV_RENDERER = "POJAV_RENDERER"
     const val LEGACY_POJAVEXEC_EGL = "POJAVEXEC_EGL"
 
@@ -61,7 +62,7 @@ object RuntimeEnv {
         base[RENDERER] = token
         base[EGL] = egl
         base[LEGACY_POJAV_NATIVEDIR] = stagedNatives
-        base[LEGACY_FCL_NATIVEDIR] = stagedNatives
+        base[LEGACY_NATIVEDIR_ALT] = stagedNatives
         base[LEGACY_POJAV_RENDERER] = token
         base[LEGACY_POJAVEXEC_EGL] = egl
         return base

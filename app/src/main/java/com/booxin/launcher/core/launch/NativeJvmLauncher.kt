@@ -19,6 +19,17 @@ object NativeJvmLauncher {
 
     fun initializeHooks(): Boolean = nativeInitializeHooks()
 
+    /** Cache ART App ClassLoader for FindClass workarounds on foreign threads. */
+    fun cacheArtClassLoader(loader: ClassLoader?) = nativeCacheArtClassLoader(loader)
+
+    /**
+     * Invoke SDL JNI_OnLoad under this Java→JNI frame (so FindClass sees app classes).
+     * Library must already be dlopen'd (RTLD_NOLOAD) or this will dlopen first.
+     */
+    fun finishSdlJniOnLoad(): Boolean = nativeFinishSdlJniOnLoad()
+
+    fun markSdlJniOnLoadDone() = nativeMarkSdlJniOnLoadDone()
+
     fun launchJvm(args: Array<String>, majorVersion: Int): Int {
         val full = "$majorVersion.0.1-internal"
         val dot = "$majorVersion.0.1"
@@ -51,6 +62,12 @@ object NativeJvmLauncher {
     private external fun nativeClearBridgeWindow()
 
     private external fun nativeInitializeHooks(): Boolean
+
+    private external fun nativeCacheArtClassLoader(loader: ClassLoader?)
+
+    private external fun nativeFinishSdlJniOnLoad(): Boolean
+
+    private external fun nativeMarkSdlJniOnLoadDone()
 
     private external fun nativeDumpInputBridge(): String?
 

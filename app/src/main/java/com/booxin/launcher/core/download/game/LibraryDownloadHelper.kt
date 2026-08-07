@@ -23,13 +23,19 @@ class LibraryDownloadHelper(
     suspend fun downloadLibraries(
         libraries: JSONArray,
         versionId: String,
+        /**
+         * When false, keep every library version (needed for Forge install_profile processors
+         * that reference both jopt-simple:5.0.4 and jopt-simple:6.0-alpha-3).
+         */
+        applyUpgrade: Boolean = true,
         onProgress: (completed: Int, total: Int, message: String) -> Unit = { _, _, _ -> }
     ) = withContext(Dispatchers.IO) {
         val resolved = GameJsonParser.parseVersionJson(
             JSONObject()
                 .put("id", versionId)
                 .put("libraries", libraries)
-                .toString()
+                .toString(),
+            applyUpgrade = applyUpgrade
         ).libraries
         if (resolved.isEmpty()) return@withContext
         downloadResolved(resolved, versionId, onProgress)
@@ -42,11 +48,18 @@ class LibraryDownloadHelper(
         val merged = VersionJsonMerger.merge(versionId)
             ?: error("缺少版本 JSON: $versionId")
         downloadLibraries(
-            merged.optJSONArray("libraries") ?: JSONArray(),
-            versionId,
-            onProgress
+            libraries = merged.optJSONArray("libraries") ?: JSONArray(),
+            versionId = versionId,
+            onProgress = onProgress
         )
     }
+
+    /** Download a pre-resolved library list (e.g. LibraryFilter upgrades at launch). */
+    suspend fun downloadResolvedLibraries(
+        libraries: List<ResolvedLibrary>,
+        versionId: String,
+        onProgress: (completed: Int, total: Int, message: String) -> Unit = { _, _, _ -> }
+    ) = downloadResolved(libraries, versionId, onProgress)
 
     private suspend fun downloadResolved(
         libraries: List<ResolvedLibrary>,
@@ -80,7 +93,14 @@ class LibraryDownloadHelper(
         if (Digests.matchesSha1(destination, lib.sha1)) return
         if (lib.url.isBlank()) {
             if (destination.isFile && destination.length() > 0L) return
-            error("缺少本地库（需 Forge 安装器生成）: ${lib.name}")
+            if (lib.name.startsWith("optifine:", ignoreCase = true)) {
+                // Installer should have produced these; BMCL maven is a last-resort mirror.
+                val bmcl = "https://bmclapi2.bangbang93.com/maven/${lib.path}"
+                Log.w(TAG, "optifine lib missing locally, try BMCL: ${lib.name}")
+                downloadVerified(bmcl, destination, lib.sha1, lib.name)
+                return
+            }
+            error("缺少本地库（需安装器生成）: ${lib.name}")
         }
         downloadVerified(lib.url, destination, lib.sha1, lib.name)
     }

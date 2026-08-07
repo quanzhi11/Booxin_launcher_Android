@@ -31,6 +31,10 @@
     <string name="launch_title">游戏启动</string>
     <string name="launch_meta">版本 %1$s · 玩家 %2$s</string>
     <string name="launch_stop">停止</string>
+    <string name="launch_force_enter">强制进入游戏</string>
+    <string name="launch_force_rebind">未检测到渲染帧，正在重绑窗口…</string>
+    <string name="launch_force_no_frames">仍无画面：游戏可能卡在加载或 EGL 失败</string>
+    <string name="launch_force_frames_ok">已检测到游戏画面</string>
     <string name="launch_close">关闭</string>
     <string name="launch_finished">进程已结束，退出码 %1$d</string>
     <string name="launch_fg_channel">游戏运行</string>
@@ -39,23 +43,26 @@
 
     <string name="launch_overlay_tap">点击屏幕进入游戏</string>
     <string name="launch_loading_title">加载中</string>
+    <string name="launch_loading_title_mods">正在加载模组</string>
     <string name="launch_loading_percent">0%</string>
     <string name="launch_loading_percent_fmt">%1$d%%</string>
     <string name="launch_loading_status_init">正在准备游戏环境…</string>
     <string name="launch_loading_status_fmt">%1$s</string>
     <string name="control_floating_ball">控</string>
     <string name="control_menu_edit">自定义布局</string>
-    <string name="control_menu_gesture_build">建造模式（点按=右键）</string>
-    <string name="control_menu_gesture_fight">战斗模式（点按=左键）</string>
-    <string name="control_menu_gesture_combined">综合模式（方块：点放/长挖）</string>
-    <string name="control_menu_gesture_build_current">✓ 建造模式（点按=右键）</string>
-    <string name="control_menu_gesture_fight_current">✓ 战斗模式（点按=左键）</string>
-    <string name="control_menu_gesture_combined_current">✓ 综合模式（方块：点放/长挖）</string>
     <string name="control_toast_gesture_build">已切换：建造模式（点按屏幕=右键）</string>
     <string name="control_toast_gesture_fight">已切换：战斗模式（点按屏幕=左键）</string>
-    <string name="control_toast_gesture_combined">已切换：综合模式（点按放置，长按挖掘；对准生物攻击）</string>
-    <string name="control_floating_ball_build">建</string>
-    <string name="control_floating_ball_fight">战</string>
+    <string name="control_gesture_quick_build">建造</string>
+    <string name="control_gesture_quick_fight">战斗</string>
+    <string name="control_menu_gyro">陀螺仪</string>
+    <string name="control_menu_gyro_on">开启陀螺仪</string>
+    <string name="control_menu_gyro_off">关闭陀螺仪</string>
+    <string name="control_gyro_enable">启用陀螺仪</string>
+    <string name="control_gyro_sensitivity_fmt">灵敏度：%1$d</string>
+    <string name="control_gyro_title">陀螺仪设置</string>
+    <string name="control_toast_gyro_on">已开启陀螺仪（进游戏视角后转手机即可看）</string>
+    <string name="control_toast_gyro_off">已关闭陀螺仪</string>
+    <string name="control_toast_gyro_unavailable">此设备没有可用陀螺仪</string>
     <string name="control_menu_hide">隐藏按键</string>
     <string name="control_menu_show">显示按键</string>
     <string name="control_menu_exit">退出游戏</string>
@@ -268,6 +275,30 @@
 
     <string name="settings_title">设置</string>
     <string name="settings_game_dir">游戏目录</string>
+    <string name="settings_game_dir_change">切换目录</string>
+    <string name="settings_game_dir_hint">版本、资源、Java、运行时都放在此目录。切换不会自动搬迁已有文件。</string>
+    <string name="settings_game_dir_pick">选择游戏目录</string>
+    <string name="settings_game_dir_add">添加目录</string>
+    <string name="settings_game_dir_remove">删除目录</string>
+    <string name="settings_game_dir_remove_title">确认删除该目录？</string>
+    <string name="settings_game_dir_remove_message">将从列表中移除：\n%1$s\n\n不会删除磁盘上的文件。若当前正在使用该目录，将切回默认目录。</string>
+    <string name="settings_game_dir_add_pick">添加游戏目录</string>
+    <string name="settings_game_dir_added">已添加目录</string>
+    <string name="settings_game_dir_permission_needed">访问自定义/公共目录需要存储权限</string>
+    <string name="settings_game_dir_permission_denied">未获得存储权限，可能无法读写该路径</string>
+    <string name="settings_game_dir_manage_storage">需要「所有文件访问」权限才能使用公共/自定义路径，请在系统设置中开启。</string>
+    <string name="settings_game_dir_current_mark">（当前）</string>
+    <string name="settings_game_dir_internal">内部存储（默认）</string>
+    <string name="settings_game_dir_external">应用外部目录</string>
+    <string name="settings_game_dir_public">公共目录（/sdcard/games/Booxin）</string>
+    <string name="settings_game_dir_custom">选择文件夹…</string>
+    <string name="settings_game_dir_custom_title">选择游戏目录</string>
+    <string name="settings_game_dir_custom_hint">请选择内部存储中的文件夹</string>
+    <string name="settings_game_dir_pick_folder_failed">无法解析所选文件夹的真实路径，请改选内部存储中的目录</string>
+    <string name="settings_game_dir_confirm_title">确认切换游戏目录？</string>
+    <string name="settings_game_dir_confirm_message">将切换到：\n%1$s\n\n不会迁移旧目录里的版本/资源/Java。账号仍保留。切换后启动器会重启。</string>
+    <string name="settings_game_dir_failed">切换失败：%1$s</string>
+    <string name="settings_game_dir_same">已是当前目录</string>
     <string name="settings_download_source">下载源</string>
     <string name="settings_download_source_hint">点击切换：官方 / 自动（手机测速） / BMCLAPI</string>
     <string name="settings_download_source_probing">正在测速下载源…</string>
@@ -334,6 +365,9 @@
     <string name="multiplayer_mode_email">验证码登录</string>
     <string name="multiplayer_mode_register">注册</string>
     <string name="multiplayer_mode_forgot">找回密码</string>
+    <string name="multiplayer_switch_to_email">邮箱登录</string>
+    <string name="multiplayer_switch_to_password">密码登录</string>
+    <string name="multiplayer_back_to_login">返回登录</string>
     <string name="multiplayer_login">登录</string>
     <string name="multiplayer_email_login">验证码登录</string>
     <string name="multiplayer_register">注册并登录</string>

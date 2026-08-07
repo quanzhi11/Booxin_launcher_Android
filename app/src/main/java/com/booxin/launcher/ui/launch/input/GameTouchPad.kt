@@ -2,16 +2,23 @@ package com.booxin.launcher.ui.launch.input
 
 import android.content.Context
 import android.util.AttributeSet
-import android.util.Log
 import android.view.Choreographer
 import android.view.InputDevice
 import android.view.MotionEvent
 import android.view.View
-import android.widget.Toast
 import com.booxin.runtime.BooxinBridge
 import kotlin.math.abs
 
-/** 全屏触控转鼠标。 */
+/**
+ * Full-screen touch to mouse.
+ *
+ * Grabbed: drag looks; tap clicks by [gestureMode]
+ * (BUILD = RMB, FIGHT = LMB).
+ * Second finger can look while a virtual key is held.
+ *
+ * GUI clicks are frame-scheduled so cursor is committed before button down,
+ * and pending up/down never cancel each other (stuck LMB / missed clicks).
+ */
 class GameTouchPad @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
@@ -32,23 +39,18 @@ class GameTouchPad @JvmOverloads constructor(
     private var downTime = 0L
     private var pointerId = -1
     private var shouldBeDown = false
+    /** Finger position at look start — used to decide tap vs look. */
     private var tapAnchorX = 0
     private var tapAnchorY = 0
     private var tapCancelled = false
 
+    /** True after DOWN callback posted, until it fires or is flushed. */
     private var clickDownPending = false
+    /** True while LMB is logically held from GUI click scheduling. */
     private var guiLmbHeld = false
+    /** Pending grabbed-mode tap release (BUILD/FIGHT short tap). */
     private var grabbedTapUp: Choreographer.FrameCallback? = null
     private var grabbedTapButton: Int = -1
-
-    private var combinedLongPressArmed = false
-    private var combinedDigHeld = false
-    private val combinedLongPressFrame: Choreographer.FrameCallback = Choreographer.FrameCallback {
-        if (!combinedLongPressArmed || tapCancelled || !shouldBeDown) return@FrameCallback
-        combinedLongPressArmed = false
-        combinedDigHeld = true
-        GameInput.sendKeyEvent(GameInput.MOUSE_LEFT, true)
-    }
 
     private val choreographer: Choreographer get() = BooxinBridge.sChoreographer
 
@@ -60,7 +62,7 @@ class GameTouchPad @JvmOverloads constructor(
 
     private val clickUpFrame: Choreographer.FrameCallback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
-            // 快点：UP 早于 DOWN，补发 DOWN 再抬起。
+            // Fast tap: UP arrived before delayed DOWN — force DOWN then release next frame.
             if (clickDownPending) {
                 choreographer.removeFrameCallback(clickDownFrame)
                 clickDownPending = false
@@ -77,7 +79,7 @@ class GameTouchPad @JvmOverloads constructor(
     }
 
     private fun scheduleClickDown() {
-        // 不要取消待发的 UP，否则 LMB 会卡住。
+        // Never cancel a pending UP — that left LMB stuck in the game.
         flushGuiClick(releaseIfHeld = true)
         clickDownPending = true
         choreographer.postFrameCallbackDelayed(clickDownFrame, CLICK_FRAME_DELAY_MS)
@@ -133,7 +135,6 @@ class GameTouchPad @JvmOverloads constructor(
     }
 
     fun resetTouchState() {
-        cancelCombinedLongPress(releaseDig = true)
         cancelGrabbedTap(releaseIfHeld = true)
         flushGuiClick(releaseIfHeld = true)
         pointerId = -1
@@ -165,7 +166,6 @@ class GameTouchPad @JvmOverloads constructor(
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
                 if (pointerId >= 0 && event.actionMasked == MotionEvent.ACTION_POINTER_DOWN) {
-                    // Already tracking a GUI finger; ignore extra pointers.
                     return true
                 }
                 val idx = event.actionIndex
@@ -256,26 +256,20 @@ class GameTouchPad @JvmOverloads constructor(
         }
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
-                // TouchPassthroughLayout forwards each finger as a single-pointer stream
-                // (always ACTION_DOWN). Allow starting look while a virtual key is held.
                 val idx = event.actionIndex
                 val x = event.getX(idx)
                 val screenW = width.coerceAtLeast(1)
                 if (disableLeftTouchWhenGrabbed && x <= screenW / 2f) {
                     return true
                 }
-                // New look finger replaces a previous one from this pad.
                 beginLook(event.getPointerId(idx), x.toInt(), event.getY(idx).toInt())
             }
             MotionEvent.ACTION_MOVE -> {
                 if (!shouldBeDown || pointerId < 0) return true
                 val idx = event.findPointerIndex(pointerId)
                 if (idx < 0) {
-                    // Synthesized events always use pointer 0; recover if ids diverge.
                     if (event.pointerCount > 0) {
-                        val x = event.getX(0).toInt()
-                        val y = event.getY(0).toInt()
-                        applyLookDelta(x, y)
+                        applyLookDelta(event.getX(0).toInt(), event.getY(0).toInt())
                     }
                     return true
                 }
@@ -306,7 +300,6 @@ class GameTouchPad @JvmOverloads constructor(
             (abs(newDownX - tapAnchorX) > TAP_SLOP || abs(newDownY - tapAnchorY) > TAP_SLOP)
         ) {
             tapCancelled = true
-            cancelCombinedLongPress(releaseDig = true)
         }
         val scale = GameInput.scaleFactor().coerceAtLeast(0.0001)
         val deltaX = ((newDownX - downX) * lookSensitivity / scale).toInt()
@@ -319,7 +312,6 @@ class GameTouchPad @JvmOverloads constructor(
     }
 
     private fun beginLook(id: Int, x: Int, y: Int) {
-        cancelCombinedLongPress(releaseDig = true)
         pointerId = id
         shouldBeDown = true
         downX = x
@@ -330,52 +322,14 @@ class GameTouchPad @JvmOverloads constructor(
         downTime = System.currentTimeMillis()
         initialX = GameInput.pointerX
         initialY = GameInput.pointerY
-        maybeArmCombinedLongPressDig()
-    }
-
-    private fun maybeArmCombinedLongPressDig() {
-        if (disableGesture || gestureMode != GestureMode.COMBINED) return
-        val snap = GestureContext.snapshot()
-        if (!snap.preferLongPressDig) return
-        combinedLongPressArmed = true
-        choreographer.postFrameCallbackDelayed(combinedLongPressFrame, LONG_PRESS_MS)
-    }
-
-    private fun cancelCombinedLongPress(releaseDig: Boolean) {
-        if (combinedLongPressArmed) {
-            choreographer.removeFrameCallback(combinedLongPressFrame)
-            combinedLongPressArmed = false
-        }
-        if (releaseDig && combinedDigHeld) {
-            GameInput.sendKeyEvent(GameInput.MOUSE_LEFT, false)
-            combinedDigHeld = false
-        }
     }
 
     private fun endLook(allowTap: Boolean) {
         shouldBeDown = false
-        val digWasHeld = combinedDigHeld
-        cancelCombinedLongPress(releaseDig = true)
-        if (allowTap && !tapCancelled && !disableGesture && !digWasHeld) {
-            // Stationary short tap = one click by current mode; keep down ≥1 frame.
+        if (allowTap && !tapCancelled && !disableGesture) {
             val button = when (gestureMode) {
                 GestureMode.BUILD -> GameInput.MOUSE_RIGHT
                 GestureMode.FIGHT -> GameInput.MOUSE_LEFT
-                GestureMode.COMBINED -> {
-                    val snap = GestureContext.snapshot()
-                    val btn = GestureContext.resolveCombinedTapButton(snap)
-                    val label = if (btn == GameInput.MOUSE_RIGHT) "RMB" else "LMB"
-                    Log.e("BooxinGesture", "COMBINED tap hit=${snap.hit} held=${snap.held} btn=$label")
-                    if (combinedTapToastLeft > 0) {
-                        combinedTapToastLeft--
-                        Toast.makeText(
-                            context,
-                            "综合 hit=${snap.hit} held=${snap.held} → $label",
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    }
-                    btn
-                }
             }
             scheduleGrabbedTap(button)
         }
@@ -387,7 +341,5 @@ class GameTouchPad @JvmOverloads constructor(
         private const val CLICK_FRAME_DELAY_MS = 33L
         private const val TAP_MS = 100L
         private const val TAP_SLOP = 12
-        private const val LONG_PRESS_MS = 650L
-        private var combinedTapToastLeft = 8
     }
 }

@@ -56,6 +56,22 @@
                         android:layout_marginTop="6dp"
                         android:textColor="@color/md_theme_light_outline"
                         android:textSize="13sp" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:text="@string/settings_game_dir_hint"
+                        android:textColor="@color/md_theme_light_outline"
+                        android:textSize="12sp" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/buttonGameDir"
+                        style="@style/Widget.Booxin.SecondaryButton"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:text="@string/settings_game_dir_change" />
                 </LinearLayout>
 
                 <LinearLayout

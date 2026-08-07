@@ -19,6 +19,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #define LOG_TAG "BooxinJvm"
@@ -31,7 +33,9 @@ typedef void (*SetupBridgeWindow_fn)(JNIEnv *, jclass, jobject);
 
 /* Stored from ART before embedded JVM starts; re-bound into HotSpot after JNI_CreateJavaVM. */
 static jobject g_bridge_surface = NULL;
+static jobject g_art_class_loader = NULL; /* App ClassLoader global ref */
 static pthread_mutex_t g_bridge_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int g_sdl_jni_onload_done = 0;
 
 typedef void (*HookFn)(JNIEnv *);
 
@@ -139,7 +143,8 @@ static bool parse_args(char **argv, int argc, ParsedArgs *out) {
                     snprintf(combined, len, "%s=%s", optName, val);
                     out->opts[out->nOpts].optionString = combined;
                     out->nOpts++;
-                    LOGI("jvm valued opt: %s", combined);
+                    /* Never log full --module-path (can be 100KB+ and stall logd). */
+                    LOGI("jvm valued opt: %s (valueLen=%zu)", optName, strlen(val));
                 }
                 continue;
             }
@@ -311,11 +316,15 @@ static void *stdout_reader(void *arg) {
 }
 
 static void start_stdio_capture(void) {
+    if (g_log_pipe[0] >= 0 || g_log_running) return;
     if (pipe(g_log_pipe) != 0) {
         LOGE("pipe failed: %s", strerror(errno));
         return;
     }
-    /* make write end cloexec optional; redirect stdout/stderr */
+    /* Non-blocking writes: if logcat is slow, HotSpot must not block on a full pipe
+     * (that deadlocks CreateJavaVM / class loading with "stuck at creating VM"). */
+    int wflags = fcntl(g_log_pipe[1], F_GETFL, 0);
+    if (wflags >= 0) fcntl(g_log_pipe[1], F_SETFL, wflags | O_NONBLOCK);
     fflush(stdout);
     fflush(stderr);
     dup2(g_log_pipe[1], STDOUT_FILENO);
@@ -327,6 +336,7 @@ static void start_stdio_capture(void) {
 }
 
 static void stop_stdio_capture(void) {
+    if (!g_log_running && g_log_pipe[0] < 0) return;
     g_log_running = 0;
     if (g_log_pipe[0] >= 0) {
         close(g_log_pipe[0]);
@@ -341,6 +351,7 @@ static void stop_stdio_capture(void) {
  * (binder/logd scheduling). Abandon the reader — :forge process is killed next.
  */
 static void abandon_stdio_capture(void) {
+    if (!g_log_running && g_log_pipe[0] < 0) return;
     g_log_running = 0;
     if (g_log_pipe[0] >= 0) {
         close(g_log_pipe[0]);
@@ -515,7 +526,7 @@ static void *open_bridge_lib(const char *soname) {
 }
 
 static void *open_pojavexec(void) {
-    /* Prefer libpojavexec.so so ART and HotSpot share one mapping. */
+    /* Prefer the staged LWJGL bridge soname so ART and HotSpot share one mapping. */
     void *lib = open_bridge_lib("libpojavexec.so");
     if (!lib) lib = open_bridge_lib("libbooxin_bridge.so");
     if (lib) {
@@ -606,6 +617,54 @@ static bool hotspot_system_load_pojavexec(JNIEnv *env) {
     jstring jpath = (*env)->NewStringUTF(env, path);
     (*env)->CallStaticVoidMethod(env, loaderCls, loadMid, jpath);
     (*env)->DeleteLocalRef(env, jpath);
+    if ((*env)->ExceptionCheck(env)) {
+        log_exception(env, "BooxinPojavLoader.loadAbsolute");
+        return false;
+    }
+    LOGI("HotSpot BooxinPojavLoader.loadAbsolute(%s) ok", path);
+    return true;
+}
+
+/** HotSpot System.load any absolute .so via BooxinPojavLoader (AppClassLoader). */
+static bool hotspot_system_load_absolute(JNIEnv *env, const char *path) {
+    if (!env || !path || !path[0]) return false;
+    if (access(path, R_OK) != 0) {
+        LOGW("hotspot load missing: %s", path);
+        return false;
+    }
+    jclass loaderCls = (*env)->FindClass(env, "org/lwjgl/glfw/BooxinPojavLoader");
+    if (!loaderCls || (*env)->ExceptionCheck(env)) {
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+        jclass systemCls = (*env)->FindClass(env, "java/lang/System");
+        if (!systemCls || (*env)->ExceptionCheck(env)) {
+            log_exception(env, "FindClass System");
+            return false;
+        }
+        jmethodID loadMid = (*env)->GetStaticMethodID(env, systemCls, "load", "(Ljava/lang/String;)V");
+        if (!loadMid || (*env)->ExceptionCheck(env)) {
+            log_exception(env, "System.load mid");
+            return false;
+        }
+        jstring jpath = (*env)->NewStringUTF(env, path);
+        (*env)->CallStaticVoidMethod(env, systemCls, loadMid, jpath);
+        (*env)->DeleteLocalRef(env, jpath);
+        if ((*env)->ExceptionCheck(env)) {
+            log_exception(env, "System.load");
+            return false;
+        }
+        LOGI("HotSpot System.load(%s) ok", path);
+        return true;
+    }
+    jmethodID loadMid =
+        (*env)->GetStaticMethodID(env, loaderCls, "loadAbsolute", "(Ljava/lang/String;)V");
+    if (!loadMid || (*env)->ExceptionCheck(env)) {
+        log_exception(env, "BooxinPojavLoader.loadAbsolute mid");
+        return false;
+    }
+    jstring jpath = (*env)->NewStringUTF(env, path);
+    (*env)->CallStaticVoidMethod(env, loaderCls, loadMid, jpath);
+    (*env)->DeleteLocalRef(env, jpath);
+    (*env)->DeleteLocalRef(env, loaderCls);
     if ((*env)->ExceptionCheck(env)) {
         log_exception(env, "BooxinPojavLoader.loadAbsolute");
         return false;
@@ -1319,16 +1378,71 @@ static void preload_pojav_deps(void) {
     }
 }
 
+static void preload_jsig(void) {
+    /* Must load before libjvm so HotSpot interposes sigaction around ART.
+     * Prefer absolute JAVA_HOME path — bare libjsig.so often fails on OEM linkers. */
+    const char *javaHome = getenv("JAVA_HOME");
+    const char *rel[] = {
+        "/lib/aarch64/libjsig.so",
+        "/lib/arm/libjsig.so",
+        "/lib/server/libjsig.so",
+        "/lib/client/libjsig.so",
+        "/lib/libjsig.so",
+        "/jre/lib/aarch64/libjsig.so",
+        "/jre/lib/arm/libjsig.so",
+        "/jre/lib/server/libjsig.so",
+        "/jre/lib/libjsig.so",
+        NULL
+    };
+    void *h = NULL;
+    if (javaHome && javaHome[0]) {
+        for (int i = 0; rel[i]; i++) {
+            char path[PATH_MAX];
+            snprintf(path, sizeof(path), "%s%s", javaHome, rel[i]);
+            struct stat st;
+            if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) continue;
+            h = dlopen(path, RTLD_NOW | RTLD_GLOBAL);
+            if (h) {
+                LOGI("libjsig.so loaded (signal chaining) path=%s", path);
+                return;
+            }
+            LOGW("libjsig dlopen failed %s: %s", path, dlerror());
+        }
+    }
+    h = dlopen("libjsig.so", RTLD_NOW | RTLD_GLOBAL);
+    if (!h) {
+        LOGW("libjsig.so not loaded: %s", dlerror());
+    } else {
+        LOGI("libjsig.so loaded (signal chaining) via soname");
+    }
+}
+
+static atomic_int g_create_vm_heartbeat = 0;
+
+static void *create_vm_heartbeat_thread(void *arg) {
+    (void)arg;
+    int sec = 0;
+    while (atomic_load(&g_create_vm_heartbeat)) {
+        sleep(5);
+        if (!atomic_load(&g_create_vm_heartbeat)) break;
+        sec += 5;
+        LOGI("JNI_CreateJavaVM still running… %ds (Forge module-path can take minutes)", sec);
+    }
+    return NULL;
+}
+
 static jint launch_embedded(LaunchCtx *ctx, bool with_pojav) {
     reset_signals();
     setenv("_JAVA_VERSION_SET", "true", 1);
     if (with_pojav) preload_pojav_deps();
-    start_stdio_capture();
+    /* Do NOT capture stdio before CreateJavaVM.
+     * HotSpot prints heavily during init; a blocking pipe deadlocks the VM thread
+     * and the UI freezes on "正在创建虚拟机". Capture starts right after JVM exists. */
 
+    preload_jsig();
     void *libjvm = dlopen("libjvm.so", RTLD_LAZY | RTLD_GLOBAL);
     if (!libjvm) {
         LOGE("dlopen libjvm.so: %s", dlerror());
-        stop_stdio_capture();
         return -2;
     }
     LOGI("libjvm.so loaded");
@@ -1337,19 +1451,28 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_pojav) {
         (JNI_CreateJavaVM_func)dlsym(libjvm, "JNI_CreateJavaVM");
     if (!createVM) {
         LOGE("JNI_CreateJavaVM missing: %s", dlerror());
-        stop_stdio_capture();
         return -3;
     }
+    LOGI("JNI_CreateJavaVM symbol ok — parsing argv…");
 
     ParsedArgs pa;
     if (!parse_args(ctx->argv, ctx->argc, &pa)) {
         LOGE("parse_args failed (no main class?)");
-        stop_stdio_capture();
         return -4;
     }
-    LOGI("main=%s jvmOpts=%d gameArgs=%d cpLen=%d",
+    size_t optBytes = 0;
+    int hasModulePath = 0;
+    for (int i = 0; i < pa.nOpts; i++) {
+        const char *s = pa.opts[i].optionString;
+        if (!s) continue;
+        optBytes += strlen(s);
+        if (strncmp(s, "--module-path=", 14) == 0 || strncmp(s, "-p=", 3) == 0)
+            hasModulePath = 1;
+    }
+    LOGI("main=%s jvmOpts=%d gameArgs=%d cpLen=%d optBytes=%zu modulePath=%d",
          pa.mainClass, pa.nOpts, pa.nGameArgs,
-         pa.classpath ? (int)strlen(pa.classpath) : 0);
+         pa.classpath ? (int)strlen(pa.classpath) : 0,
+         optBytes, hasModulePath);
 
     JavaVMInitArgs vmArgs;
     vmArgs.version = 0x00010006; /* JNI_VERSION_1_6 */
@@ -1359,14 +1482,26 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_pojav) {
 
     JavaVM *jvm = NULL;
     JNIEnv *jenv = NULL;
+    /* Forge/modpacks: CreateJavaVM can take a while with a huge module-path. */
+    LOGI("JNI_CreateJavaVM starting (nOptions=%d) — please wait…", pa.nOpts);
+    atomic_store(&g_create_vm_heartbeat, 1);
+    pthread_t hb;
+    int hbOk = pthread_create(&hb, NULL, create_vm_heartbeat_thread, NULL) == 0;
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
     jint rc = createVM(&jvm, (void **)&jenv, &vmArgs);
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    atomic_store(&g_create_vm_heartbeat, 0);
+    if (hbOk) pthread_join(hb, NULL);
+    long elapsedMs = (t1.tv_sec - t0.tv_sec) * 1000L +
+        (t1.tv_nsec - t0.tv_nsec) / 1000000L;
     if (rc != JNI_OK || !jenv) {
-        LOGE("JNI_CreateJavaVM failed: %d", (int)rc);
+        LOGE("JNI_CreateJavaVM failed: %d after %ldms", (int)rc, elapsedMs);
         free_parsed(&pa);
-        stop_stdio_capture();
         return rc != 0 ? rc : -5;
     }
-    LOGI("JVM created");
+    LOGI("JVM created in %ldms — attaching stdio capture", elapsedMs);
+    start_stdio_capture();
 
     if (with_pojav) {
     /*
@@ -1417,8 +1552,26 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_pojav) {
         }
         force_input_bridge_ready("after HotSpot pojavexec load");
     } else if (sdl_like) {
-        LOGI("SDL windowing — skip HotSpot GLFW System.load; ensure ANativeWindow");
+        LOGI("SDL windowing — load liblwjgl + bridge (no GLFW preinit)");
         {
+            const char *nativeDir = getenv("BOOXIN_NATIVEDIR");
+            if (!nativeDir || !nativeDir[0]) nativeDir = getenv("POJAV_NATIVEDIR");
+            if (!nativeDir || !nativeDir[0]) nativeDir = getenv("FCL_NATIVEDIR");
+            char lwjgl[PATH_MAX];
+            char bridge[PATH_MAX];
+            if (nativeDir && nativeDir[0]) {
+                snprintf(lwjgl, sizeof(lwjgl), "%s/liblwjgl.so", nativeDir);
+                snprintf(bridge, sizeof(bridge), "%s/libbooxin_bridge.so", nativeDir);
+                /* AppClassLoader System.load so MemoryUtil + invokePZ shims resolve. */
+                if (!hotspot_system_load_absolute(jenv, lwjgl)) {
+                    LOGW("SDL: System.load(liblwjgl) failed — MemoryUtil may break");
+                }
+                if (!hotspot_system_load_absolute(jenv, bridge)) {
+                    LOGW("SDL: System.load(booxin_bridge) failed — invokePZ shims missing");
+                }
+            } else {
+                LOGW("SDL: *NATIVEDIR unset — cannot preload lwjgl/bridge");
+            }
             void *lib = open_pojavexec();
             typedef void *(*ensure_fn)(void);
             ensure_fn ensure = lib
@@ -1433,6 +1586,11 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_pojav) {
                 (*pp)->runtimeJavaVMPtr = jvm;
                 (*pp)->runtimeJNIEnvPtr_JRE = jenv;
             }
+            typedef void (*bind_fn)(JNIEnv *);
+            bind_fn bind = lib
+                ? (bind_fn)dlsym(lib, "booxin_bind_glfw_input_buffers")
+                : NULL;
+            if (bind) bind(jenv);
         }
         log_pojav_environ("after SDL HotSpot ensure");
         force_input_bridge_ready("after SDL HotSpot ensure");
@@ -1477,6 +1635,7 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_pojav) {
     }
 
     /* Prefer system classloader first (uses -Djava.class.path) */
+    LOGI("loading main class via SystemClassLoader: %s", pa.mainClass);
     jclass clCls = (*jenv)->FindClass(jenv, "java/lang/ClassLoader");
     jmethodID getSys = (*jenv)->GetStaticMethodID(
         jenv, clCls, "getSystemClassLoader", "()Ljava/lang/ClassLoader;");
@@ -1493,6 +1652,8 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_pojav) {
         if ((*jenv)->ExceptionCheck(jenv) || !mainCls) {
             log_exception(jenv, "system loadClass");
             mainCls = NULL;
+        } else {
+            LOGI("main class loaded (system): %s", pa.mainClass);
         }
     }
 
@@ -1518,6 +1679,35 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_pojav) {
         return -6;
     }
     LOGI("Loaded %s", pa.mainClass);
+
+    /* Bind missing LWJGL 3.4 invokePZ natives onto classpath JNI (shim jar). */
+    {
+        const char *windowing = getenv("BOOXIN_WINDOWING");
+        if (windowing && strcmp(windowing, "sdl") == 0 && sysLoader) {
+            jclass jniCls = load_class_via_loader(
+                jenv, sysLoader, "org.lwjgl.system.JNI");
+            if (jniCls) {
+                typedef int (*reg_fn)(JNIEnv *, jclass);
+                void *bridge = open_pojavexec();
+                if (!bridge) {
+                    bridge = dlopen("libbooxin_bridge.so", RTLD_NOW | RTLD_NOLOAD);
+                    if (!bridge) bridge = dlopen("libbooxin_bridge.so", RTLD_NOW);
+                }
+                reg_fn reg = bridge
+                    ? (reg_fn)dlsym(bridge, "booxin_register_lwjgl_jni_shims_on")
+                    : NULL;
+                if (reg) {
+                    int rc = reg(jenv, jniCls);
+                    LOGI("LWJGL JNI invokePZ shims rc=%d", rc);
+                } else {
+                    LOGW("booxin_register_lwjgl_jni_shims_on missing");
+                }
+                (*jenv)->DeleteLocalRef(jenv, jniCls);
+            } else {
+                LOGW("could not load org.lwjgl.system.JNI for shims");
+            }
+        }
+    }
 
     jmethodID mainMethod = (*jenv)->GetStaticMethodID(
         jenv, mainCls, "main", "([Ljava/lang/String;)V");
@@ -1549,26 +1739,121 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_pojav) {
         LOGI("POJAV_RENDERER=%s",
              renderer && renderer[0] ? renderer : "(unset)");
         log_pojav_environ("before Invoking main");
-        /* Minecraft/LWJGL call SDL_Init without SDL_main. Prefer ART preload
-         * (BooxinSdlBootstrap) so JNI_OnLoad sees org.libsdl.app.*; here only
-         * dlopen the same absolute path and call SDL_SetMainReady. */
+        /* Minecraft/LWJGL call SDL_Init without SDL_main.
+         * ART must System.load SDL on a large-stack Java thread so JNI_OnLoad
+         * can FindClass(org.libsdl.app.*). Bare FindClass from this HotSpot
+         * pthread fails (ClassNotFound) → SDL_Init SIGSEGV.
+         * Here: dlopen + ensure ART finish via ClassLoader + SDL_SetMainReady. */
         {
             const char *windowing = getenv("BOOXIN_WINDOWING");
             if (windowing && strcmp(windowing, "sdl") == 0) {
                 const char *sdl_path = getenv("BOOXIN_SDL3_LIB");
                 if (!sdl_path || !sdl_path[0]) sdl_path = "libSDL3.so";
+                int already = 0;
                 void *sdl = dlopen(sdl_path, RTLD_NOW | RTLD_NOLOAD);
-                if (!sdl) sdl = dlopen(sdl_path, RTLD_NOW | RTLD_GLOBAL);
-                if (!sdl) {
-                    LOGW("dlopen(%s) failed: %s", sdl_path, dlerror());
+                if (sdl) {
+                    already = 1;
+                    LOGI("SDL3 already mapped (ART) path=%s handle=%p", sdl_path, sdl);
                 } else {
+                    sdl = dlopen(sdl_path, RTLD_NOW | RTLD_GLOBAL);
+                    if (!sdl) {
+                        LOGW("dlopen(%s) failed: %s", sdl_path, dlerror());
+                    } else {
+                        LOGI("SDL3 mapped path=%s handle=%p", sdl_path, sdl);
+                    }
+                }
+                if (sdl) {
+                    JavaVM *art = NULL;
+                    void *lib = open_pojavexec();
+                    struct booxin_pojav_environ_s **pp = lib
+                        ? (struct booxin_pojav_environ_s **)dlsym(lib, "pojav_environ")
+                        : NULL;
+                    if (pp && *pp) art = (*pp)->dalvikJavaVMPtr;
+
+                    /* If ART large-stack load did not complete JNI/setup, finish
+                     * via Java method so FindClass sees App ClassLoader. */
+                    if (art && g_art_class_loader && !g_sdl_jni_onload_done) {
+                        JNIEnv *artEnv = NULL;
+                        int need_detach = 0;
+                        jint get = (*art)->GetEnv(art, (void **)&artEnv, JNI_VERSION_1_6);
+                        if (get == JNI_EDETACHED) {
+                            if ((*art)->AttachCurrentThread(art, &artEnv, NULL) == 0)
+                                need_detach = 1;
+                        }
+                        if (artEnv) {
+                            jclass boot = load_class_via_loader(
+                                artEnv, g_art_class_loader,
+                                "com.booxin.launcher.core.launch.BooxinSdlBootstrap");
+                            if (boot) {
+                                jmethodID finish = (*artEnv)->GetStaticMethodID(
+                                    artEnv, boot, "finishSdlAndroidInitFromArt", "()Z");
+                                if (finish) {
+                                    jboolean ok = (*artEnv)->CallStaticBooleanMethod(
+                                        artEnv, boot, finish);
+                                    if ((*artEnv)->ExceptionCheck(artEnv))
+                                        log_exception(artEnv, "finishSdlAndroidInitFromArt");
+                                    else
+                                        LOGI("finishSdlAndroidInitFromArt → %d", (int)ok);
+                                }
+                                (*artEnv)->DeleteLocalRef(artEnv, boot);
+                            } else {
+                                LOGW("SDL: BooxinSdlBootstrap missing via ClassLoader");
+                            }
+                        }
+                        if (need_detach) (*art)->DetachCurrentThread(art);
+                    } else if (!already && !g_sdl_jni_onload_done) {
+                        /* Last resort: JNI_OnLoad without Java frame (may miss classes). */
+                        JavaVM *vm = art ? art : jvm;
+                        JNI_OnLoad_func sdl_onload =
+                            (JNI_OnLoad_func)dlsym(sdl, "JNI_OnLoad");
+                        if (sdl_onload) {
+                            jint ver = sdl_onload(vm, NULL);
+                            g_sdl_jni_onload_done = 1;
+                            LOGW("SDL3 JNI_OnLoad(fallback vm=%p) → 0x%x",
+                                 (void *)vm, (int)ver);
+                        }
+                    }
+
                     void (*set_ready)(void) =
                         (void (*)(void))dlsym(sdl, "SDL_SetMainReady");
                     if (set_ready) {
                         set_ready();
-                        LOGI("SDL_SetMainReady() OK path=%s", sdl_path);
+                        LOGI("SDL_SetMainReady() OK");
                     } else {
                         LOGW("SDL_SetMainReady missing in %s", sdl_path);
+                    }
+                    /* Desktop CORE profile → EGL_BAD_ATTRIBUTE; force GLES. */
+                    {
+                        typedef int (*force_gles_fn)(void *);
+                        typedef int (*rebind_fn)(JNIEnv *);
+                        void *bridge = open_pojavexec();
+                        force_gles_fn force = bridge
+                            ? (force_gles_fn)dlsym(bridge, "booxin_sdl_force_gles")
+                            : NULL;
+                        rebind_fn rebind = bridge
+                            ? (rebind_fn)dlsym(bridge, "booxin_sdl_rebind_lwjgl_gl_set_attribute")
+                            : NULL;
+                        if (!force || !rebind) {
+                            void *b2 = dlopen("libbooxin_bridge.so", RTLD_NOW | RTLD_NOLOAD);
+                            if (!b2) b2 = dlopen("libbooxin_bridge.so", RTLD_NOW);
+                            if (!force && b2)
+                                force = (force_gles_fn)dlsym(b2, "booxin_sdl_force_gles");
+                            if (!rebind && b2)
+                                rebind = (rebind_fn)dlsym(
+                                    b2, "booxin_sdl_rebind_lwjgl_gl_set_attribute");
+                        }
+                        if (force) {
+                            int grc = force(sdl);
+                            LOGI("booxin_sdl_force_gles rc=%d", grc);
+                        } else {
+                            LOGW("booxin_sdl_force_gles missing");
+                        }
+                        if (rebind) {
+                            int rrc = rebind(jenv);
+                            LOGI("booxin_sdl_rebind_lwjgl_gl_set_attribute rc=%d", rrc);
+                        } else {
+                            LOGW("booxin_sdl_rebind missing");
+                        }
                     }
                 }
             }
@@ -1711,7 +1996,7 @@ static jint launch_via_pojavexec(JNIEnv *env, jobjectArray argsArray) {
         LOGE("launch_via_pojavexec: dlsym VMLauncher.launchJVM: %s", dlerror());
         return -9;
     }
-    LOGI("delegating to pojavexec VMLauncher.launchJVM");
+    LOGI("delegating to bridge VMLauncher.launchJVM");
     jint code = launch(env, NULL, argsArray);
     if ((*env)->ExceptionCheck(env)) {
         log_exception(env, "VMLauncher.launchJVM");
@@ -1970,6 +2255,65 @@ Java_com_booxin_launcher_core_launch_NativeJvmLauncher_nativeSetupBridgeWindow(
 }
 
 JNIEXPORT void JNICALL
+Java_com_booxin_launcher_core_launch_NativeJvmLauncher_nativeMarkSdlJniOnLoadDone(
+    JNIEnv *env, jclass clazz)
+{
+    (void)env;
+    (void)clazz;
+    g_sdl_jni_onload_done = 1;
+    LOGI("markSdlJniOnLoadDone");
+}
+
+JNIEXPORT void JNICALL
+Java_com_booxin_launcher_core_launch_NativeJvmLauncher_nativeCacheArtClassLoader(
+    JNIEnv *env, jclass clazz, jobject loader)
+{
+    (void)clazz;
+    if (g_art_class_loader) {
+        (*env)->DeleteGlobalRef(env, g_art_class_loader);
+        g_art_class_loader = NULL;
+    }
+    if (loader) {
+        g_art_class_loader = (*env)->NewGlobalRef(env, loader);
+        LOGI("cached ART ClassLoader=%p", (void *)g_art_class_loader);
+    }
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_booxin_launcher_core_launch_NativeJvmLauncher_nativeFinishSdlJniOnLoad(
+    JNIEnv *env, jclass clazz)
+{
+    (void)clazz;
+    /* Running under a Java→JNI frame: FindClass can see app classes. */
+    if (g_sdl_jni_onload_done) {
+        LOGI("SDL JNI_OnLoad already done");
+        return JNI_TRUE;
+    }
+    const char *sdl_path = getenv("BOOXIN_SDL3_LIB");
+    if (!sdl_path || !sdl_path[0]) sdl_path = "libSDL3.so";
+    void *sdl = dlopen(sdl_path, RTLD_NOW | RTLD_NOLOAD);
+    if (!sdl) sdl = dlopen(sdl_path, RTLD_NOW | RTLD_GLOBAL);
+    if (!sdl) {
+        LOGW("nativeFinishSdlJniOnLoad: dlopen failed: %s", dlerror());
+        return JNI_FALSE;
+    }
+    JavaVM *vm = NULL;
+    if ((*env)->GetJavaVM(env, &vm) != 0 || !vm) {
+        LOGE("nativeFinishSdlJniOnLoad: GetJavaVM failed");
+        return JNI_FALSE;
+    }
+    JNI_OnLoad_func onload = (JNI_OnLoad_func)dlsym(sdl, "JNI_OnLoad");
+    if (!onload) {
+        LOGW("nativeFinishSdlJniOnLoad: JNI_OnLoad missing");
+        return JNI_FALSE;
+    }
+    jint ver = onload(vm, NULL);
+    g_sdl_jni_onload_done = 1;
+    LOGI("nativeFinishSdlJniOnLoad: JNI_OnLoad(vm=%p) → 0x%x", (void *)vm, (int)ver);
+    return JNI_TRUE;
+}
+
+JNIEXPORT void JNICALL
 Java_com_booxin_launcher_core_launch_NativeJvmLauncher_nativeClearBridgeWindow(
     JNIEnv *env, jclass clazz)
 {
@@ -1990,7 +2334,13 @@ Java_com_booxin_launcher_core_launch_NativeJvmLauncher_nativeClearBridgeWindow(
         LOGW("clearBridgeWindow: bridge not loaded");
         return;
     }
+    typedef void (*detach_fn)(void);
     typedef void (*retain_fn)(void *);
+    detach_fn detach = (detach_fn)dlsym(lib, "booxin_egl_detach_window");
+    if (detach) {
+        detach();
+        LOGI("clearBridgeWindow: egl window surface detached");
+    }
     retain_fn retain = (retain_fn)dlsym(lib, "booxin_retain_native_window");
     if (retain) {
         retain(NULL);
@@ -2065,7 +2415,7 @@ Java_com_booxin_launcher_core_launch_NativeJvmLauncher_nativeLaunchJvm(
 
     if (!argsArray) return -1;
 
-    /* pojavexec VMLauncher uses JLI_Launch → exec(), which is blocked by SELinux on /data.
+    /* Bridge VMLauncher uses JLI_Launch → exec(), which is blocked by SELinux on /data.
      * Always use embedded JNI_CreateJavaVM instead. */
     (void)launch_via_pojavexec; /* suppress unused-function warning */
 
@@ -2106,7 +2456,7 @@ Java_com_booxin_launcher_core_launch_NativeJvmLauncher_nativeLaunchToolJvm(
     if (!argv || argc <= 0) return -1;
 
     /*
-     * Do NOT call JLI_Launch here. After FclJavaRuntimeSetup preloads libjli,
+     * Do NOT call JLI_Launch here. After JRE libs are preloaded,
      * JLI_Launch can hang forever on Android (no progress, no exit) — which
      * freezes Forge install on “重命名 MC jar”. Use embedded HotSpot only.
      */

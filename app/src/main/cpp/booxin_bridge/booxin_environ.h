@@ -22,9 +22,9 @@ typedef struct {
 
 #define BOOXIN_EVENT_WINDOW_SIZE 8000
 
-/* Layout must stay compatible with jre_launcher.c's booxin_pojav_environ_s. */
+/* Layout must stay compatible with jre_launcher.c bridge environ struct. */
 typedef struct booxin_environ {
-    void *nativeWindow;          /* ANativeWindow* (historically pojavWindow) */
+    void *nativeWindow;          /* ANativeWindow* */
     void *mainWindowBundle;
     int config_renderer;
     bool force_vsync;
@@ -62,7 +62,7 @@ typedef struct booxin_environ {
     void *GLFW_invoke_WindowSize;
 } booxin_environ_t;
 
-/* Symbol name kept as pojav_environ — LWJGL / pump code still looks it up. */
+/* Exported symbol name is required by LWJGL / pump lookup; do not rename. */
 extern booxin_environ_t *pojav_environ;
 extern booxin_environ_t g_booxin_environ;
 
@@ -70,6 +70,10 @@ void booxin_environ_init(void);
 
 void booxin_retain_native_window(ANativeWindow *win);
 ANativeWindow *booxin_ensure_native_window(void);
+
+/** Pause/resume window EGLSurface across Android SurfaceView destroy/create. */
+void booxin_egl_detach_window(void);
+int booxin_egl_attach_window(void);
 
 void booxin_bind_glfw_input_buffers(JNIEnv *env);
 

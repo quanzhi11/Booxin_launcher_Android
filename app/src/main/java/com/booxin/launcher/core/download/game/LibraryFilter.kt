@@ -19,6 +19,14 @@ object LibraryFilter {
         size = 0L
     )
 
+    private val JNA_PLATFORM_5_13 = ResolvedLibrary(
+        name = "net.java.dev.jna:jna-platform:5.13.0",
+        path = "net/java/dev/jna/jna-platform/5.13.0/jna-platform-5.13.0.jar",
+        url = "https://repo1.maven.org/maven2/net/java/dev/jna/jna-platform/5.13.0/jna-platform-5.13.0.jar",
+        sha1 = "88e9a306715e9379f3122415ef4ae759a352640d",
+        size = 0L
+    )
+
     private val OSHI_6_3 = ResolvedLibrary(
         name = "com.github.oshi:oshi-core:6.3.0",
         path = "com/github/oshi/oshi-core/6.3.0/oshi-core-6.3.0.jar",
@@ -37,23 +45,95 @@ object LibraryFilter {
     }
 
     fun upgrade(libraries: List<ResolvedLibrary>): List<ResolvedLibrary> {
-        return libraries.map { library ->
+        var sawJnaPlatform = false
+        var jnaVersion: String? = null
+        var oshiCommonVersion: String? = null
+        val upgraded = libraries.map { library ->
             val parts = library.name.split(':')
+            val group = parts.getOrNull(0).orEmpty()
             val artifact = parts.getOrNull(1).orEmpty()
-            val versionParts = parts.getOrNull(2)?.split('.').orEmpty()
+            val version = parts.getOrNull(2).orEmpty()
+            val versionParts = version.split('.')
             val major = versionParts.getOrNull(0)?.toIntOrNull() ?: 0
             val minor = versionParts.getOrNull(1)?.toIntOrNull() ?: 0
 
             when {
                 artifact == "asm-all" && major < 5 -> ASM_ALL_5_0_4
-                library.name.startsWith("net.java.dev.jna:jna:") -> {
-                    if (major >= 5 && minor >= 13) library else JNA_5_13
+                group == "net.java.dev.jna" && artifact == "jna" -> {
+                    val resolved =
+                        if (major > 5 || (major == 5 && minor >= 13)) library else JNA_5_13
+                    jnaVersion = resolved.name.split(':').getOrNull(2)
+                    resolved
                 }
-                library.name.startsWith("com.github.oshi:oshi-core:") -> {
+                group == "net.java.dev.jna" && artifact == "jna-platform" -> {
+                    sawJnaPlatform = true
+                    if (major > 5 || (major == 5 && minor >= 13)) library else JNA_PLATFORM_5_13
+                }
+                group == "com.github.oshi" && artifact == "oshi-core" -> {
+                    // OSHI 7+ splits Quartet into oshi-common; remember to inject it.
+                    if (major >= 7) oshiCommonVersion = version
+                    // 6.2.x breaks on Android (Udev / Quartet init path).
                     if (major == 6 && minor == 2) OSHI_6_3 else library
+                }
+                group == "com.github.oshi" && artifact == "oshi-common" -> {
+                    oshiCommonVersion = null // already present
+                    library
                 }
                 else -> library
             }
-        }.distinctBy { it.name }
+        }
+
+        val withCommon = if (oshiCommonVersion != null) {
+            upgraded + oshiCommonLibrary(oshiCommonVersion!!)
+        } else {
+            upgraded
+        }
+
+        val withJnaPlatform = if (!sawJnaPlatform && withCommon.any {
+                it.name.startsWith("com.github.oshi:oshi-core:") ||
+                    it.name.startsWith("net.java.dev.jna:jna:")
+            }
+        ) {
+            // OSHI needs jna-platform (Udev etc.); some old Forge profiles omit it.
+            withCommon + jnaPlatformLibrary(jnaVersion ?: "5.13.0")
+        } else {
+            withCommon
+        }
+
+        // Keep first occurrence per group:artifact:classifier (child/Forge libs are listed first).
+        return withJnaPlatform.distinctBy { mavenKey(it.name) }
+    }
+
+    /** group:artifact[:classifier] — version stripped for dedupe. */
+    fun mavenKey(name: String): String {
+        val parts = name.substringBefore('@').split(':')
+        return when (parts.size) {
+            0, 1, 2 -> name
+            3 -> "${parts[0]}:${parts[1]}"
+            else -> "${parts[0]}:${parts[1]}:${parts[3]}" // classifier
+        }
+    }
+
+    private fun oshiCommonLibrary(version: String): ResolvedLibrary {
+        val path = "com/github/oshi/oshi-common/$version/oshi-common-$version.jar"
+        return ResolvedLibrary(
+            name = "com.github.oshi:oshi-common:$version",
+            path = path,
+            url = "https://repo1.maven.org/maven2/$path",
+            sha1 = null,
+            size = 0L
+        )
+    }
+
+    private fun jnaPlatformLibrary(version: String): ResolvedLibrary {
+        if (version == "5.13.0") return JNA_PLATFORM_5_13
+        val path = "net/java/dev/jna/jna-platform/$version/jna-platform-$version.jar"
+        return ResolvedLibrary(
+            name = "net.java.dev.jna:jna-platform:$version",
+            path = path,
+            url = "https://repo1.maven.org/maven2/$path",
+            sha1 = null,
+            size = 0L
+        )
     }
 }

@@ -5,12 +5,15 @@ import android.os.Build
 import com.booxin.launcher.BuildConfig
 import com.booxin.launcher.core.LauncherPaths
 import com.booxin.launcher.core.download.game.GameJsonParser
+import com.booxin.launcher.core.download.game.LibraryDownloadHelper
 import com.booxin.launcher.core.download.game.LibraryFilter
+import com.booxin.launcher.core.download.game.ResolvedLibrary
 import com.booxin.launcher.core.download.game.VersionJsonMerger
 import com.booxin.launcher.core.java.InstalledJavaRuntime
 import com.booxin.launcher.core.java.MinecraftJavaRequirement
 import com.booxin.launcher.core.runtime.RendererBackend
 import com.booxin.launcher.core.runtime.RuntimeEnv
+import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -48,6 +51,10 @@ data class LaunchCommand(
             val clientJar = jvmArgs.firstOrNull { it.startsWith("-Dminecraft.client.jar=") }
                 ?: jvmArgs.firstOrNull { it.startsWith("-Dfabric.gameJarPath=") }
             appendLine("clientJar=${clientJar ?: "MISSING"}")
+            val legacyFile = jvmArgs.firstOrNull { it.startsWith("-DlegacyClassPath.file=") }
+            if (legacyFile != null) {
+                appendLine("legacyClassPathFile=${legacyFile.removePrefix("-DlegacyClassPath.file=")}")
+            }
             val modulePath = jvmArgs.asSequence()
                 .mapIndexedNotNull { index, arg ->
                     when {
@@ -124,8 +131,16 @@ class LaunchCommandBuilder(
 
         val classpath = linkedSetOf<File>()
         val missingLibs = mutableListOf<String>()
-        // One Android fat lwjgl.jar (3.3.x natives + SDL hybrid Java patches).
-        // 不要把桌面 lwjgl-core 3.4 放最前，JNI 会不匹配。
+        // SDL (26.3+): thin 3.4 baseline JNI.class first (native invokePZ(IJJ)Z…).
+        // Fat Android lwjgl.jar is 3.3.x and lacks those overloads → NoSuchMethodError.
+        // Do NOT prepend full lwjgl-core-3.4 (Java25 FFM multi-release).
+        if (needsSdl) {
+            val jniShim = AndroidGameRuntime.lwjglJniSdlShimJar()
+            require(jniShim.isFile) {
+                "Minecraft $mcVersionId 需要 LWJGL JNI shim: ${jniShim.absolutePath}"
+            }
+            classpath += jniShim
+        }
         classpath += androidLwjgl
         if (needsSdl) {
             val sdlJar = AndroidGameRuntime.lwjglSdlJar()
@@ -134,28 +149,33 @@ class LaunchCommandBuilder(
             }
             classpath += sdlJar
         }
-        val libraries = root.optJSONArray("libraries") ?: JSONArray()
-        for (i in 0 until libraries.length()) {
-            val lib = libraries.getJSONObject(i)
-            val name = lib.getString("name")
-            if (!LibraryFilter.shouldKeep(name)) continue
-            // earlydisplay opens a second GLFW window and races our Surface.
-            if (isForgeOrLoader && name.contains("fmlearlydisplay", ignoreCase = true)) continue
-            // Keep artifact jars even if the library also declares desktop natives.
-            val artifact = lib.optJSONObject("downloads")?.optJSONObject("artifact")
-            if (artifact == null && lib.has("natives")) continue
-            if (!rulesAllow(lib.optJSONArray("rules"))) continue
-            val path = artifact?.optString("path")?.ifBlank { null }
-                ?: GameJsonParser.mavenPath(name)
-            val file = File(LauncherPaths.librariesDir, path)
-            if (file.isFile && file.length() > 0L) {
+        // Must use the same LibraryFilter.upgrade() paths as download, otherwise
+        // oshi 6.2→6.3 / oshi-common / jna-platform replacements are missing at launch
+        // (Forge then surfaces NoClassDefFoundError: oshi/util/tuples/Quartet).
+        val resolvedLibraries = resolveClasspathLibraries(
+            root.optJSONArray("libraries") ?: JSONArray(),
+            isForgeOrLoader
+        )
+        // Upgrades/injections (e.g. jna-platform:5.13.0) may not be on disk yet for
+        // already-installed versions — fetch them before building the classpath.
+        ensureResolvedLibrariesPresent(resolvedLibraries, versionId)
+        var jnaJarVersion: String? = null
+        for (lib in resolvedLibraries) {
+            if (lib.name.startsWith("net.java.dev.jna:jna:") &&
+                !lib.name.startsWith("net.java.dev.jna:jna-platform:")
+            ) {
+                jnaJarVersion = lib.name.split(':').getOrNull(2)
+            }
+            val file = resolveLibraryFile(lib)
+            if (file != null) {
                 classpath += file
             } else {
-                missingLibs += name
+                missingLibs += lib.name
             }
         }
         classpath += jarFile
         val existingClasspath = classpath.filter { it.isFile && it.length() > 0L }
+        val jnaBootPath = AndroidGameRuntime.jnaBootLibraryPath(jnaJarVersion)
         require(existingClasspath.isNotEmpty()) { "classpath 为空，缺少可用 jar" }
         require(jarFile.isFile && jarFile.length() > 0L) {
             "缺少客户端 jar（Fabric/Forge 需继承原版 jar）: ${jarFile.absolutePath}"
@@ -166,7 +186,10 @@ class LaunchCommandBuilder(
                 it.contains("fabric-loader", ignoreCase = true) ||
                     it.contains("intermediary", ignoreCase = true) ||
                     it.contains("sponge-mixin", ignoreCase = true) ||
-                    it.contains(":mixin:", ignoreCase = true)
+                    it.contains(":mixin:", ignoreCase = true) ||
+                    it.contains("oshi-core", ignoreCase = true) ||
+                    it.contains("oshi-common", ignoreCase = true) ||
+                    it.startsWith("net.java.dev.jna:jna")
             }
             require(critical.isEmpty()) {
                 "缺少关键依赖库，请重新安装该版本: ${critical.take(8).joinToString()}"
@@ -215,9 +238,34 @@ class LaunchCommandBuilder(
             "language" to Locale.getDefault().toString()
         )
 
-        val classpathString = existingClasspath.joinToString(File.pathSeparator) { it.absolutePath }
         val isKnotLoader = isKnotMainClass(mainClass)
         val isOptiFine = isOptiFineVersion(versionId, mainClass, root)
+        val isBootstrap = usesBootstrapLauncher(mainClass)
+        // Only vivo/iQOO: short -cp + legacyClassPath.file (CreateJavaVM hang workaround).
+        // Other OEMs keep full -cp like the fast path. Never enable -Dbsl.debug.
+        val useForgeShortCp =
+            isBootstrap && isForgeOrLoader && OemLaunchProfile.needsForgeShortClasspath()
+        val launchClasspath: List<File>
+        val forgeLegacyClasspathFile: File?
+        if (useForgeShortCp) {
+            val bootOnly = existingClasspath.filter {
+                it.name.contains("bootstraplauncher", ignoreCase = true)
+            }
+            launchClasspath = if (bootOnly.isNotEmpty()) bootOnly else existingClasspath
+            forgeLegacyClasspathFile = File(context.cacheDir, "forge-legacy-classpath.txt").also { f ->
+                f.writeText(existingClasspath.joinToString("\n") { it.absolutePath } + "\n")
+            }
+            android.util.Log.i(
+                "LaunchCmd",
+                "vivo-family Forge short -cp: device=${OemLaunchProfile.describe()} " +
+                    "bootJars=${launchClasspath.size} legacyLines=${existingClasspath.size}"
+            )
+        } else {
+            launchClasspath = existingClasspath
+            forgeLegacyClasspathFile = null
+        }
+        val launchClasspathString =
+            launchClasspath.joinToString(File.pathSeparator) { it.absolutePath }
         if (isForgeOrLoader && !isKnotLoader && !isOptiFine) {
             // Disable Forge splash (second window).
             disableForgeSplash(gameDir)
@@ -231,12 +279,13 @@ class LaunchCommandBuilder(
                 windowHeight = windowHeight,
                 javaHome = java.homeDir,
                 javaMajor = java.majorVersion,
-                classpath = classpathString,
+                classpath = launchClasspathString,
                 renderer = renderer,
                 versionRoot = root,
                 tokens = tokens,
                 androidLwjgl = androidLwjgl,
-                mainClass = mainClass
+                mainClass = mainClass,
+                jnaBootPath = jnaBootPath
             )
             isOptiFine -> buildOptiFineJvmArgs(
                 jarFile = jarFile,
@@ -246,10 +295,11 @@ class LaunchCommandBuilder(
                 windowHeight = windowHeight,
                 javaHome = java.homeDir,
                 javaMajor = java.majorVersion,
-                classpath = classpathString,
+                classpath = launchClasspathString,
                 renderer = renderer,
                 versionRoot = root,
-                tokens = tokens
+                tokens = tokens,
+                jnaBootPath = jnaBootPath
             )
             isForgeOrLoader -> buildForgeJvmArgs(
                 jarFile = jarFile,
@@ -259,12 +309,15 @@ class LaunchCommandBuilder(
                 windowHeight = windowHeight,
                 javaHome = java.homeDir,
                 javaMajor = java.majorVersion,
-                classpath = classpathString,
+                classpath = launchClasspathString,
                 renderer = renderer,
                 mainClass = mainClass,
                 versionRoot = root,
                 tokens = tokens,
-                mcVersionId = mcVersionId
+                mcVersionId = mcVersionId,
+                jnaBootPath = jnaBootPath,
+                legacyClasspathFile = forgeLegacyClasspathFile,
+                legacyClasspathEntryCount = existingClasspath.size
             )
             else -> buildVanillaJvmArgs(
                 jarFile = jarFile,
@@ -274,8 +327,9 @@ class LaunchCommandBuilder(
                 windowHeight = windowHeight,
                 javaHome = java.homeDir,
                 javaMajor = java.majorVersion,
-                classpath = classpathString,
-                renderer = renderer
+                classpath = launchClasspathString,
+                renderer = renderer,
+                jnaBootPath = jnaBootPath
             )
         }
 
@@ -326,6 +380,12 @@ class LaunchCommandBuilder(
             }
             envBase["SDL_VIDEODRIVER"] = "android"
             envBase["BOOXIN_SDL3_LIB"] = sdl3.absolutePath
+            // Android SDL uses system EGL → force ES. LWJGL still loads MobileGlues;
+            // we sync eglMakeCurrent into MG after SDL CreateContext/MakeCurrent.
+            envBase["SDL_OPENGL_ES_DRIVER"] = "1"
+            envBase["SDL_VIDEO_FORCE_EGL"] = "1"
+            envBase["SDL_OPENGL_LIBRARY"] = glLib.absolutePath
+            envBase["SDL_EGL_LIBRARY"] = glLib.absolutePath
             // Help SDL Android find the app (official zlib path; still no SDLActivity yet).
             envBase["SDL_ANDROID_APK_EXPANSION_MAIN_FILE_VERSION"] = "1"
         }
@@ -345,7 +405,7 @@ class LaunchCommandBuilder(
             jvmArgs = finalJvmArgs,
             mainClass = mainClass,
             gameArgs = gameArgs,
-            classpath = existingClasspath,
+            classpath = launchClasspath,
             env = env
         )
     }
@@ -392,7 +452,8 @@ class LaunchCommandBuilder(
         javaHome: File,
         javaMajor: Int,
         classpath: String,
-        renderer: GlRendererKind
+        renderer: GlRendererKind,
+        jnaBootPath: String
     ): List<String> {
         return buildCommonAndroidJvmArgs(
             jarFile = jarFile,
@@ -404,8 +465,83 @@ class LaunchCommandBuilder(
             javaMajor = javaMajor,
             classpath = classpath,
             renderer = renderer,
-            forgeExtras = false
+            forgeExtras = false,
+            jnaBootPath = jnaBootPath
         )
+    }
+
+    private fun ensureResolvedLibrariesPresent(
+        libraries: List<ResolvedLibrary>,
+        versionId: String
+    ) {
+        val missing = libraries.filter { lib ->
+            lib.url.isNotBlank() && resolveLibraryFile(lib) == null
+        }
+        if (missing.isEmpty()) return
+        runBlocking {
+            LibraryDownloadHelper().downloadResolvedLibraries(missing, versionId)
+        }
+    }
+
+    /** Exact upgraded path, else newest on-disk jar for the same group:artifact. */
+    private fun resolveLibraryFile(lib: ResolvedLibrary): File? {
+        val exact = File(LauncherPaths.librariesDir, lib.path)
+        if (exact.isFile && exact.length() > 0L) return exact
+        return findLocalArtifact(lib.name)
+    }
+
+    private fun findLocalArtifact(mavenName: String): File? {
+        val parts = mavenName.substringBefore('@').split(':')
+        if (parts.size < 3) return null
+        val groupPath = parts[0].replace('.', '/')
+        val artifact = parts[1]
+        val dir = File(LauncherPaths.librariesDir, "$groupPath/$artifact")
+        if (!dir.isDirectory) return null
+        return dir.walkTopDown()
+            .filter { it.isFile && it.extension == "jar" && it.length() > 0L }
+            .filter { it.name.startsWith("$artifact-") }
+            // Prefer higher version directory names (…/5.17.0/jna-platform-5.17.0.jar).
+            .maxWithOrNull(compareBy({ it.parentFile?.name.orEmpty() }, { it.name }))
+    }
+
+    /**
+     * Apply [LibraryFilter] the same way download does, so upgraded oshi/jna jars
+     * resolve to the files actually on disk.
+     */
+    private fun resolveClasspathLibraries(
+        libraries: JSONArray,
+        isForgeOrLoader: Boolean
+    ): List<ResolvedLibrary> {
+        val raw = ArrayList<ResolvedLibrary>()
+        for (i in 0 until libraries.length()) {
+            val lib = libraries.getJSONObject(i)
+            val name = lib.getString("name")
+            if (!LibraryFilter.shouldKeep(name)) continue
+            // earlydisplay opens a second GLFW window and races our Surface → crash.
+            // Progress is shown on the Android loading overlay instead.
+            if (isForgeOrLoader && name.contains("fmlearlydisplay", ignoreCase = true)) continue
+            val artifact = lib.optJSONObject("downloads")?.optJSONObject("artifact")
+            if (artifact == null && lib.has("natives")) continue
+            if (!rulesAllow(lib.optJSONArray("rules"))) continue
+            val path = artifact?.optString("path")?.ifBlank { null }
+                ?: GameJsonParser.mavenPath(name)
+            val url = when {
+                artifact?.has("url") == true -> artifact.getString("url").ifBlank { "" }
+                lib.has("url") -> lib.getString("url").let { base ->
+                    if (base.isBlank()) ""
+                    else if (base.endsWith("/")) base + path else "$base/$path"
+                }
+                else -> GameJsonParser.DEFAULT_LIBRARY_URL + path
+            }
+            raw += ResolvedLibrary(
+                name = name,
+                path = path,
+                url = url,
+                sha1 = artifact?.optString("sha1")?.ifBlank { null },
+                size = artifact?.optLong("size", 0L) ?: 0L
+            )
+        }
+        return LibraryFilter.upgrade(raw)
     }
 
     /**
@@ -428,7 +564,8 @@ class LaunchCommandBuilder(
         versionRoot: JSONObject,
         tokens: Map<String, String>,
         androidLwjgl: File,
-        mainClass: String
+        mainClass: String,
+        jnaBootPath: String
     ): List<String> {
         val nativeDir = AndroidGameRuntime.nativesDir().absolutePath
         val versionJvm = parseVersionJvmArgs(versionRoot, tokens, nativeDir)
@@ -444,7 +581,8 @@ class LaunchCommandBuilder(
                     javaMajor = javaMajor,
                     classpath = classpath,
                     renderer = renderer,
-                    forgeExtras = false
+                    forgeExtras = false,
+                    jnaBootPath = jnaBootPath
                 )
             )
             addAll(versionJvm)
@@ -472,7 +610,8 @@ class LaunchCommandBuilder(
         classpath: String,
         renderer: GlRendererKind,
         versionRoot: JSONObject,
-        tokens: Map<String, String>
+        tokens: Map<String, String>,
+        jnaBootPath: String
     ): List<String> {
         val nativeDir = AndroidGameRuntime.nativesDir().absolutePath
         val versionJvm = parseVersionJvmArgs(versionRoot, tokens, nativeDir)
@@ -488,7 +627,8 @@ class LaunchCommandBuilder(
                     javaMajor = javaMajor,
                     classpath = classpath,
                     renderer = renderer,
-                    forgeExtras = false
+                    forgeExtras = false,
+                    jnaBootPath = jnaBootPath
                 )
             )
             addAll(versionJvm)
@@ -536,7 +676,10 @@ class LaunchCommandBuilder(
         mainClass: String,
         versionRoot: JSONObject,
         tokens: Map<String, String>,
-        mcVersionId: String
+        mcVersionId: String,
+        jnaBootPath: String,
+        legacyClasspathFile: File? = null,
+        legacyClasspathEntryCount: Int = 0
     ): List<String> {
         val nativeDir = AndroidGameRuntime.nativesDir().absolutePath
         val versionJvm = parseVersionJvmArgs(versionRoot, tokens, nativeDir)
@@ -560,12 +703,19 @@ class LaunchCommandBuilder(
                     javaMajor = javaMajor,
                     classpath = classpath,
                     renderer = renderer,
-                    forgeExtras = true
+                    forgeExtras = true,
+                    jnaBootPath = jnaBootPath
                 )
             )
+            if (legacyClasspathFile != null) {
+                add("-DlegacyClassPath.file=${legacyClasspathFile.absolutePath}")
+                android.util.Log.i(
+                    "LaunchCmd",
+                    "Forge BSL: short -cp (${classpath.split(File.pathSeparator).size}), " +
+                        "legacyClassPath.file lines=$legacyClasspathEntryCount"
+                )
+            }
             addAll(patchIgnoreList(versionJvm, ignoreExtras))
-            // ForgeBootstrap: enable bootstrap debug to logcat via stdout capture.
-            add("-Dbsl.debug=true")
             // BootstrapLauncher needs this on Java 9+.
             if (javaMajor != 8 && usesBootstrapLauncher(mainClass)) {
                 add("--add-exports")
@@ -628,10 +778,10 @@ class LaunchCommandBuilder(
         javaMajor: Int,
         classpath: String,
         renderer: GlRendererKind,
-        forgeExtras: Boolean
+        forgeExtras: Boolean,
+        jnaBootPath: String
     ): List<String> {
         val nativeDir = AndroidGameRuntime.nativesDir().absolutePath
-        val jnaPath = buildJnaBootLibraryPath()
         val glLibName = RuntimeEnv.glLibraryFile(
             AndroidGameRuntime.nativesDir(),
             renderer
@@ -639,12 +789,26 @@ class LaunchCommandBuilder(
         return buildList {
             add("-Xmx${maxMemoryMb}m")
             add("-Xms64m")
+            // Android OpenJDK: CDS mmap / hsperfdata /dev/random 都可能让 CreateJavaVM 长时间卡住
+            add("-Xshare:off")
+            add("-XX:-UsePerfData")
+            add("-XX:+DisableAttachMechanism")
+            add("-Djava.security.egd=file:/dev/./urandom")
+            add("-Dsecurerandom.source=file:/dev/urandom")
             add("-XX:ActiveProcessorCount=${Runtime.getRuntime().availableProcessors()}")
             if (javaMajor >= 17) {
                 add("--enable-native-access=ALL-UNNAMED")
             }
             add("-Djava.home=${javaHome.absolutePath}")
-            add("-Djava.class.path=$classpath")
+            // Prefer -cp argv for classpath; avoid a second multi-100KB -Djava.class.path= option.
+            // (parse_args still rebuilds a single -Djava.class.path from -cp.)
+            if (classpath.isNotBlank()) {
+                android.util.Log.i(
+                    "LaunchCmd",
+                    "classpath for -cp ≈${classpath.count { it == File.pathSeparatorChar } + 1} entries, " +
+                        "chars=${classpath.length}"
+                )
+            }
             add("-Djava.rmi.server.useCodebaseOnly=true")
             add("-Dcom.sun.jndi.rmi.object.trustURLCodebase=false")
             add("-Dlog4j2.formatMsgNoLookups=true")
@@ -656,7 +820,7 @@ class LaunchCommandBuilder(
             if (forgeExtras) {
                 add("-Dfml.ignoreInvalidMinecraftCertificates=true")
                 add("-Dfml.ignorePatchDiscrepancies=true")
-                // Disable Forge early loading window (DisplayWindow pulls GLFW early).
+                // Must stay off on Android: DisplayWindow / earlydisplay crashes GLFW stub.
                 add("-Dfml.earlyprogresswindow=false")
                 add("-Dfml.earlyWindowSkip=true")
                 add("-Dfml.earlyWindowControl=false")
@@ -685,7 +849,9 @@ class LaunchCommandBuilder(
             if (sdl3.isFile) {
                 add("-Dorg.lwjgl.sdl.libname=${sdl3.absolutePath}")
             }
-            add("-Djna.boot.library.path=$jnaPath:$nativeDir")
+            // Match Android libjnidispatch.so to the jna-*.jar on the classpath.
+            // Mismatch → Native init fails → OSHI Quartet NoClassDefFoundError on Forge.
+            add("-Djna.boot.library.path=$jnaBootPath:$nativeDir")
             add("-Djna.nosys=true")
             add("-Djna.nounpack=true")
             add("-Djna.tmpdir=${context.cacheDir.absolutePath}")
@@ -948,17 +1114,6 @@ class LaunchCommandBuilder(
         return parts.joinToString(":")
     }
 
-    private fun buildJnaBootLibraryPath(): String {
-        val versionRoot = File(LauncherPaths.runtimeDir, "jna/jna")
-        val preferredVersions = listOf("5.15.0", "5.16.0", "5.14.0", "5.13.0")
-        for (version in preferredVersions) {
-            val dir = File(versionRoot, version)
-            if (File(dir, "libjnidispatch.so").isFile) {
-                return dir.absolutePath
-            }
-        }
-        return AndroidGameRuntime.nativesDir().absolutePath
-    }
 }
 
 

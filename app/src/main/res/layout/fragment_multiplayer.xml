@@ -61,82 +61,43 @@
                     android:orientation="vertical"
                     android:padding="16dp">
 
-                    <com.google.android.material.chip.ChipGroup
-                        android:id="@+id/chipAuthMode"
+                    <com.google.android.material.tabs.TabLayout
+                        android:id="@+id/tabAuthPrimary"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        app:selectionRequired="true"
-                        app:singleSelection="true">
+                        app:tabGravity="fill"
+                        app:tabMode="fixed"
+                        app:tabTextAppearance="@style/TextAppearance.Material3.LabelLarge" />
 
-                        <com.google.android.material.chip.Chip
-                            android:id="@+id/chipPassword"
-                            style="@style/Widget.Material3.Chip.Filter"
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:checked="true"
-                            android:text="@string/multiplayer_mode_login" />
-
-                        <com.google.android.material.chip.Chip
-                            android:id="@+id/chipEmailLogin"
-                            style="@style/Widget.Material3.Chip.Filter"
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="@string/multiplayer_mode_email" />
-
-                        <com.google.android.material.chip.Chip
-                            android:id="@+id/chipRegister"
-                            style="@style/Widget.Material3.Chip.Filter"
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="@string/multiplayer_mode_register" />
-
-                        <com.google.android.material.chip.Chip
-                            android:id="@+id/chipForgot"
-                            style="@style/Widget.Material3.Chip.Filter"
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="@string/multiplayer_mode_forgot" />
-                    </com.google.android.material.chip.ChipGroup>
-
-                    <LinearLayout
+                    <com.google.android.material.textfield.TextInputLayout
+                        android:id="@+id/layoutUsername"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="4dp"
-                        android:baselineAligned="false"
-                        android:orientation="horizontal">
+                        android:layout_marginTop="8dp"
+                        android:hint="@string/multiplayer_username">
 
-                        <com.google.android.material.textfield.TextInputLayout
-                            android:id="@+id/layoutUsername"
-                            android:layout_width="0dp"
+                        <com.google.android.material.textfield.TextInputEditText
+                            android:id="@+id/inputUsername"
+                            android:layout_width="match_parent"
                             android:layout_height="wrap_content"
-                            android:layout_marginEnd="6dp"
-                            android:layout_weight="1"
-                            android:hint="@string/multiplayer_username">
+                            android:inputType="text"
+                            android:maxLines="1" />
+                    </com.google.android.material.textfield.TextInputLayout>
 
-                            <com.google.android.material.textfield.TextInputEditText
-                                android:id="@+id/inputUsername"
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:inputType="text"
-                                android:maxLines="1" />
-                        </com.google.android.material.textfield.TextInputLayout>
+                    <com.google.android.material.textfield.TextInputLayout
+                        android:id="@+id/layoutPassword"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:hint="@string/multiplayer_password">
 
-                        <com.google.android.material.textfield.TextInputLayout
-                            android:id="@+id/layoutPassword"
-                            android:layout_width="0dp"
+                        <com.google.android.material.textfield.TextInputEditText
+                            android:id="@+id/inputPassword"
+                            android:layout_width="match_parent"
                             android:layout_height="wrap_content"
-                            android:layout_marginStart="6dp"
-                            android:layout_weight="1"
-                            android:hint="@string/multiplayer_password">
-
-                            <com.google.android.material.textfield.TextInputEditText
-                                android:id="@+id/inputPassword"
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:inputType="textPassword"
-                                android:maxLines="1" />
-                        </com.google.android.material.textfield.TextInputLayout>
-                    </LinearLayout>
+                            android:inputType="textPassword"
+                            android:maxLines="1" />
+                    </com.google.android.material.textfield.TextInputLayout>
 
                     <com.google.android.material.textfield.TextInputLayout
                         android:id="@+id/layoutEmail"
@@ -193,6 +154,38 @@
                         android:layout_height="wrap_content"
                         android:layout_marginTop="16dp"
                         android:text="@string/multiplayer_login" />
+
+                    <LinearLayout
+                        android:id="@+id/rowAuthLinks"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:gravity="center"
+                        android:orientation="horizontal">
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/buttonSwitchLoginMethod"
+                            style="@style/Widget.Material3.Button.TextButton"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/multiplayer_switch_to_email" />
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/buttonForgotPassword"
+                            style="@style/Widget.Material3.Button.TextButton"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/multiplayer_mode_forgot" />
+                    </LinearLayout>
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/buttonBackToLogin"
+                        style="@style/Widget.Material3.Button.TextButton"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:text="@string/multiplayer_back_to_login"
+                        android:visibility="gone" />
                 </LinearLayout>
 
                 <LinearLayout

@@ -24,6 +24,7 @@ object ControlLayoutStore {
             val buttons = ensureSoftKeyboard(parseButtons(root.optJSONArray("buttons")))
             val joy = root.optJSONObject("joystick")
             val ball = root.optJSONObject("floatingBall")
+            val gesture = root.optJSONObject("gestureQuick")
             ControlLayoutData(
                 buttons = buttons.ifEmpty { ControlCatalog.defaultLayout() },
                 joystick = ControlLayoutData.JoystickSpec(
@@ -34,6 +35,10 @@ object ControlLayoutStore {
                 floatingBall = ControlLayoutData.FloatingBallSpec(
                     x = ball?.optDouble("x", 0.96)?.toFloat()?.coerceIn(0.05f, 0.95f) ?: 0.96f,
                     y = ball?.optDouble("y", 0.38)?.toFloat()?.coerceIn(0.05f, 0.95f) ?: 0.38f
+                ),
+                gestureQuick = ControlLayoutData.GestureQuickSpec(
+                    x = gesture?.optDouble("x", 0.96)?.toFloat()?.coerceIn(0.05f, 0.95f) ?: 0.96f,
+                    y = gesture?.optDouble("y", 0.26)?.toFloat()?.coerceIn(0.05f, 0.95f) ?: 0.26f
                 )
             )
         } catch (_: Exception) {
@@ -75,6 +80,12 @@ object ControlLayoutStore {
                 JSONObject()
                     .put("x", data.floatingBall.x.toDouble())
                     .put("y", data.floatingBall.y.toDouble())
+            )
+            .put(
+                "gestureQuick",
+                JSONObject()
+                    .put("x", data.gestureQuick.x.toDouble())
+                    .put("y", data.gestureQuick.y.toDouble())
             )
         file(context).writeText(json.toString())
     }

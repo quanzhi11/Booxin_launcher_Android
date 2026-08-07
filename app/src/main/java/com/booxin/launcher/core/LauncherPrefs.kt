@@ -14,6 +14,8 @@ object LauncherPrefs {
     private const val KEY_MAX_MEMORY_MB = "max_memory_mb"
     private const val KEY_RENDERER = "renderer_kind"
     private const val KEY_RENDERER_LAST_MANUAL = "renderer_kind_last_manual"
+    private const val KEY_GAME_DIR_LOCATION = "game_dir_location"
+    private const val KEY_GAME_DIR_CUSTOM = "game_dir_custom"
     const val RENDERER_AUTO = "auto"
 
     /** Soft floor / ceiling for the settings slider (MB). */
@@ -94,5 +96,34 @@ object LauncherPrefs {
         if (!::prefs.isInitialized) return null
         val raw = prefs.getString(KEY_RENDERER_LAST_MANUAL, null) ?: return null
         return runCatching { GlRendererKind.valueOf(raw) }.getOrNull()
+    }
+
+    fun gameDirLocation(): GameDirLocation {
+        if (!::prefs.isInitialized) return GameDirLocation.INTERNAL
+        return GameDirLocation.fromPref(prefs.getString(KEY_GAME_DIR_LOCATION, null))
+    }
+
+    fun gameDirCustomPath(): String {
+        if (!::prefs.isInitialized) return ""
+        return prefs.getString(KEY_GAME_DIR_CUSTOM, "") ?: ""
+    }
+
+    fun setGameDir(location: GameDirLocation, customPath: String? = null) {
+        if (!::prefs.isInitialized) return
+        val edit = prefs.edit().putString(KEY_GAME_DIR_LOCATION, location.prefValue)
+        if (customPath != null) {
+            edit.putString(KEY_GAME_DIR_CUSTOM, customPath.trim())
+        }
+        edit.commit()
+    }
+
+    fun getString(key: String, default: String?): String? {
+        if (!::prefs.isInitialized) return default
+        return prefs.getString(key, default)
+    }
+
+    fun putString(key: String, value: String) {
+        if (!::prefs.isInitialized) return
+        prefs.edit().putString(key, value).commit()
     }
 }

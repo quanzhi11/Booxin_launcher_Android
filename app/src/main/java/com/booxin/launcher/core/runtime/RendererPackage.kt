@@ -3,7 +3,7 @@ package com.booxin.launcher.core.runtime
 import com.booxin.launcher.core.launch.GlRendererKind
 
 /**
- * Downloadable renderer plugin metadata (FCL/Zalith-compatible APKs).
+ * Downloadable renderer plugin metadata (third-party renderer APKs).
  * Libs are extracted for the device ABI into `runtime/renderers/<id>/`.
  */
 data class RendererPackage(
@@ -22,7 +22,7 @@ data class RendererPackage(
 )
 
 object RendererPackages {
-    private const val FCL_PLUGIN_BASE =
+    private const val RENDERER_PLUGIN_BASE =
         "https://github.com/ShirosakiMio/FCLRendererPlugin/releases/download/Renderer"
 
     val all: List<RendererPackage> = listOf(
@@ -44,7 +44,7 @@ object RendererPackages {
         RendererPackage(
             id = "ltw",
             kind = GlRendererKind.LTW,
-            downloadUrl = "$FCL_PLUGIN_BASE/LTW-2025.7.16.apk",
+            downloadUrl = "$RENDERER_PLUGIN_BASE/LTW-2025.7.16.apk",
             glLib = "libltw.so",
             eglLib = "libEGL.so",
             rendererToken = "opengles3_ltw",
@@ -54,7 +54,7 @@ object RendererPackages {
         RendererPackage(
             id = "zink",
             kind = GlRendererKind.VULKAN_ZINK,
-            downloadUrl = "$FCL_PLUGIN_BASE/Zink.Mesa25.apk",
+            downloadUrl = "$RENDERER_PLUGIN_BASE/Zink.Mesa25.apk",
             glLib = "libOSMesa_25.so",
             eglLib = "libOSMesa_25.so",
             rendererToken = "vulkan_zink",
@@ -70,7 +70,7 @@ object RendererPackages {
         RendererPackage(
             id = "virgl",
             kind = GlRendererKind.VIRGL,
-            downloadUrl = "$FCL_PLUGIN_BASE/Mesa.24.3.4.APK",
+            downloadUrl = "$RENDERER_PLUGIN_BASE/Mesa.24.3.4.APK",
             glLib = "libOSMesa.so",
             eglLib = "libOSMesa.so",
             rendererToken = "gallium_virgl",
@@ -86,7 +86,7 @@ object RendererPackages {
         RendererPackage(
             id = "freedreno",
             kind = GlRendererKind.FREEDRENO,
-            downloadUrl = "$FCL_PLUGIN_BASE/Mesa.24.3.4.APK",
+            downloadUrl = "$RENDERER_PLUGIN_BASE/Mesa.24.3.4.APK",
             glLib = "libOSMesa.so",
             eglLib = "libOSMesa.so",
             rendererToken = "gallium_freedreno",

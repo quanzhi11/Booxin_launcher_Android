@@ -6,8 +6,8 @@ import java.io.File
 /**
  * Loads the staged input/GL bridge once.
  *
- * Android LWJGL still asks for `libpojavexec.so`, so we stage our bridge under
- * ART 与 HotSpot 必须映射同一份。
+ * LWJGL looks up a fixed bridge soname, so we stage our library under that name.
+ * ART and HotSpot must map the same file.
  */
 object ExecBridgeLoader {
 

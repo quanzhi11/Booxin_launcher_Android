@@ -6,6 +6,8 @@
 #include <dlfcn.h>
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
+#include <pthread.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -21,11 +23,41 @@ static EGLContext g_context = EGL_NO_CONTEXT;
 static EGLConfig g_config;
 static void *g_current = NULL;
 static int g_initialized = 0;
+/* UI thread must NOT eglMakeCurrent — only the GL thread recreates the window surface. */
+static atomic_int g_surface_stale = 0;
+static pthread_mutex_t g_egl_mu = PTHREAD_MUTEX_INITIALIZER;
 
 static EGLint g_gles_api = EGL_OPENGL_ES_API;
 static int g_gles_version = 3;
 
 int pojavInitOpenGL(void);
+void booxin_egl_detach_window(void);
+int booxin_egl_attach_window(void);
+
+/** Called only from the GL thread (MakeCurrent / SwapBuffers). */
+static int egl_recreate_window_surface_locked(void) {
+    if (g_display == EGL_NO_DISPLAY || !g_initialized) return 0;
+    if (g_surface != EGL_NO_SURFACE) {
+        eglMakeCurrent(g_display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+        eglDestroySurface(g_display, g_surface);
+        g_surface = EGL_NO_SURFACE;
+        g_current = NULL;
+    }
+    ANativeWindow *win = booxin_ensure_native_window();
+    if (!win) {
+        LOGW("egl recreate: no native window yet");
+        return 0;
+    }
+    g_surface = eglCreateWindowSurface(
+        g_display, g_config, (EGLNativeWindowType)win, NULL);
+    if (g_surface == EGL_NO_SURFACE) {
+        LOGE("eglCreateWindowSurface failed: 0x%x", eglGetError());
+        return 0;
+    }
+    LOGI("egl window surface recreated on GL thread %dx%d",
+         ANativeWindow_getWidth(win), ANativeWindow_getHeight(win));
+    return 1;
+}
 
 static void read_renderer_env(void) {
     const char *renderer = getenv("BOOXIN_RENDERER");
@@ -116,14 +148,9 @@ void *pojavCreateContext(void *contextSrc) {
 
     booxin_environ_t *e = pojav_environ;
     if (e && e->nativeWindow && g_surface == EGL_NO_SURFACE) {
-        ANativeWindow *win = booxin_ensure_native_window();
-        if (!win) win = (ANativeWindow *)e->nativeWindow;
-        EGLint surf_attribs[] = { EGL_NONE };
-        g_surface = eglCreateWindowSurface(
-            g_display, g_config, (EGLNativeWindowType)win, surf_attribs);
-        if (g_surface == EGL_NO_SURFACE) {
-            LOGE("eglCreateWindowSurface failed: 0x%x", eglGetError());
-        }
+        pthread_mutex_lock(&g_egl_mu);
+        egl_recreate_window_surface_locked();
+        pthread_mutex_unlock(&g_egl_mu);
     }
     LOGI("pojavCreateContext %p", (void *)ctx);
     return (void *)ctx;
@@ -137,29 +164,92 @@ void pojavMakeCurrent(void *window) {
     if (!g_initialized && !pojavInitOpenGL()) return;
     EGLContext ctx = window ? (EGLContext)window : g_context;
     if (ctx == EGL_NO_CONTEXT) ctx = g_context;
-    if (g_surface == EGL_NO_SURFACE && pojav_environ) {
-        ANativeWindow *win = booxin_ensure_native_window();
-        if (win) {
-            g_surface = eglCreateWindowSurface(
-                g_display, g_config, (EGLNativeWindowType)win, NULL);
+    pthread_mutex_lock(&g_egl_mu);
+    if (atomic_exchange(&g_surface_stale, 0) || g_surface == EGL_NO_SURFACE) {
+        if (!egl_recreate_window_surface_locked()) {
+            pthread_mutex_unlock(&g_egl_mu);
+            return;
         }
     }
     if (!eglMakeCurrent(g_display, g_surface, g_surface, ctx)) {
-        LOGE("eglMakeCurrent failed: 0x%x", eglGetError());
+        LOGE("eglMakeCurrent failed: 0x%x — will recreate", eglGetError());
+        atomic_store(&g_surface_stale, 1);
+        pthread_mutex_unlock(&g_egl_mu);
         return;
     }
     g_current = (void *)ctx;
     if (pojav_environ) pojav_environ->showingWindow = (long)(intptr_t)ctx;
+    /* Prefer unlocked present unless FORCE_VSYNC=true. */
+    {
+        const char *force = getenv("FORCE_VSYNC");
+        int interval = (force && force[0] == 't') ? 1 : 0;
+        eglSwapInterval(g_display, interval);
+    }
+    pthread_mutex_unlock(&g_egl_mu);
 }
 
 void pojavSwapBuffers(void) {
-    if (g_display != EGL_NO_DISPLAY && g_surface != EGL_NO_SURFACE) {
-        eglSwapBuffers(g_display, g_surface);
+    if (g_display == EGL_NO_DISPLAY) return;
+    pthread_mutex_lock(&g_egl_mu);
+    if (atomic_exchange(&g_surface_stale, 0) || g_surface == EGL_NO_SURFACE) {
+        if (!egl_recreate_window_surface_locked()) {
+            pthread_mutex_unlock(&g_egl_mu);
+            return;
+        }
+        if (g_context != EGL_NO_CONTEXT) {
+            if (!eglMakeCurrent(g_display, g_surface, g_surface, g_context)) {
+                LOGE("eglMakeCurrent(after recreate) failed: 0x%x", eglGetError());
+                atomic_store(&g_surface_stale, 1);
+                pthread_mutex_unlock(&g_egl_mu);
+                return;
+            }
+            g_current = (void *)g_context;
+        }
     }
+    if (g_surface != EGL_NO_SURFACE) {
+        if (!eglSwapBuffers(g_display, g_surface)) {
+            EGLint err = eglGetError();
+            LOGW("SwapBuffers failed 0x%x — mark stale", err);
+            /* Destroy on this GL thread; next frame recreates. */
+            eglMakeCurrent(g_display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+            eglDestroySurface(g_display, g_surface);
+            g_surface = EGL_NO_SURFACE;
+            g_current = NULL;
+            atomic_store(&g_surface_stale, 1);
+        }
+    }
+    pthread_mutex_unlock(&g_egl_mu);
+}
+
+/**
+ * UI/binder thread: only mark the window surface stale.
+ * Never eglMakeCurrent here — that steals the context from the render thread
+ * and freezes the picture after resume (buttons still work).
+ */
+void booxin_egl_detach_window(void) {
+    atomic_store(&g_surface_stale, 1);
+    LOGI("egl mark stale (detach / pause)");
+}
+
+/** UI thread after setupBridgeWindow: new ANativeWindow is retained; GL thread will attach. */
+int booxin_egl_attach_window(void) {
+    if (!booxin_ensure_native_window()) {
+        LOGW("egl attach: no native window");
+        return 0;
+    }
+    atomic_store(&g_surface_stale, 1);
+    LOGI("egl mark stale (attach / resume) — GL thread will recreate");
+    return 1;
 }
 
 void pojavSwapInterval(int interval) {
-    if (g_display != EGL_NO_DISPLAY) eglSwapInterval(g_display, interval);
+    if (g_display == EGL_NO_DISPLAY) return;
+    const char *force = getenv("FORCE_VSYNC");
+    if (!(force && force[0] == 't')) {
+        /* Ignore game/LWJGL requests for vsync — keep headroom for +FPS. */
+        interval = 0;
+    }
+    eglSwapInterval(g_display, interval);
 }
 
 void pojavSetWindowHint(int hint, int value) {

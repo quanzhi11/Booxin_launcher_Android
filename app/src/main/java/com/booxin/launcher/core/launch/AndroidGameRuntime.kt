@@ -15,6 +15,7 @@ object AndroidGameRuntime {
     private const val ASSET_LWJGL = "app_runtime/lwjgl/lwjgl.jar"
     private const val ASSET_LWJGL_PATCH = "app_runtime/lwjgl/lwjgl-bridge-patch.jar"
     private const val ASSET_LWJGL_CORE_34 = "app_runtime/lwjgl/lwjgl-core-3.4.jar"
+    private const val ASSET_LWJGL_JNI_SHIM = "app_runtime/lwjgl/lwjgl-jni-sdl-shim.jar"
     private const val ASSET_LWJGL_SDL = "app_runtime/lwjgl/lwjgl-sdl.jar"
     private const val ASSET_LWJGL_VERSION = "app_runtime/lwjgl/version"
     private const val ASSET_JNA_PREFIX = "app_runtime/jna/"
@@ -32,6 +33,7 @@ object AndroidGameRuntime {
         "libgl4es_114.so",
         "libopenal.so",
         "libbooxin_bridge.so",
+        "libbytehook.so",
         "libawt_xawt.so",
         "libawt_headless.so",
         "libc++_shared.so",
@@ -43,8 +45,14 @@ object AndroidGameRuntime {
 
     fun lwjglJar(): File = File(LauncherPaths.runtimeDir, "lwjgl/lwjgl.jar")
 
-    /** LWJGL 3.4 core（SDL 路径需排在 [lwjglJar] 前）。 */
+    /** LWJGL 3.4 core（完整桌面包；一般不要整包前置，会撞 Java25 FFM）。 */
     fun lwjglCore34Jar(): File = File(LauncherPaths.runtimeDir, "lwjgl/lwjgl-core-3.4.jar")
+
+    /**
+     * 仅含 3.4 基线 `JNI.class`（native invokePZ…），供 SDL 路径 RegisterNatives。
+     * 不含 META-INF/versions/25，避免非 native FFM 实现。
+     */
+    fun lwjglJniSdlShimJar(): File = File(LauncherPaths.runtimeDir, "lwjgl/lwjgl-jni-sdl-shim.jar")
 
     /** LWJGL SDL 绑定（MC 26.3+）。 */
     fun lwjglSdlJar(): File = File(LauncherPaths.runtimeDir, "lwjgl/lwjgl-sdl.jar")
@@ -70,6 +78,7 @@ object AndroidGameRuntime {
         val destJar = File(destDir, "lwjgl.jar")
         val destPatch = File(destDir, "lwjgl-bridge-patch.jar")
         val destCore34 = File(destDir, "lwjgl-core-3.4.jar")
+        val destJniShim = File(destDir, "lwjgl-jni-sdl-shim.jar")
         val destSdl = File(destDir, "lwjgl-sdl.jar")
         val destVer = File(destDir, "version")
         val assetVer = runCatching {
@@ -78,6 +87,7 @@ object AndroidGameRuntime {
         val needCopy = !destJar.isFile || destJar.length() == 0L ||
             !destPatch.isFile || destPatch.length() == 0L ||
             !destCore34.isFile || destCore34.length() == 0L ||
+            !destJniShim.isFile || destJniShim.length() == 0L ||
             !destSdl.isFile || destSdl.length() == 0L ||
             (assetVer.isNotEmpty() && destVer.takeIf { it.isFile }?.readText()?.trim() != assetVer)
         if (!needCopy) return
@@ -97,6 +107,13 @@ object AndroidGameRuntime {
             android.util.Log.w("BooxinRuntime", "lwjgl-core-3.4.jar missing from assets: ${it.message}")
         }
         runCatching {
+            context.assets.open(ASSET_LWJGL_JNI_SHIM).use { input ->
+                destJniShim.outputStream().use { output -> input.copyTo(output) }
+            }
+        }.onFailure {
+            android.util.Log.w("BooxinRuntime", "lwjgl-jni-sdl-shim.jar missing from assets: ${it.message}")
+        }
+        runCatching {
             context.assets.open(ASSET_LWJGL_SDL).use { input ->
                 destSdl.outputStream().use { output -> input.copyTo(output) }
             }
@@ -111,7 +128,15 @@ object AndroidGameRuntime {
     private fun ensureJna(context: Context) {
         val destDir = File(LauncherPaths.runtimeDir, "jna").also { it.mkdirs() }
         val marker = File(destDir, ".extracted")
-        if (marker.isFile && File(destDir, "jna").isDirectory) return
+        val assetVer = runCatching {
+            context.assets.open(ASSET_JNA_PREFIX + "version").bufferedReader().use { it.readText().trim() }
+        }.getOrDefault("")
+        val has517 = File(destDir, "jna/5.17.0/libjnidispatch.so").isFile
+        val markerOk = marker.isFile &&
+            File(destDir, "jna").isDirectory &&
+            has517 &&
+            (assetVer.isEmpty() || marker.readText().trim() == assetVer)
+        if (markerOk) return
         val names = runCatching { context.assets.list("app_runtime/jna")?.toList().orEmpty() }
             .getOrDefault(emptyList())
         if (names.isEmpty()) return
@@ -131,37 +156,85 @@ object AndroidGameRuntime {
                 }
             }
         }
-        marker.writeText("1")
+        marker.writeText(assetVer.ifBlank { "1" })
     }
 
-    /** Copy Android libjnidispatch.so next to other staged natives for JNA. */
+    /**
+     * Directory containing Android-built libjnidispatch.so matching [jnaJarVersion]
+     * (e.g. "5.17.0" from net.java.dev.jna:jna:5.17.0).
+     *
+     * jna.nounpack=true forbids extracting glibc natives from the Maven jar;
+     * a version mismatch here breaks com.sun.jna.Native and cascades into OSHI
+     * NoClassDefFoundError: oshi/util/tuples/Quartet under Forge.
+     */
+    fun jnaBootLibraryPath(jnaJarVersion: String?): String {
+        val versionRoot = File(LauncherPaths.runtimeDir, "jna/jna")
+        val exact = jnaJarVersion?.let { File(versionRoot, it) }
+        if (exact != null && File(exact, "libjnidispatch.so").isFile) {
+            return exact.absolutePath
+        }
+        // Prefer the newest available native that is still compatible (same major.minor family).
+        val available = versionRoot.listFiles()
+            ?.filter { it.isDirectory && File(it, "libjnidispatch.so").isFile }
+            .orEmpty()
+        if (available.isEmpty()) return nativesDir().absolutePath
+        val target = parseJnaVersion(jnaJarVersion)
+        val best = available.maxWithOrNull { a, b ->
+            compareJnaVersion(parseJnaVersion(a.name), parseJnaVersion(b.name))
+        }
+        if (target == null) {
+            return best?.absolutePath ?: nativesDir().absolutePath
+        }
+        // Exact major.minor match first (5.17.x → 5.17.0), else closest lower, else newest.
+        val sameMinor = available.filter {
+            val v = parseJnaVersion(it.name) ?: return@filter false
+            v.first == target.first && v.second == target.second
+        }.maxWithOrNull { a, b ->
+            compareJnaVersion(parseJnaVersion(a.name), parseJnaVersion(b.name))
+        }
+        if (sameMinor != null) return sameMinor.absolutePath
+        val lowerOrEqual = available.filter {
+            compareJnaVersion(parseJnaVersion(it.name), target) <= 0
+        }.maxWithOrNull { a, b ->
+            compareJnaVersion(parseJnaVersion(a.name), parseJnaVersion(b.name))
+        }
+        return (lowerOrEqual ?: best)?.absolutePath ?: nativesDir().absolutePath
+    }
+
+    /** Copy matching Android libjnidispatch.so next to other staged natives. */
     private fun stageJnaDispatch() {
         val dest = File(nativesDir(), "libjnidispatch.so")
-        if (dest.isFile && dest.length() > 0L) return
-        val versionRoot = File(LauncherPaths.runtimeDir, "jna/jna")
-        if (!versionRoot.isDirectory) return
-        val preferred = listOf("5.15.0", "5.16.0", "5.14.0", "5.13.0")
-        val versions = versionRoot.listFiles()
-            ?.filter { it.isDirectory }
-            ?.sortedByDescending { it.name }
-            .orEmpty()
-        val source = preferred.asSequence()
-            .map { File(versionRoot, "$it/libjnidispatch.so") }
-            .firstOrNull { it.isFile }
-            ?: versions.asSequence()
-                .map { File(it, "libjnidispatch.so") }
-                .firstOrNull { it.isFile }
-            ?: return
+        val sourceDir = File(jnaBootLibraryPath(null))
+        val source = File(sourceDir, "libjnidispatch.so")
+        if (!source.isFile) return
+        if (dest.isFile && dest.length() == source.length() && dest.length() > 0L) return
         source.copyTo(dest, overwrite = true)
         dest.setReadable(true, false)
         dest.setExecutable(true, false)
     }
 
+    private fun parseJnaVersion(version: String?): Triple<Int, Int, Int>? {
+        if (version.isNullOrBlank()) return null
+        val parts = version.split('.')
+        return Triple(
+            parts.getOrNull(0)?.toIntOrNull() ?: return null,
+            parts.getOrNull(1)?.toIntOrNull() ?: 0,
+            parts.getOrNull(2)?.toIntOrNull() ?: 0
+        )
+    }
+
+    private fun compareJnaVersion(a: Triple<Int, Int, Int>?, b: Triple<Int, Int, Int>?): Int {
+        if (a == null && b == null) return 0
+        if (a == null) return -1
+        if (b == null) return 1
+        return compareValuesBy(a, b, { it.first }, { it.second }, { it.third })
+    }
+
     fun ensureNatives(context: Context) {
         val dest = nativesDir().also { it.mkdirs() }
         val marker = File(dest, ".ready")
-        val expected = "v20:${NATIVE_NAMES.size}:${preferredAbiFolder()}"
-        val markerOk = marker.isFile && marker.readText().trim().startsWith("v20:")
+        val expected = "v21:${NATIVE_NAMES.size}:${preferredAbiFolder()}"
+        val markerOk = marker.isFile && marker.readText().trim().startsWith("v21:")
         val missingRequired = !File(dest, "liblwjgl.so").isFile ||
             !File(dest, "libbooxin_bridge.so").isFile ||
             !File(dest, "libpojavexec.so").isFile ||
@@ -207,12 +280,11 @@ object AndroidGameRuntime {
         linkNativeAlias(dest, "libspirv-cross-c-shared.so", "libspirv-cross.so")
         installBridgeCompatAlias(dest)
         ensureHolyGl4esBackup(context, dest)
-        // Wipe old red-zone .so leftovers; keep libpojavexec alias of our bridge.
+        // Wipe old leftover .so copies; keep the LWJGL bridge soname alias.
         listOf(
             "libpojavexec.so",
             "libpojavexec_awt.so",
             "libfcl.so",
-            "libbytehook.so",
             "liblinkerhook.so",
             "libdriver_helper.so"
         ).forEach { name ->
@@ -222,7 +294,7 @@ object AndroidGameRuntime {
         marker.writeText("$expected:$copied")
     }
 
-    /** Alias bridge as libpojavexec.so for LWJGL. */
+    /** Stage the bridge under the soname LWJGL expects. */
     private fun installBridgeCompatAlias(dest: File) {
         val bridge = File(dest, "libbooxin_bridge.so")
         if (!bridge.isFile) return
@@ -240,7 +312,8 @@ object AndroidGameRuntime {
         val bridgeName = "libbooxin_bridge.so"
         val fromApk = File(systemNative, bridgeName)
         val out = File(dest, bridgeName)
-        if (fromApk.isFile && (!out.isFile || out.length() != fromApk.length() || out.lastModified() < fromApk.lastModified())) {
+        // Always refresh bridge from the installed APK — launch path is sensitive to stale .so.
+        if (fromApk.isFile) {
             fromApk.copyTo(out, overwrite = true)
             out.setReadable(true, false)
             out.setExecutable(true, false)
@@ -248,7 +321,7 @@ object AndroidGameRuntime {
         }
         val bridge = File(dest, bridgeName)
         val alias = File(dest, "libpojavexec.so")
-        if (bridge.isFile && (!alias.isFile || alias.length() != bridge.length() || alias.lastModified() < bridge.lastModified())) {
+        if (bridge.isFile) {
             bridge.copyTo(alias, overwrite = true)
             alias.setReadable(true, false)
             alias.setExecutable(true, false)

@@ -20,7 +20,7 @@ object ToolJvmEnvironment {
         Os.setenv("LD_LIBRARY_PATH", ldPath, true)
         Os.setenv("PATH", "${File(java.homeDir, "bin").absolutePath}:${Os.getenv("PATH").orEmpty()}", true)
         Os.setenv(RuntimeEnv.NATIVEDIR, nativeDir, true)
-        Os.setenv(RuntimeEnv.LEGACY_FCL_NATIVEDIR, nativeDir, true)
+        Os.setenv(RuntimeEnv.LEGACY_NATIVEDIR_ALT, nativeDir, true)
         Os.setenv(RuntimeEnv.LEGACY_POJAV_NATIVEDIR, nativeDir, true)
         Os.setenv("_JAVA_VERSION_SET", "true", true)
         setupJavaRuntime(java.homeDir)

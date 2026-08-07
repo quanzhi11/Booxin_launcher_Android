@@ -51,9 +51,16 @@ class GameLaunchService : Service() {
     override fun onCreate() {
         super.onCreate()
         ensureChannel()
+        // 切后台 / 熄屏会拆掉 Surface：保活 JVM，回前台再绑窗（不要杀进程）。
         GameSurfaceBridge.onSurfaceLostWhileRunning = {
-            appendLog("Surface 已销毁，结束游戏进程")
-            requestStop("surface_lost")
+            appendLog("Surface 已暂停（切后台/熄屏），保持游戏进程与前台服务…")
+            acquireWakeLock()
+        }
+        GameSurfaceBridge.onSurfaceRestoredWhileRunning = {
+            appendLog("Surface 已恢复，重新绑定游戏窗口…")
+            scope.launch {
+                rebindGameSurface(retries = 12)
+            }
         }
         muteReceiver = object : android.content.BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
@@ -301,11 +308,14 @@ class GameLaunchService : Service() {
                 versionId
             )
             GameOptionsPatch.applyWindowOverrides(gameDir, width, height)
-            appendLog("options.txt → ${width}x${height} fullscreen=false")
+            appendLog("options.txt → ${width}x${height}，关垂直同步，maxFps+10")
         }.onFailure {
             appendLog("options.txt 写入失败: ${it.message}")
         }
         appendLog("构建启动命令…（窗口 ${width}x${height}，内存 ${com.booxin.launcher.core.LauncherPrefs.maxMemoryMb()} MB）")
+        if (OemLaunchProfile.needsForgeShortClasspath()) {
+            appendLog("vivo 系启动优化：Forge 短 classpath + legacyClassPath.file（${OemLaunchProfile.describe()}）")
+        }
         if (com.booxin.launcher.core.java.MinecraftJavaRequirement.usesSdlWindowing(versionId)) {
             val sdl = File(com.booxin.launcher.core.launch.AndroidGameRuntime.nativesDir(), "libSDL3.so")
             val sdlJar = com.booxin.launcher.core.launch.AndroidGameRuntime.lwjglSdlJar()
@@ -363,7 +373,7 @@ class GameLaunchService : Service() {
         val inputOk = backend.enableInput()
         appendLog(
             if (inputOk) "输入桥已就绪（stack queue=ON）"
-            else "输入桥警告：stack queue 未确认，触控可能卡死"
+            else "输入桥提示：stack queue 暂未确认（Forge 常在 JVM 后才真正就绪）"
         )
 
         appendLog("绑定游戏窗口…")
@@ -404,14 +414,16 @@ class GameLaunchService : Service() {
                 val act = LaunchActivity.foregroundOrNull()
                 val surf = GameSurfaceBridge.currentSurface()
                 if (act != null && surf != null) {
-                    appendLog("初始化 SDL3 Android JNI…")
-                    BooxinSdlBootstrap.maybePrepare(act, versionId, surf, width, height)
+                    appendLog("初始化 SDL3（大栈 ART load）…")
+                    kotlinx.coroutines.withContext(Dispatchers.Main) {
+                        BooxinSdlBootstrap.maybePrepare(act, versionId, surf, width, height)
+                    }
                     appendLog("SDL3 Android JNI 就绪")
                 } else {
-                    appendLog("跳过 SDL JNI：activity=${act != null} surface=${surf != null}")
+                    appendLog("跳过 SDL 绑定：activity=${act != null} surface=${surf != null}")
                 }
             }.onFailure {
-                appendLog("SDL3 Android JNI 失败: ${it.javaClass.simpleName}: ${it.message}")
+                appendLog("SDL3 绑定失败: ${it.javaClass.simpleName}: ${it.message}")
             }
         }
         runCatching {
@@ -423,7 +435,10 @@ class GameLaunchService : Service() {
         }.onFailure { appendLog("initializeHooks: ${it.message}") }
 
         val again = backend.enableInput()
-        appendLog("输入桥绑定后确认: stackQueue=$again")
+        appendLog(
+            if (again) "输入桥绑定后确认: stackQueue=true"
+            else "输入桥绑定后确认: stackQueue=false（Forge 在 JVM 起来前常如此，属正常）"
+        )
 
         appendLog("探测 Java 运行时…")
         val probe = runner.probeJava(java, command.env)
@@ -433,6 +448,7 @@ class GameLaunchService : Service() {
         appendLog(probe.getOrThrow())
 
         appendLog("启动 Minecraft JVM（前台 :game 进程）…")
+        appendLog("提示：创建 JVM / 加载 Forge 主类可能要一两分钟，进度会持续刷新")
         updateNotification("Minecraft 正在加载…")
 
         if (!LaunchSession.enterRunning()) {
@@ -514,6 +530,51 @@ class GameLaunchService : Service() {
         nm.createNotificationChannel(channel)
     }
 
+    private suspend fun rebindGameSurface(retries: Int) {
+        val backend = GameRuntimeBackends.current()
+        val epoch = GameSurfaceBridge.currentRebindEpoch()
+        repeat(retries) { attempt ->
+            if (GameSurfaceBridge.currentRebindEpoch() != epoch) {
+                appendLog("重绑已取消（Surface 再次变化）")
+                return
+            }
+            val candidate = GameSurfaceBridge.currentSurface()
+            if (candidate == null || !candidate.isValid) {
+                appendLog("重绑等待 Surface… ${attempt + 1}/$retries")
+                kotlinx.coroutines.delay(250)
+                return@repeat
+            }
+            // Wait for a real size — attaching a 0x0 window breaks EGL on some OEMs.
+            if (GameSurfaceBridge.width <= 1 || GameSurfaceBridge.height <= 1) {
+                appendLog("重绑等待尺寸… ${attempt + 1}/$retries")
+                kotlinx.coroutines.delay(200)
+                return@repeat
+            }
+            val ok = kotlinx.coroutines.withContext(Dispatchers.Main) {
+                runCatching {
+                    backend.attachSurface(candidate)
+                }.getOrDefault(false)
+            }
+            if (ok) {
+                GameSurfaceBridge.onSurfaceSizeChanged(
+                    GameSurfaceBridge.width,
+                    GameSurfaceBridge.height
+                )
+                GameSurfaceBridge.markRebound()
+                backend.enableInput()
+                appendLog(
+                    if (attempt == 0) "游戏窗口已重新绑定"
+                    else "游戏窗口已重新绑定（重试 ${attempt + 1}）"
+                )
+                updateNotification("Minecraft 运行中")
+                return
+            }
+            appendLog("窗口重绑未就绪，重试 ${attempt + 1}/$retries…")
+            kotlinx.coroutines.delay(300)
+        }
+        appendLog("窗口重绑失败：Surface 或 ANativeWindow 仍不可用")
+    }
+
     private fun acquireWakeLock() {
         if (wakeLock?.isHeld == true) return
         val pm = getSystemService(PowerManager::class.java) ?: return
@@ -536,6 +597,7 @@ class GameLaunchService : Service() {
 
     override fun onDestroy() {
         GameSurfaceBridge.onSurfaceLostWhileRunning = null
+        GameSurfaceBridge.onSurfaceRestoredWhileRunning = null
         muteReceiver?.let { runCatching { unregisterReceiver(it) } }
         muteReceiver = null
         runner.stop()

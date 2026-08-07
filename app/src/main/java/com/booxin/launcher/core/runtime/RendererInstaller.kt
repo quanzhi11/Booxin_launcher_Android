@@ -10,7 +10,7 @@ import java.io.File
 import java.util.zip.ZipFile
 
 /**
- * Downloads FCL/Zalith renderer plugin APKs and extracts native libs for the device ABI.
+ * Downloads third-party renderer plugin APKs and extracts native libs for the device ABI.
  */
 object RendererInstaller {
     private val downloader = FileDownloader()

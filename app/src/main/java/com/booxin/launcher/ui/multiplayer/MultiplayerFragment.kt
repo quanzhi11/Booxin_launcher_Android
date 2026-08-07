@@ -347,13 +347,37 @@ class MultiplayerFragment : Fragment() {
     }
 
     private fun setupAuthChips() {
-        binding.chipAuthMode.setOnCheckedStateChangeListener { _, _ ->
-            authMode = when {
-                binding.chipEmailLogin.isChecked -> AuthMode.EMAIL
-                binding.chipRegister.isChecked -> AuthMode.REGISTER
-                binding.chipForgot.isChecked -> AuthMode.FORGOT
-                else -> AuthMode.PASSWORD
+        val tabs = binding.tabAuthPrimary
+        if (tabs.tabCount == 0) {
+            tabs.addTab(tabs.newTab().setText(R.string.multiplayer_mode_login))
+            tabs.addTab(tabs.newTab().setText(R.string.multiplayer_mode_register))
+        }
+        tabs.addOnTabSelectedListener(object : com.google.android.material.tabs.TabLayout.OnTabSelectedListener {
+            override fun onTabSelected(tab: com.google.android.material.tabs.TabLayout.Tab) {
+                authMode = when (tab.position) {
+                    1 -> AuthMode.REGISTER
+                    else -> if (authMode == AuthMode.EMAIL) AuthMode.EMAIL else AuthMode.PASSWORD
+                }
+                if (tab.position == 0 && authMode != AuthMode.EMAIL && authMode != AuthMode.PASSWORD) {
+                    authMode = AuthMode.PASSWORD
+                }
+                applyAuthModeUi()
             }
+            override fun onTabUnselected(tab: com.google.android.material.tabs.TabLayout.Tab) = Unit
+            override fun onTabReselected(tab: com.google.android.material.tabs.TabLayout.Tab) = Unit
+        })
+        binding.buttonSwitchLoginMethod.setOnClickListener {
+            authMode = if (authMode == AuthMode.EMAIL) AuthMode.PASSWORD else AuthMode.EMAIL
+            binding.tabAuthPrimary.getTabAt(0)?.select()
+            applyAuthModeUi()
+        }
+        binding.buttonForgotPassword.setOnClickListener {
+            authMode = AuthMode.FORGOT
+            applyAuthModeUi()
+        }
+        binding.buttonBackToLogin.setOnClickListener {
+            authMode = AuthMode.PASSWORD
+            binding.tabAuthPrimary.getTabAt(0)?.select()
             applyAuthModeUi()
         }
         applyAuthModeUi()
@@ -368,6 +392,13 @@ class MultiplayerFragment : Fragment() {
         binding.layoutPassword.isVisible = needPass
         binding.layoutEmail.isVisible = needEmail
         binding.rowCode.isVisible = needCode
+        binding.tabAuthPrimary.isVisible = authMode != AuthMode.FORGOT
+        binding.rowAuthLinks.isVisible = authMode != AuthMode.FORGOT && authMode != AuthMode.REGISTER
+        binding.buttonBackToLogin.isVisible = authMode == AuthMode.FORGOT
+        binding.buttonSwitchLoginMethod.text = when (authMode) {
+            AuthMode.EMAIL -> getString(R.string.multiplayer_switch_to_password)
+            else -> getString(R.string.multiplayer_switch_to_email)
+        }
         binding.buttonLogin.text = when (authMode) {
             AuthMode.PASSWORD -> getString(R.string.multiplayer_login)
             AuthMode.EMAIL -> getString(R.string.multiplayer_email_login)

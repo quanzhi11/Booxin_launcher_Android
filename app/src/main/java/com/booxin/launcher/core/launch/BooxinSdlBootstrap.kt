@@ -7,55 +7,114 @@ import com.booxin.launcher.core.java.MinecraftJavaRequirement
 import org.libsdl.app.SDL
 import org.libsdl.app.SDLActivity
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 
-/** ART 侧加载官方 SDL3，并绑上 SurfaceView。 */
+/**
+ * SDL3 Android init for 26.3+.
+ *
+ * ART IO 协程栈太小，直接 System.loadLibrary(SDL3) 会 SIGSEGV。
+ * 这里用 16MB 栈线程做 System.load（JNI_OnLoad 才能 FindClass 到
+ * org.libsdl.app.*），再 setupJNI / Surface；HotSpot 侧只 dlopen+SetMainReady。
+ */
 object BooxinSdlBootstrap {
     private const val TAG = "BooxinSdl"
-    @Volatile private var prepared = false
+    private const val LOAD_STACK = 16L * 1024L * 1024L
+
+    @Volatile private var surfaceBound = false
+    private val libraryReady = AtomicBoolean(false)
 
     fun maybePrepare(activity: Activity, versionId: String, surface: Surface, width: Int, height: Int) {
         if (!MinecraftJavaRequirement.usesSdlWindowing(versionId)) return
         val sdl = File(AndroidGameRuntime.nativesDir(), "libSDL3.so")
         if (!sdl.isFile) {
-            step(activity, "missing ${sdl.absolutePath}")
+            step(activity, "SDL: 缺少 ${sdl.absolutePath}")
             return
         }
-        // Stepwise so a native crash leaves a clear last-line in launch log.
-        if (!prepared) {
-            Class.forName("org.libsdl.app.HIDDeviceManager")
-            Class.forName("org.libsdl.app.SDLAudioManager")
-            Class.forName("org.libsdl.app.SDLControllerManager")
-            step(activity, "SDL step: loadLibrary…")
-            runCatching { System.loadLibrary("SDL3") }
-                .recoverCatching { System.load(sdl.absolutePath) }
-                .getOrThrow()
-            step(activity, "SDL step: setContext…")
-            SDL.setContext(activity.applicationContext)
-            step(activity, "SDL step: setupJNI…")
-            SDL.setupJNI()
-            prepared = true
-            step(activity, "SDL step: setupJNI OK")
+        val app = activity.applicationContext
+        SDL.setContext(activity)
+        SDLActivity.booxinAttachSurface(app, surface)
+        surfaceBound = true
+
+        runCatching {
+            NativeJvmLauncher.cacheArtClassLoader(BooxinSdlBootstrap::class.java.classLoader)
+        }.onFailure {
+            Log.w(TAG, "cacheArtClassLoader: ${it.message}")
         }
-        step(activity, "SDL step: attachSurface…")
-        SDLActivity.booxinAttachSurface(activity, surface)
-        val dm = activity.resources.displayMetrics
+
+        val dm = app.resources.displayMetrics
         val density = dm.density
-        val rate = runCatching {
+        val refresh = runCatching {
             if (android.os.Build.VERSION.SDK_INT >= 30) {
                 activity.display?.refreshRate ?: 60f
             } else {
                 @Suppress("DEPRECATION")
-                (activity.getSystemService(android.content.Context.WINDOW_SERVICE) as android.view.WindowManager)
-                    .defaultDisplay.refreshRate
+                activity.windowManager.defaultDisplay.refreshRate
             }
         }.getOrDefault(60f)
-        step(activity, "SDL step: setResolution ${width}x${height}…")
-        SDLActivity.nativeSetScreenResolution(width, height, width, height, density, rate)
-        step(activity, "SDL step: onNativeSurfaceCreated…")
-        SDLActivity.onNativeSurfaceCreated()
-        step(activity, "SDL step: onNativeSurfaceChanged…")
-        SDLActivity.onNativeSurfaceChanged()
-        step(activity, "SDL step: surface bound OK")
+
+        step(activity, "SDL: 大栈线程 load ${sdl.name}…")
+        val err = arrayOfNulls<Throwable>(1)
+        val loader = Thread(
+            null,
+            {
+                try {
+                    if (!libraryReady.get()) {
+                        System.load(sdl.absolutePath)
+                        NativeJvmLauncher.markSdlJniOnLoadDone()
+                        libraryReady.set(true)
+                    }
+                    SDL.setupJNI()
+                    SDLActivity.nativeSetScreenResolution(
+                        width, height, width, height, density, refresh
+                    )
+                    SDLActivity.onNativeResize()
+                    SDLActivity.onNativeSurfaceCreated()
+                    SDLActivity.onNativeSurfaceChanged()
+                } catch (t: Throwable) {
+                    err[0] = t
+                }
+            },
+            "booxin-sdl-load",
+            LOAD_STACK
+        )
+        loader.start()
+        loader.join()
+        val failure = err[0]
+        if (failure != null) {
+            libraryReady.set(false)
+            step(activity, "SDL: load 失败 ${failure.javaClass.simpleName}: ${failure.message}")
+            throw failure
+        }
+        step(activity, "SDL: ART load + setupJNI + Surface 就绪")
+    }
+
+    fun isSurfaceBound(): Boolean = surfaceBound
+
+    fun isLibraryReady(): Boolean = libraryReady.get()
+
+    /**
+     * Called from HotSpot via ART if ART-side load did not run.
+     * Must execute as a Java→JNI frame so SDL JNI_OnLoad can FindClass app classes.
+     */
+    @JvmStatic
+    fun finishSdlAndroidInitFromArt(): Boolean {
+        return runCatching {
+            if (!libraryReady.get()) {
+                val path = File(AndroidGameRuntime.nativesDir(), "libSDL3.so").absolutePath
+                // Prefer native path that calls JNI_OnLoad under this Java frame.
+                if (!NativeJvmLauncher.finishSdlJniOnLoad()) {
+                    System.load(path)
+                }
+                libraryReady.set(true)
+            }
+            SDL.setupJNI()
+            SDLActivity.onNativeSurfaceCreated()
+            SDLActivity.onNativeSurfaceChanged()
+            true
+        }.getOrElse {
+            Log.e(TAG, "finishSdlAndroidInitFromArt failed", it)
+            false
+        }
     }
 
     private fun step(activity: Activity, msg: String) {

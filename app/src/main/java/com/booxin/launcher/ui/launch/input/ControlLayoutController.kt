@@ -16,6 +16,7 @@ class ControlLayoutController(
     private val host: FrameLayout,
     private val joystick: VirtualJoystick,
     private val floatingBall: TextView,
+    private val gestureQuick: TextView,
     private val editBar: View,
     private val onEditModeChanged: (Boolean) -> Unit = {}
 ) {
@@ -24,6 +25,7 @@ class ControlLayoutController(
     private var joystickSelected = false
     private var joystickSpec = ControlLayoutData.JoystickSpec()
     private var floatingBallSpec = ControlLayoutData.FloatingBallSpec()
+    private var gestureQuickSpec = ControlLayoutData.GestureQuickSpec()
 
     var editMode: Boolean = false
         private set
@@ -139,8 +141,10 @@ class ControlLayoutController(
                 val def = ControlLayoutStore.default()
                 joystickSpec = def.joystick
                 floatingBallSpec = def.floatingBall
+                gestureQuickSpec = def.gestureQuick
                 joystick.applySpec(joystickSpec)
                 applyFloatingBall()
+                applyGestureQuick()
                 def.buttons.forEach { attach(it, select = false) }
                 persist()
             }
@@ -160,6 +164,18 @@ class ControlLayoutController(
         persist()
     }
 
+    fun updateGestureQuickFromView() {
+        val parent = gestureQuick.parent as? FrameLayout ?: return
+        if (parent.width <= 0 || parent.height <= 0) return
+        val cx = (gestureQuick.left + gestureQuick.width / 2f) / parent.width
+        val cy = (gestureQuick.top + gestureQuick.height / 2f) / parent.height
+        gestureQuickSpec = ControlLayoutData.GestureQuickSpec(
+            x = cx.coerceIn(0.05f, 0.95f),
+            y = cy.coerceIn(0.05f, 0.95f)
+        )
+        persist()
+    }
+
     fun releaseAllHolds() {
         buttons.forEach { it.releaseHold() }
         joystick.releaseKeys()
@@ -170,27 +186,37 @@ class ControlLayoutController(
         val data = ControlLayoutStore.load(context)
         joystickSpec = data.joystick
         floatingBallSpec = data.floatingBall
+        gestureQuickSpec = data.gestureQuick
         joystick.applySpec(joystickSpec)
         applyFloatingBall()
+        applyGestureQuick()
         data.buttons.forEach { attach(it, select = false) }
         host.post { relayoutAll() }
     }
 
     private fun applyFloatingBall() {
-        val parent = floatingBall.parent as? FrameLayout ?: return
+        applyHudBall(floatingBall, floatingBallSpec.x, floatingBallSpec.y)
+    }
+
+    private fun applyGestureQuick() {
+        applyHudBall(gestureQuick, gestureQuickSpec.x, gestureQuickSpec.y)
+    }
+
+    private fun applyHudBall(view: TextView, nx: Float, ny: Float) {
+        val parent = view.parent as? FrameLayout ?: return
         parent.post {
             if (parent.width <= 0 || parent.height <= 0) return@post
-            val size = floatingBall.width.coerceAtLeast(1)
-            val lp = (floatingBall.layoutParams as? FrameLayout.LayoutParams)
+            val size = view.width.coerceAtLeast(1)
+            val lp = (view.layoutParams as? FrameLayout.LayoutParams)
                 ?: FrameLayout.LayoutParams(size, size)
             lp.gravity = Gravity.TOP or Gravity.START
-            lp.width = floatingBall.layoutParams.width
-            lp.height = floatingBall.layoutParams.height
-            lp.leftMargin = (floatingBallSpec.x * parent.width - size / 2f).toInt()
+            lp.width = view.layoutParams.width
+            lp.height = view.layoutParams.height
+            lp.leftMargin = (nx * parent.width - size / 2f).toInt()
                 .coerceIn(0, parent.width - size)
-            lp.topMargin = (floatingBallSpec.y * parent.height - size / 2f).toInt()
+            lp.topMargin = (ny * parent.height - size / 2f).toInt()
                 .coerceIn(0, parent.height - size)
-            floatingBall.layoutParams = lp
+            view.layoutParams = lp
         }
     }
 
@@ -250,6 +276,8 @@ class ControlLayoutController(
         if (parent != null && parent.width > 0) {
             joystick.layoutInParent(parent.width, parent.height)
         }
+        applyFloatingBall()
+        applyGestureQuick()
     }
 
     private fun persist() {
@@ -258,7 +286,8 @@ class ControlLayoutController(
             ControlLayoutData(
                 buttons = buttons.map { it.spec },
                 joystick = joystickSpec,
-                floatingBall = floatingBallSpec
+                floatingBall = floatingBallSpec,
+                gestureQuick = gestureQuickSpec
             )
         )
     }

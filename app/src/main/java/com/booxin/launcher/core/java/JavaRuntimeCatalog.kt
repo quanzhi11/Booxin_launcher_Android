@@ -5,7 +5,7 @@ package com.booxin.launcher.core.java
  *
  * Primary: Coze share links (CN-friendly CDN).
  * Fallback: MojoLauncher GitHub rolling + optional arm64 whole packages.
- * Package filenames may still say `jreN-pojav.zip` (upstream naming); layout is [JavaPackageKind.SPLIT_ZIP].
+ * Some package filenames keep historical upstream names; layout is [JavaPackageKind.SPLIT_ZIP].
  */
 object JavaRuntimeCatalog {
 

@@ -79,7 +79,7 @@ object GameJsonParser {
         )
     }
 
-    fun parseVersionJson(json: String): ResolvedVersion {
+    fun parseVersionJson(json: String, applyUpgrade: Boolean = true): ResolvedVersion {
         val root = JSONObject(json)
         val id = root.getString("id")
         val mainClass = root.optString("mainClass").ifBlank { null }
@@ -106,7 +106,10 @@ object GameJsonParser {
             )
         }
 
-        val libraries = resolveLibraries(root.optJSONArray("libraries") ?: JSONArray())
+        val libraries = resolveLibraries(
+            root.optJSONArray("libraries") ?: JSONArray(),
+            applyUpgrade = applyUpgrade
+        )
         return ResolvedVersion(
             id = id,
             mainClass = mainClass,
@@ -132,7 +135,10 @@ object GameJsonParser {
         return result
     }
 
-    private fun resolveLibraries(array: JSONArray): List<ResolvedLibrary> {
+    private fun resolveLibraries(
+        array: JSONArray,
+        applyUpgrade: Boolean = true
+    ): List<ResolvedLibrary> {
         val result = ArrayList<ResolvedLibrary>()
         for (i in 0 until array.length()) {
             val lib = array.getJSONObject(i)
@@ -151,6 +157,8 @@ object GameJsonParser {
                     if (base.isBlank()) ""
                     else if (base.endsWith("/")) base + path else "$base/$path"
                 }
+                // OptiFine jars are produced by the installer, not libraries.minecraft.net.
+                name.startsWith("optifine:", ignoreCase = true) -> ""
                 else -> DEFAULT_LIBRARY_URL + path
             }
             result += ResolvedLibrary(
@@ -161,7 +169,9 @@ object GameJsonParser {
                 size = artifact?.optLong("size", 0L) ?: 0L
             )
         }
-        return LibraryFilter.upgrade(result)
+        // applyUpgrade=false for Forge install_profile: processors need multiple versions
+        // of the same artifact (e.g. jopt-simple 5.0.4 and 6.0-alpha-3).
+        return if (applyUpgrade) LibraryFilter.upgrade(result) else result
     }
 
     private fun appliesToCurrentEnvironment(rules: JSONArray?): Boolean {

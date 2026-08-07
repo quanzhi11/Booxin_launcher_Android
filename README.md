@@ -24,7 +24,7 @@
 1. Version manifest fetch (Mojang / BMCLAPI)
 2. Download manager + local install detection
 3. Microsoft account OAuth
-4. Game runtime integration (Pojav / other Android MC runtime)
+4. Game runtime integration (embedded HotSpot + GLES bridge)
 
 App id: `com.booxin.launcher`
 Version: `0.0.2`

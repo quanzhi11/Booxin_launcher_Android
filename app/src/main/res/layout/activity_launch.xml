@@ -4,13 +4,14 @@
     android:layout_height="match_parent"
     android:background="#FF0B1220">
 
-    <SurfaceView
+    <!-- TextureView: better background/resume behavior than SurfaceView. -->
+    <TextureView
         android:id="@+id/surfaceGame"
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
     <!--
-      FCL-style stack: TouchPad at bottom receives blank-area touches as mouse.
+      TouchPad at bottom receives blank-area touches as mouse.
       Buttons / joystick are siblings on top and only occupy their own bounds.
     -->
     <FrameLayout
@@ -58,7 +59,7 @@
                 android:elevation="4dp" />
         </com.booxin.launcher.ui.launch.input.TouchPassthroughLayout>
 
-        <!-- FCL TouchCharInput: 1px focus target for system IME -->
+        <!-- 1px focus target for system IME -->
         <com.booxin.launcher.ui.launch.input.TouchCharInput
             android:id="@+id/touchCharInput"
             android:layout_width="1px"
@@ -161,6 +162,21 @@
         </HorizontalScrollView>
 
         <TextView
+            android:id="@+id/btnGestureQuick"
+            android:layout_width="56dp"
+            android:layout_height="56dp"
+            android:layout_gravity="top|end"
+            android:layout_marginTop="120dp"
+            android:layout_marginEnd="10dp"
+            android:background="@drawable/bg_floating_ball"
+            android:gravity="center"
+            android:text="@string/control_gesture_quick_build"
+            android:textColor="#FFFFFFFF"
+            android:textSize="13sp"
+            android:textStyle="bold"
+            android:elevation="6dp" />
+
+        <TextView
             android:id="@+id/btnFloatingBall"
             android:layout_width="48dp"
             android:layout_height="48dp"
@@ -175,113 +191,147 @@
             android:elevation="6dp" />
     </FrameLayout>
 
-    <!-- Loading cover: stays until Minecraft is actually ready (not black Surface). -->
-    <LinearLayout
+    <!-- Glass loading layer: see game underneath, swallow all touches. -->
+    <FrameLayout
         android:id="@+id/panelOverlay"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:background="#F20B1220"
+        android:background="@drawable/bg_glass_scrim"
         android:clickable="true"
         android:focusable="true"
-        android:gravity="center_horizontal"
-        android:orientation="vertical"
-        android:padding="24dp">
-
-        <TextView
-            android:id="@+id/textLaunchTitle"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="72dp"
-            android:text="@string/launch_loading_title"
-            android:textColor="#FFFFFFFF"
-            android:textSize="28sp"
-            android:textStyle="bold" />
-
-        <TextView
-            android:id="@+id/textLaunchMeta"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:gravity="center"
-            android:textColor="#B3FFFFFF"
-            android:textSize="13sp" />
-
-        <TextView
-            android:id="@+id/textLoadingPercent"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="28dp"
-            android:text="@string/launch_loading_percent"
-            android:textColor="#FFFFFFFF"
-            android:textSize="18sp"
-            android:textStyle="bold" />
-
-        <ProgressBar
-            android:id="@+id/progressLaunch"
-            style="?android:attr/progressBarStyleHorizontal"
-            android:layout_width="match_parent"
-            android:layout_height="10dp"
-            android:layout_marginTop="12dp"
-            android:indeterminate="false"
-            android:max="100"
-            android:progress="0"
-            android:progressTint="#FF4FC3F7"
-            android:progressBackgroundTint="#33FFFFFF" />
-
-        <TextView
-            android:id="@+id/textLoadingStatus"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="10dp"
-            android:ellipsize="end"
-            android:gravity="center"
-            android:maxLines="2"
-            android:text="@string/launch_loading_status_init"
-            android:textColor="#CCFFFFFF"
-            android:textSize="12sp" />
-
-        <ScrollView
-            android:id="@+id/scrollLog"
-            android:layout_width="match_parent"
-            android:layout_height="0dp"
-            android:layout_marginTop="20dp"
-            android:layout_weight="1"
-            android:background="#22000000"
-            android:fillViewport="true"
-            android:padding="12dp">
-
-            <TextView
-                android:id="@+id/textLog"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:fontFamily="monospace"
-                android:textColor="#B3FFFFFF"
-                android:textIsSelectable="true"
-                android:textSize="11sp" />
-        </ScrollView>
+        android:elevation="20dp">
 
         <LinearLayout
+            android:id="@+id/panelGlassStatus"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:orientation="horizontal">
+            android:layout_gravity="top"
+            android:layout_marginStart="20dp"
+            android:layout_marginTop="48dp"
+            android:layout_marginEnd="20dp"
+            android:background="@drawable/bg_glass_card"
+            android:gravity="center_horizontal"
+            android:orientation="vertical"
+            android:paddingStart="20dp"
+            android:paddingTop="18dp"
+            android:paddingEnd="20dp"
+            android:paddingBottom="16dp">
 
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/buttonStop"
-                style="@style/Widget.Booxin.SecondaryButton"
-                android:layout_width="0dp"
+            <TextView
+                android:id="@+id/textLaunchTitle"
+                android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginEnd="8dp"
-                android:layout_weight="1"
-                android:text="@string/launch_stop" />
+                android:text="@string/launch_loading_title"
+                android:textColor="#FFFFFFFF"
+                android:textSize="22sp"
+                android:textStyle="bold" />
 
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/buttonClose"
-                style="@style/Widget.Booxin.PrimaryButton"
-                android:layout_width="0dp"
+            <TextView
+                android:id="@+id/textLaunchMeta"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="@string/launch_close" />
+                android:layout_marginTop="6dp"
+                android:gravity="center"
+                android:textColor="#B3FFFFFF"
+                android:textSize="12sp" />
+
+            <TextView
+                android:id="@+id/textLoadingPercent"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:text="@string/launch_loading_percent"
+                android:textColor="#FFFFFFFF"
+                android:textSize="16sp"
+                android:textStyle="bold" />
+
+            <ProgressBar
+                android:id="@+id/progressLaunch"
+                style="?android:attr/progressBarStyleHorizontal"
+                android:layout_width="match_parent"
+                android:layout_height="8dp"
+                android:layout_marginTop="10dp"
+                android:indeterminate="false"
+                android:max="100"
+                android:progress="0"
+                android:progressBackgroundTint="#33FFFFFF"
+                android:progressTint="#FF4FC3F7" />
+
+            <TextView
+                android:id="@+id/textLoadingStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:ellipsize="end"
+                android:gravity="center"
+                android:maxLines="2"
+                android:text="@string/launch_loading_status_init"
+                android:textColor="#E0FFFFFF"
+                android:textSize="12sp" />
         </LinearLayout>
-    </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/panelGlassFooter"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom"
+            android:layout_marginStart="16dp"
+            android:layout_marginEnd="16dp"
+            android:layout_marginBottom="20dp"
+            android:background="@drawable/bg_glass_card"
+            android:orientation="vertical"
+            android:padding="12dp">
+
+            <ScrollView
+                android:id="@+id/scrollLog"
+                android:layout_width="match_parent"
+                android:layout_height="120dp"
+                android:background="#18000000"
+                android:fillViewport="true"
+                android:padding="8dp">
+
+                <TextView
+                    android:id="@+id/textLog"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:fontFamily="monospace"
+                    android:textColor="#B3FFFFFF"
+                    android:textIsSelectable="false"
+                    android:textSize="10sp" />
+            </ScrollView>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:orientation="horizontal">
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/buttonStop"
+                    style="@style/Widget.Booxin.SecondaryButton"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginEnd="6dp"
+                    android:layout_weight="1"
+                    android:text="@string/launch_stop" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/buttonForceEnter"
+                    style="@style/Widget.Booxin.PrimaryButton"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginEnd="6dp"
+                    android:layout_weight="1"
+                    android:text="@string/launch_force_enter" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/buttonClose"
+                    style="@style/Widget.Booxin.SecondaryButton"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="@string/launch_close" />
+            </LinearLayout>
+        </LinearLayout>
+    </FrameLayout>
 </FrameLayout>

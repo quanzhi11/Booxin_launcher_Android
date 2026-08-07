@@ -23,6 +23,8 @@ void critical_send_screen_size(jint width, jint height);
 void booxin_environ_init(void);
 int pojavInit(void);
 int pojavInitOpenGL(void);
+void booxin_egl_detach_window(void);
+int booxin_egl_attach_window(void);
 
 static JavaVM *g_vm = NULL;
 
@@ -35,12 +37,17 @@ Java_org_lwjgl_glfw_CallbackBridge_setupBridgeWindow(JNIEnv *env, jclass cls, jo
         if (win) {
             booxin_retain_native_window(win);
             ANativeWindow_release(win);
+            /* Recreate EGL window surface — required for 2nd+ resume after SurfaceView recreate. */
+            if (!booxin_egl_attach_window()) {
+                LOGW("setupBridgeWindow: egl attach deferred (GL not ready yet)");
+            }
             LOGI("setupBridgeWindow %dx%d",
                  pojav_environ->savedWidth, pojav_environ->savedHeight);
         } else {
             LOGW("setupBridgeWindow: ANativeWindow_fromSurface returned null");
         }
     } else {
+        booxin_egl_detach_window();
         booxin_retain_native_window(NULL);
     }
 }
@@ -48,6 +55,7 @@ Java_org_lwjgl_glfw_CallbackBridge_setupBridgeWindow(JNIEnv *env, jclass cls, jo
 JNIEXPORT void JNICALL
 Java_net_kdt_pojavlaunch_utils_JREUtils_releaseBridgeWindow(JNIEnv *env, jclass cls) {
     (void)env; (void)cls;
+    booxin_egl_detach_window();
     booxin_retain_native_window(NULL);
 }
 

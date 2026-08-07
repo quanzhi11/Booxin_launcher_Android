@@ -91,12 +91,10 @@ public final class BooxinBridge {
         CallbackBridge.sendUpdateWindowSize(w, h);
     }
 
-    /** Crosshair hit type for COMBINED gestures. See GestureContext.HIT_*. */
     public static int queryHitResultType() {
         return CallbackBridge.queryHitResultType();
     }
 
-    /** Main-hand item kind for COMBINED gestures. See GestureContext.HELD_*. */
     public static int queryHeldItemKind() {
         return CallbackBridge.queryHeldItemKind();
     }
