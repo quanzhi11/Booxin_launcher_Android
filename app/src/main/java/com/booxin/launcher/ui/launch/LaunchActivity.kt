@@ -31,7 +31,11 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.booxin.launcher.R
+import com.booxin.launcher.core.uiplugin.UiPluginFonts
+import com.booxin.launcher.core.uiplugin.UiPluginTheme
 import com.booxin.launcher.core.download.game.VersionJsonMerger
+import com.booxin.launcher.core.java.MinecraftJavaRequirement
+import com.booxin.launcher.core.launch.BooxinSdlBootstrap
 import com.booxin.launcher.core.launch.GameLaunchLogBus
 import com.booxin.launcher.core.launch.GameLaunchService
 import com.booxin.launcher.core.launch.GameSurfaceBridge
@@ -169,6 +173,14 @@ class LaunchActivity : AppCompatActivity() {
         val id = pendingVersionId.lowercase(Locale.US)
         "forge" in id || "neoforge" in id || "fabric" in id || "quilt" in id ||
             VersionJsonMerger.isModLoaderVersion(pendingVersionId)
+    }
+
+    /** 26.3+ SDL: log lines (OpenGL / Setting user) fire before TextureView paints. */
+    private val isSdlLaunch: Boolean by lazy {
+        val mcId = runCatching {
+            VersionJsonMerger.resolveMinecraftVersionId(pendingVersionId)
+        }.getOrDefault(pendingVersionId)
+        MinecraftJavaRequirement.usesSdlWindowing(mcId)
     }
 
     private val loadingStages = listOf(
@@ -360,6 +372,10 @@ class LaunchActivity : AppCompatActivity() {
         }
         binding = ActivityLaunchBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        binding.textLog.setTag(R.id.tag_ui_plugin_keep_font, true)
+        binding.textLog.setTag(R.id.tag_ui_plugin_keep_color, true)
+        UiPluginFonts.installHost(this)
+        UiPluginTheme.installHost(this)
         foreground = this
         hideSystemBars()
 
@@ -648,6 +664,12 @@ class LaunchActivity : AppCompatActivity() {
         if (ready) {
             gameProgressSeen = true
             updateLoadingUi(100, line.trim().take(80))
+            if (isSdlLaunch && textureFrameCount < 6L) {
+                // SDL/MobileGlues often logs GL ready while still black — wait for paints.
+                appendLog("SDL：已检测到客户端就绪日志，等待 Texture 出帧再关遮罩…")
+                scheduleSoftHideAfterRender(8_000L)
+                return
+            }
             hideOverlayIfNeeded(force = true, allowWithoutBridge = true)
             return
         }
@@ -817,6 +839,18 @@ class LaunchActivity : AppCompatActivity() {
             bindTextureSurface(st, w, h, "force-rebind-$reason")
         }
         val rebound = runCatching { GameSurfaceBridge.rebindIfPossible() }.getOrDefault(false)
+        // 26.3+ SDL presents via SDLActivity external surface — pojav rebind alone is not enough.
+        if (isSdlLaunch) {
+            val surf = GameSurfaceBridge.currentSurface()
+            if (surf != null) {
+                runCatching {
+                    BooxinSdlBootstrap.maybePrepare(this, pendingVersionId, surf, w, h)
+                }.onFailure {
+                    Log.w(TAG, "SDL rebind prepare failed: ${it.message}")
+                    appendLog("SDL 重绑失败: ${it.message}")
+                }
+            }
+        }
         runCatching { GameRuntimeBackends.current().enableInput() }
         runCatching {
             CallbackBridge.nativeSetWindowAttrib(GLFW_FOCUSED, 1)
@@ -832,9 +866,9 @@ class LaunchActivity : AppCompatActivity() {
                 }, 80L)
             }
         }
-        Log.i(TAG, "performForceRenderRebind reason=$reason rebound=$rebound ${w}x${h} frames=$textureFrameCount")
+        Log.i(TAG, "performForceRenderRebind reason=$reason rebound=$rebound sdl=$isSdlLaunch ${w}x${h} frames=$textureFrameCount")
         if (!overlayHidden) {
-            appendLog("强制重绑渲染窗口（$reason） rebound=$rebound")
+            appendLog("强制重绑渲染窗口（$reason） rebound=$rebound sdl=$isSdlLaunch")
         }
     }
 
@@ -887,8 +921,20 @@ class LaunchActivity : AppCompatActivity() {
         overlayHideTimeout?.let { mainHandler.removeCallbacks(it) }
         // Soft upper bound: frame-based hide usually peels earlier. Heartbeats no longer
         // reset this timer. Modpacks still get more time than vanilla.
-        val delayMs = if (isModLoaderLaunch) 120_000L else 45_000L
+        val delayMs = when {
+            isSdlLaunch -> 90_000L
+            isModLoaderLaunch -> 120_000L
+            else -> 45_000L
+        }
         overlayHideTimeout = Runnable {
+            if (isSdlLaunch && textureFrameCount < 3L) {
+                appendLog(
+                    "SDL：超时仍无 Texture 出帧（可能 EGL→MobileGlues 重定向失败）。" +
+                        "请点「强制进入」或返回重试；勿当已进游戏。"
+                )
+                updateLoadingUi(95, "画面未出帧 — 可强制进入/重试")
+                return@Runnable
+            }
             appendLog(
                 if (isModLoaderLaunch) "模组加载较久，先进入游戏画面（仍可能在后台加载）"
                 else "加载超时，自动进入游戏画面"
@@ -930,6 +976,11 @@ class LaunchActivity : AppCompatActivity() {
             val graceMs = if (textureFrameCount >= 3L) 2_500L else 12_000L
             overlaySoftHide = Runnable {
                 if (overlayHidden) return@Runnable
+                if (isSdlLaunch && textureFrameCount < 3L) {
+                    appendLog("SDL：仍无 Texture 出帧，保持加载遮罩（避免假进游戏黑屏）")
+                    updateLoadingUi(92, "等待画面出帧…")
+                    return@Runnable
+                }
                 gameProgressSeen = true
                 appendLog("延迟关闭加载遮罩")
                 hideOverlayIfNeeded(force = true, allowWithoutBridge = true)

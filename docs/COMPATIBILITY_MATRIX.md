@@ -7,9 +7,11 @@
 | MC | 加载器 | 渲染 | 期望 |
 |----|--------|------|------|
 | 1.16.5 | Vanilla / Forge | GL4ES | 进标题屏、触控、视角 |
-| 1.20.1 | Fabric | MobileGlues | 同上 |
-| 1.21.x | NeoForge | MobileGlues | 同上；注意 ART 侧跳过 exec 预加载 |
-| 1.21.x | Fabric + Sodium | MobileGlues | Podium / 自有反检测 |
+| 1.20.1 | Fabric | BooxinGlues (GL4ES MIT) | 进标题屏、触控、视角 |
+| 1.21.x | NeoForge | BooxinGlues | 同上；重模组时自动拉 Zink (MIT) |
+| 1.21.x | Fabric + Sodium | BooxinGlues→Zink | Podium；profile=`sodium`；无 Vulkan 时可手动 MobileGlues |
+| 1.20+ | Fabric + Iris | BooxinGlues→Zink | profile=`iris`；Path A 过渡期兼容面低于 MG |
+| 1.20+ | Fabric/Forge + Create | BooxinGlues→Zink | profile=`create` |
 
 ## ABI
 

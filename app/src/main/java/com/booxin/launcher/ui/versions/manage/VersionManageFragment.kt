@@ -15,10 +15,12 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import com.booxin.launcher.R
 import com.booxin.launcher.core.LauncherPaths
 import com.booxin.launcher.core.download.game.VersionJsonMerger
+import com.booxin.launcher.core.version.AndroidIncompatibleMods
 import com.booxin.launcher.core.version.VersionModFile
 import com.booxin.launcher.core.version.VersionModsManager
 import com.booxin.launcher.core.version.VersionResourcePackFile
 import com.booxin.launcher.core.version.VersionResourcePacksManager
+import com.booxin.launcher.core.version.VersionShaderPacksManager
 import com.booxin.launcher.databinding.FragmentVersionManageBinding
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.textfield.TextInputEditText
@@ -34,6 +36,7 @@ class VersionManageFragment : Fragment() {
     private lateinit var versionId: String
     private lateinit var modsAdapter: VersionModsAdapter
     private lateinit var packsAdapter: VersionResourcePacksAdapter
+    private lateinit var shadersAdapter: VersionResourcePacksAdapter
     private var downloadDialog: AlertDialog? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -59,17 +62,21 @@ class VersionManageFragment : Fragment() {
         setupTabs()
         setupModsList()
         setupPacksList()
+        setupShadersList()
         binding.buttonDownloadUrl.setOnClickListener { showModUrlDownloadDialog() }
         binding.buttonDownloadPackUrl.setOnClickListener { showPackUrlDownloadDialog() }
+        binding.buttonDownloadShaderUrl.setOnClickListener { showShaderUrlDownloadDialog() }
         bindDetails()
         refreshMods()
         refreshPacks()
+        refreshShaders()
     }
 
     override fun onResume() {
         super.onResume()
         refreshMods()
         refreshPacks()
+        refreshShaders()
     }
 
     private fun setupTabs() {
@@ -78,6 +85,7 @@ class VersionManageFragment : Fragment() {
                 binding.panelDetails.isVisible = tab.position == 0
                 binding.panelMods.isVisible = tab.position == 1
                 binding.panelResourcePacks.isVisible = tab.position == 2
+                binding.panelShaders.isVisible = tab.position == 3
             }
 
             override fun onTabUnselected(tab: com.google.android.material.tabs.TabLayout.Tab) = Unit
@@ -103,6 +111,15 @@ class VersionManageFragment : Fragment() {
         binding.recyclerResourcePacks.adapter = packsAdapter
     }
 
+    private fun setupShadersList() {
+        shadersAdapter = VersionResourcePacksAdapter(
+            onToggle = { toggleShader(it) },
+            onUninstall = { confirmUninstallShader(it) }
+        )
+        binding.recyclerShaders.layoutManager = LinearLayoutManager(requireContext())
+        binding.recyclerShaders.adapter = shadersAdapter
+    }
+
     private fun bindDetails() {
         val json = VersionJsonMerger.readVersionJson(versionId)
         val isModded = VersionJsonMerger.isModLoaderVersion(versionId)
@@ -110,6 +127,7 @@ class VersionManageFragment : Fragment() {
         val versionRoot = File(LauncherPaths.versionsDir, versionId)
         val modsDir = File(versionRoot, "mods")
         val packsDir = VersionResourcePacksManager.resourcePacksDir(versionId)
+        val shadersDir = VersionShaderPacksManager.shaderPacksDir(versionId)
 
         binding.textBaseVersion.text = base
         binding.textVersionType.text = if (isModded) {
@@ -120,6 +138,7 @@ class VersionManageFragment : Fragment() {
         binding.textVersionPath.text = versionRoot.absolutePath
         binding.textModsPath.text = modsDir.absolutePath
         binding.textResourcePacksPath.text = packsDir.absolutePath
+        binding.textShadersPath.text = shadersDir.absolutePath
         binding.textJsonType.text = resolveJsonType(json)
 
         binding.textVanillaHint.isVisible = !isModded
@@ -138,6 +157,17 @@ class VersionManageFragment : Fragment() {
             binding.textVanillaHint.isVisible = true
             return
         }
+        val scan = AndroidIncompatibleMods.scanAndDisable(versionId)
+        if (scan.changed) {
+            Toast.makeText(
+                requireContext(),
+                getString(
+                    R.string.version_manage_mod_android_auto_disabled,
+                    scan.disabled.size
+                ),
+                Toast.LENGTH_LONG
+            ).show()
+        }
         val list = VersionModsManager.list(versionId)
         modsAdapter.submit(list)
         binding.recyclerMods.isVisible = true
@@ -149,6 +179,12 @@ class VersionManageFragment : Fragment() {
         val list = VersionResourcePacksManager.list(versionId)
         packsAdapter.submit(list)
         binding.textPacksEmpty.isVisible = list.isEmpty()
+    }
+
+    private fun refreshShaders() {
+        val list = VersionShaderPacksManager.list(versionId)
+        shadersAdapter.submit(list)
+        binding.textShadersEmpty.isVisible = list.isEmpty()
     }
 
     private fun showModUrlDownloadDialog() {
@@ -167,6 +203,13 @@ class VersionManageFragment : Fragment() {
             titleRes = R.string.version_manage_download_pack_url_title,
             hintRes = R.string.version_manage_download_pack_url_hint
         ) { url -> downloadPackFromUrl(url) }
+    }
+
+    private fun showShaderUrlDownloadDialog() {
+        showUrlInputDialog(
+            titleRes = R.string.version_manage_download_shader_url_title,
+            hintRes = R.string.version_manage_download_shader_url_hint
+        ) { url -> downloadShaderFromUrl(url) }
     }
 
     private fun showUrlInputDialog(titleRes: Int, hintRes: Int, onConfirm: (String) -> Unit) {
@@ -253,6 +296,36 @@ class VersionManageFragment : Fragment() {
         }
     }
 
+    private fun downloadShaderFromUrl(url: String) {
+        if (!isHttpUrl(url)) {
+            Toast.makeText(requireContext(), R.string.version_manage_download_url_invalid, Toast.LENGTH_SHORT).show()
+            return
+        }
+        showDownloadProgress(R.string.version_manage_download_shader_url_progress)
+        viewLifecycleOwner.lifecycleScope.launch {
+            val result = VersionShaderPacksManager.downloadFromUrl(versionId, url)
+            dismissDownloadProgress()
+            if (_binding == null) return@launch
+            result.fold(
+                onSuccess = { file ->
+                    refreshShaders()
+                    Toast.makeText(
+                        requireContext(),
+                        getString(R.string.version_manage_download_url_done, file.name),
+                        Toast.LENGTH_SHORT
+                    ).show()
+                },
+                onFailure = { err ->
+                    Toast.makeText(
+                        requireContext(),
+                        getString(R.string.version_manage_download_url_failed, err.message ?: "unknown"),
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            )
+        }
+    }
+
     private fun showDownloadProgress(messageRes: Int) {
         downloadDialog?.dismiss()
         downloadDialog = MaterialAlertDialogBuilder(requireContext())
@@ -274,6 +347,17 @@ class VersionManageFragment : Fragment() {
                 url.startsWith("https://", ignoreCase = true))
 
     private fun toggleMod(mod: VersionModFile) {
+        if (!mod.enabled) {
+            val blocked = AndroidIncompatibleMods.match(mod)
+            if (blocked != null) {
+                Toast.makeText(
+                    requireContext(),
+                    getString(R.string.version_manage_mod_android_blocked, blocked.reason),
+                    Toast.LENGTH_LONG
+                ).show()
+                return
+            }
+        }
         val result = VersionModsManager.toggle(mod)
         if (result.isSuccess) {
             refreshMods()
@@ -334,6 +418,44 @@ class VersionManageFragment : Fragment() {
                 val result = VersionResourcePacksManager.uninstall(pack)
                 if (result.isSuccess) {
                     refreshPacks()
+                    Toast.makeText(requireContext(), R.string.version_manage_pack_uninstalled, Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(
+                        requireContext(),
+                        getString(
+                            R.string.version_manage_action_failed,
+                            result.exceptionOrNull()?.message ?: "unknown"
+                        ),
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+            .show()
+    }
+
+    private fun toggleShader(pack: VersionResourcePackFile) {
+        val result = VersionShaderPacksManager.toggle(pack)
+        if (result.isSuccess) {
+            refreshShaders()
+            Toast.makeText(requireContext(), R.string.version_manage_pack_toggled, Toast.LENGTH_SHORT).show()
+        } else {
+            Toast.makeText(
+                requireContext(),
+                getString(R.string.version_manage_action_failed, result.exceptionOrNull()?.message ?: "unknown"),
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
+    private fun confirmUninstallShader(pack: VersionResourcePackFile) {
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle(R.string.version_manage_pack_uninstall)
+            .setMessage(getString(R.string.version_manage_pack_uninstall_confirm, pack.displayName))
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(R.string.version_manage_pack_uninstall) { _, _ ->
+                val result = VersionShaderPacksManager.uninstall(pack)
+                if (result.isSuccess) {
+                    refreshShaders()
                     Toast.makeText(requireContext(), R.string.version_manage_pack_uninstalled, Toast.LENGTH_SHORT).show()
                 } else {
                     Toast.makeText(

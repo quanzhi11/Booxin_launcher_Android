@@ -6,21 +6,15 @@ import com.booxin.launcher.AppContainer
 import com.booxin.launcher.core.BooxinGameRuntime
 import com.booxin.launcher.core.LauncherPaths
 import com.booxin.launcher.core.download.modloader.ForgeVersionClient
-import com.booxin.launcher.core.net.FileDownloader
 import java.io.File
-import java.time.Instant
-import java.time.LocalDate
-import java.time.ZoneId
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
 
 /**
- * One-tap official server: ensure MC+Forge, sync guanfu mods, return launch target.
+ * One-tap official server: ensure vanilla MC (or Forge if configured), list server, launch.
+ * Mod sync from guanfu.txt has been removed.
  */
-class OfficialServerJoinService(
-    private val downloader: FileDownloader = FileDownloader()
-) {
+class OfficialServerJoinService {
 
     data class ReadyTarget(
         val versionId: String,
@@ -42,8 +36,7 @@ class OfficialServerJoinService(
             AppContainer.repository.refreshVersions()
             AppContainer.repository.refreshInstalledVersions()
 
-            val versionId = ensureForgeInstalled(server, onProgress)
-            ensureMods(context, server, versionId, onProgress)
+            val versionId = ensureVersionInstalled(server, onProgress)
             ensureServerListed(server, versionId, onProgress)
             AppContainer.repository.selectVersion(versionId)
             onProgress(100, "环境就绪，准备启动")
@@ -53,7 +46,7 @@ class OfficialServerJoinService(
         }
     }
 
-    private suspend fun ensureForgeInstalled(
+    private suspend fun ensureVersionInstalled(
         server: OfficialServerInfo,
         onProgress: (percent: Int, message: String) -> Unit
     ): String {
@@ -64,16 +57,22 @@ class OfficialServerJoinService(
         }
 
         val forge = server.forgeVersion.trim()
-        require(forge.isNotEmpty()) {
-            "官服需要 Forge，但 guanfu.txt 未配置 mod_forge"
+        if (forge.isEmpty()) {
+            onProgress(5, "正在安装原版 ${server.version}…")
+            AppContainer.repository.installVersion(server.version).getOrElse { error ->
+                throw IllegalStateException(
+                    "原版安装失败：${error.message ?: error.javaClass.simpleName}",
+                    error
+                )
+            }
+            onProgress(80, "版本安装完成：${server.version}")
+            return server.version
         }
 
         onProgress(5, "正在安装 ${server.version} + Forge $forge…（耗时可能较长）")
         val remote = AppContainer.repository.remoteVersions.value
             .firstOrNull { it.id.equals(server.version, ignoreCase = true) }
         val runtime = AppContainer.gameRuntime as BooxinGameRuntime
-        // ForgeGameInstaller emits detailed progress via repository.forgeInstallProgress;
-        // UI should collect that. Keep a coarse status here as fallback.
         val installedId = runtime.prepareForge(
             mcVersion = server.version,
             loaderVersion = forge,
@@ -111,67 +110,6 @@ class OfficialServerJoinService(
         }?.id
     }
 
-    private suspend fun ensureMods(
-        context: Context,
-        server: OfficialServerInfo,
-        versionId: String,
-        onProgress: (percent: Int, message: String) -> Unit
-    ) {
-        if (server.modUrls.isEmpty()) return
-        val modsDir = File(LauncherPaths.versionsDir, "$versionId/mods").also { it.mkdirs() }
-        val cache = ModDownloadCache(context)
-        val total = server.modUrls.size
-
-        server.modUrls.forEachIndexed { index, url ->
-            val fileName = resolveModFileName(url)
-            val dest = File(modsDir, fileName)
-            val outdated = cache.isOlderThanServer(fileName, server.modsUpdatedAt)
-            val needs = !dest.isFile || dest.length() < 64L || outdated
-            val base = 80 + (index * 15 / total.coerceAtLeast(1))
-            if (!needs) {
-                onProgress(base + 5, "模组已就绪：$fileName")
-                return@forEachIndexed
-            }
-            if (dest.exists()) {
-                onProgress(base, "更新官服模组：$fileName")
-                dest.delete()
-            } else {
-                onProgress(base, "下载官服模组：$fileName")
-            }
-            // guanfu.txt uses http://; Android blocks cleartext unless allowlisted.
-            // 支持 https 时优先。
-            val downloadUrl = preferHttps(url)
-            val progressCb: (Long, Long) -> Unit = { downloaded, totalBytes ->
-                if (totalBytes > 0L) {
-                    val frac = (downloaded.toDouble() / totalBytes.toDouble()).coerceIn(0.0, 1.0)
-                    val pct = base + (frac * (15.0 / total.coerceAtLeast(1))).toInt()
-                    onProgress(
-                        pct.coerceIn(80, 98),
-                        "下载模组 $fileName ${(frac * 100).toInt()}%"
-                    )
-                }
-            }
-            val result = downloader.download(downloadUrl, dest, progressCb).recoverCatching { first ->
-                if (downloadUrl == url) throw first
-                downloader.download(url, dest, progressCb).getOrThrow()
-            }
-            result.getOrElse { error ->
-                throw IllegalStateException(
-                    "模组下载失败 $fileName：${error.message ?: error.javaClass.simpleName}",
-                    error
-                )
-            }
-            if (!dest.isFile || dest.length() < 64L) {
-                error("模组下载失败或文件过小：$fileName")
-            }
-            cache.setDownloadedAt(fileName, Instant.now())
-            onProgress(
-                (80 + ((index + 1) * 15 / total.coerceAtLeast(1))).coerceAtMost(98),
-                "模组已安装：$fileName"
-            )
-        }
-    }
-
     private fun ensureServerListed(
         server: OfficialServerInfo,
         versionId: String,
@@ -191,51 +129,6 @@ class OfficialServerJoinService(
         } else {
             onProgress(99, "服务器列表写入跳过（仍可通过直连进服）")
         }
-    }
-
-    private fun resolveModFileName(url: String): String {
-        return try {
-            val path = java.net.URI(url).path
-            File(path).name.takeIf { it.isNotBlank() }
-                ?: "official-mod-${System.currentTimeMillis()}.jar"
-        } catch (_: Exception) {
-            "official-mod-${System.currentTimeMillis()}.jar"
-        }
-    }
-
-    private fun preferHttps(url: String): String {
-        if (!url.startsWith("http://", ignoreCase = true)) return url
-        return "https://" + url.substring("http://".length)
-    }
-
-    private class ModDownloadCache(context: Context) {
-        private val file = File(context.filesDir, "official-mod-downloads.json")
-
-        fun getDownloadedAt(modFileName: String): Instant? {
-            val map = load()
-            val raw = map.optLong(normalize(modFileName), -1L)
-            return if (raw > 0) Instant.ofEpochMilli(raw) else null
-        }
-
-        fun setDownloadedAt(modFileName: String, at: Instant) {
-            val map = load()
-            map.put(normalize(modFileName), at.toEpochMilli())
-            file.writeText(map.toString())
-        }
-
-        fun isOlderThanServer(modFileName: String, serverUpdatedAt: LocalDate?): Boolean {
-            if (serverUpdatedAt == null) return false
-            val local = getDownloadedAt(modFileName) ?: return true
-            val localDay = local.atZone(ZoneId.systemDefault()).toLocalDate()
-            return localDay.isBefore(serverUpdatedAt)
-        }
-
-        private fun load(): JSONObject {
-            if (!file.isFile) return JSONObject()
-            return runCatching { JSONObject(file.readText()) }.getOrElse { JSONObject() }
-        }
-
-        private fun normalize(name: String) = File(name).name.trim().lowercase()
     }
 
     companion object {

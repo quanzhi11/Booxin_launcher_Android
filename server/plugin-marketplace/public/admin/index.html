@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Booxin 插件市场 · 管理后台</title>
+  <link rel="stylesheet" href="./admin.css" />
+</head>
+<body>
+  <div id="loginGate" class="login-gate">
+    <form id="loginForm" class="login-card card form">
+      <h1>管理后台登录</h1>
+      <p class="muted">使用管理员用户名与密码登录（联机账号或服务器本地账号）。</p>
+      <label>用户名 <input id="loginUsername" name="username" autocomplete="username" required /></label>
+      <label>密码 <input id="loginPassword" name="password" type="password" autocomplete="current-password" required /></label>
+      <button type="submit" class="primary">登录</button>
+      <p id="loginMsg" class="muted"></p>
+    </form>
+  </div>
+
+  <div id="appShell" class="app-shell hidden">
+    <header class="top">
+      <div>
+        <h1>Booxin 插件市场</h1>
+        <p class="muted">上架不经服务器中转下载；仅后台可发布。审核拒绝可一键发邮件。</p>
+      </div>
+      <div class="auth-box">
+        <p id="authHint" class="muted">未登录</p>
+        <button id="btnLogout" type="button">退出登录</button>
+      </div>
+    </header>
+
+    <nav class="tabs">
+      <button type="button" data-tab="pending" class="active">待审申请</button>
+      <button type="button" data-tab="plugins">已上架</button>
+      <button type="button" data-tab="reports">评论举报</button>
+      <button type="button" data-tab="publish">直接上架</button>
+    </nav>
+
+    <main>
+      <section id="tab-pending" class="panel active">
+        <div class="row">
+          <button type="button" id="btnRefreshPending">刷新</button>
+        </div>
+        <div id="pendingList" class="list"></div>
+      </section>
+
+      <section id="tab-plugins" class="panel">
+        <div class="row">
+          <button type="button" id="btnRefreshPlugins">刷新</button>
+        </div>
+        <div id="pluginList" class="list"></div>
+      </section>
+
+      <section id="tab-reports" class="panel">
+        <div class="row">
+          <button type="button" id="btnRefreshReports">刷新</button>
+        </div>
+        <div id="reportList" class="list"></div>
+      </section>
+
+      <section id="tab-publish" class="panel">
+        <form id="publishForm" class="card form">
+          <h2>直接上架插件</h2>
+          <label>名称 <input name="name" required /></label>
+          <label>简介 <textarea name="description" rows="3"></textarea></label>
+          <label>下载链接（直链，不走本站） <input name="downloadUrl" required placeholder="https://..." /></label>
+          <label>类型
+            <select name="type" id="publishType">
+              <option value="renderer">渲染器</option>
+              <option value="driver">驱动</option>
+              <option value="ui">UI 插件</option>
+              <option value="control">操控 / 虚拟按键</option>
+              <option value="input">输入法 / 键鼠</option>
+              <option value="overlay">悬浮窗 / HUD</option>
+              <option value="utility">工具</option>
+              <option value="pack">整合包附属</option>
+              <option value="other">其他</option>
+            </select>
+          </label>
+          <div class="dev-picker">
+            <label>开发者搜索（联机账号）
+              <input id="devQuery" placeholder="用户名关键词" />
+            </label>
+            <button type="button" id="btnSearchDev">搜索</button>
+            <div id="devResults" class="dev-results"></div>
+            <input type="hidden" name="developerUserId" id="developerUserId" />
+            <p id="devSelected" class="muted">未选择开发者</p>
+          </div>
+          <button type="submit">上架</button>
+        </form>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="reviewDialog">
+    <form method="dialog" id="reviewForm" class="form">
+      <h2 id="reviewTitle">审核</h2>
+      <input type="hidden" id="reviewAppId" />
+      <label>名称 <input id="reviewName" required /></label>
+      <label>简介 <textarea id="reviewDescription" rows="3"></textarea></label>
+      <label>下载链接 <input id="reviewUrl" required /></label>
+      <label>类型
+        <select id="reviewType">
+          <option value="renderer">渲染器</option>
+          <option value="driver">驱动</option>
+          <option value="ui">UI 插件</option>
+          <option value="control">操控 / 虚拟按键</option>
+          <option value="input">输入法 / 键鼠</option>
+          <option value="overlay">悬浮窗 / HUD</option>
+          <option value="utility">工具</option>
+          <option value="pack">整合包附属</option>
+          <option value="other">其他</option>
+        </select>
+      </label>
+      <div class="dev-picker">
+        <label>开发者搜索
+          <input id="reviewDevQuery" placeholder="用户名关键词" />
+        </label>
+        <button type="button" id="btnReviewSearchDev">搜索</button>
+        <div id="reviewDevResults" class="dev-results"></div>
+        <input type="hidden" id="reviewDeveloperUserId" />
+        <input type="hidden" id="reviewDeveloperUsername" />
+        <p id="reviewDevSelected" class="muted">未选择</p>
+      </div>
+      <label class="reject-only">拒绝原因 <textarea id="rejectReason" rows="3"></textarea></label>
+      <label class="reject-only check">
+        <input type="checkbox" id="sendEmail" checked /> 一键发送到申请人注册邮箱
+      </label>
+      <div class="row">
+        <button type="button" id="btnApprove" class="primary">通过并上架</button>
+        <button type="button" id="btnReject" class="danger">拒绝</button>
+        <button type="button" id="btnCloseReview" value="cancel">关闭</button>
+      </div>
+      <p id="reviewMsg" class="muted"></p>
+    </form>
+  </dialog>
+
+  <script src="./admin.js"></script>
+</body>
+</html>

@@ -14,7 +14,11 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.booxin.launcher.AppContainer
 import com.booxin.launcher.R
+import com.booxin.launcher.core.uiplugin.UiPluginFonts
+import com.booxin.launcher.core.uiplugin.UiPluginTheme
 import com.booxin.launcher.core.multiplayer.ChatMessage
+import com.booxin.launcher.core.multiplayer.DmInboxWatcher
+import com.booxin.launcher.core.multiplayer.DmNotifier
 import com.booxin.launcher.databinding.ActivityChatBinding
 import com.booxin.launcher.databinding.ItemChatMessageBinding
 import kotlinx.coroutines.Job
@@ -36,6 +40,8 @@ class ChatActivity : AppCompatActivity() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
         binding = ActivityChatBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        UiPluginFonts.installHost(this)
+        UiPluginTheme.installHost(this)
         ViewCompat.setOnApplyWindowInsetsListener(binding.root) { view, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
             view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
@@ -48,6 +54,8 @@ class ChatActivity : AppCompatActivity() {
             finish()
             return
         }
+        DmInboxWatcher.activePeerId = peerUserId
+        DmNotifier.cancel(this, peerUserId)
         binding.textPeerName.text = peerUsername.ifBlank { peerUserId }
         binding.recyclerMessages.layoutManager = LinearLayoutManager(this).apply {
             stackFromEnd = true
@@ -141,8 +149,26 @@ class ChatActivity : AppCompatActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        if (::peerUserId.isInitialized && peerUserId.isNotBlank()) {
+            DmInboxWatcher.activePeerId = peerUserId
+            DmNotifier.cancel(this, peerUserId)
+        }
+    }
+
+    override fun onPause() {
+        if (::peerUserId.isInitialized && DmInboxWatcher.activePeerId == peerUserId) {
+            DmInboxWatcher.activePeerId = null
+        }
+        super.onPause()
+    }
+
     override fun onDestroy() {
         pollJob?.cancel()
+        if (::peerUserId.isInitialized && DmInboxWatcher.activePeerId == peerUserId) {
+            DmInboxWatcher.activePeerId = null
+        }
         super.onDestroy()
     }
 

@@ -1,6 +1,5 @@
 package com.booxin.launcher.core.multiplayer
 
-import com.booxin.launcher.core.net.FileDownloader
 import java.time.LocalDate
 import java.time.MonthDay
 import java.time.format.DateTimeFormatter
@@ -14,7 +13,7 @@ data class OfficialServerInfo(
     val version: String = "",
     val forgeVersion: String = "",
     val modUrls: List<String> = emptyList(),
-    /** Day-precision update stamp from guanfu.txt `time` field. */
+    /** Day-precision update stamp from guanfu.txt `time` field (legacy). */
     val modsUpdatedAt: LocalDate? = null
 ) {
     val serverAddress: String
@@ -25,11 +24,24 @@ data class OfficialServerInfo(
 }
 
 /**
- * Loads Booxin official server config from [CATALOG_URL] (same as PC).
+ * Official server config.
+ *
+ * Production uses the built-in vanilla target (no remote guanfu / mod sync).
+ * [parse] remains for unit tests and tooling.
  */
 object OfficialServerCatalog {
 
+    /** Legacy remote catalog URL (no longer fetched at runtime). */
     const val CATALOG_URL = "https://www.boonix.art/guanfu.txt"
+
+    private val BUILTIN = OfficialServerInfo(
+        name = "Booxin 官方服务器",
+        host = "svip2.minekuai.com",
+        port = 23825,
+        version = "26.1.2",
+        forgeVersion = "",
+        modUrls = emptyList()
+    )
 
     private val keyValueQuoted =
         Regex("""^\s*(.+?)\s*:\s*"([^"]*)"\s*$""", RegexOption.IGNORE_CASE)
@@ -37,22 +49,18 @@ object OfficialServerCatalog {
         Regex("""^\s*(.+?)\s*:\s*(.+?)\s*$""", RegexOption.IGNORE_CASE)
     private val httpUrl = Regex("""https?://[^\s"']+""", RegexOption.IGNORE_CASE)
 
-    private val downloader = FileDownloader()
-
     @Volatile
-    private var cached: List<OfficialServerInfo> = emptyList()
+    private var cached: List<OfficialServerInfo> = listOf(BUILTIN)
 
     fun getServers(): List<OfficialServerInfo> = cached
 
     fun invalidate() {
-        cached = emptyList()
+        cached = listOf(BUILTIN)
     }
 
     suspend fun ensureLoaded(force: Boolean = false): List<OfficialServerInfo> =
         withContext(Dispatchers.IO) {
-            if (!force && cached.isNotEmpty()) return@withContext cached
-            val text = downloader.downloadText(CATALOG_URL).getOrNull().orEmpty()
-            cached = if (text.isBlank()) emptyList() else parse(text)
+            cached = listOf(BUILTIN)
             cached
         }
 

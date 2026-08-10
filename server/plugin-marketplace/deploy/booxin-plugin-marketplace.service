@@ -1,0 +1,20 @@
+[Unit]
+Description=Booxin Plugin Marketplace
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/www/wwwroot/booxin/abc
+EnvironmentFile=-/www/wwwroot/booxin/abc/.env
+ExecStart=/usr/bin/node src/server.js
+Restart=always
+RestartSec=3
+User=root
+# 若宝塔/面板用 www 用户跑站点，把上面 User= 改成 www，并保证目录可写
+
+# 日志走 journalctl；也可改成追加文件：
+# StandardOutput=append:/www/wwwroot/booxin/abc/run.log
+# StandardError=append:/www/wwwroot/booxin/abc/run.log
+
+[Install]
+WantedBy=multi-user.target

@@ -21,8 +21,10 @@
 | OpenAL Soft | `libopenal.so` | 绿 | LGPL（动态链接常见用法） |
 | FreeType | `libfreetype.so` | 绿 | FTL / GPL 双许可（使用 FTL） |
 | shaderc / SPIRV-Cross | `libshaderc.so`, `libspirv-cross-c-shared.so` | 绿 | Apache-2.0 |
-| GL4ES | `libgl4es_114.so` | 黄 | MIT 系；确认上游版本 NOTICE |
-| MobileGlues | `libmobileglues*.so` | 黄 | 按上游仓库许可披露 |
+| GL4ES | `libgl4es_114.so` | 绿 | MIT；保留 NOTICE |
+| BooxinGlues Path A（自研） | 编排 + `libbooxingl.so` + GL4ES/Zink/ANGLE | 绿 | Apache-2.0 编排；GL4ES/Mesa **MIT**；ANGLE **BSD** 动态加载。见 `xrq/booxin-glues/docs/PATH_A_CLEANROOM.md` |
+| ANGLE（可选插件） | `libEGL_angle.so` / `libGLESv2_angle.so` | 绿 | Chromium ANGLE（BSD 系）；作 GLES/EGL 驱动 |
+| MobileGlues（可选） | `libmobileglues*.so` | 黄 | **LGPL-2.1**，仅手动 `MOBILE_GLUES`；全文 `assets/licenses/MOBILEGLUES_LGPL-2.1.txt` |
 | OpenJDK / HotSpot（嵌入式 JRE） | 用户数据目录 Java home | 黄 | GPL-2 + Classpath Exception |
 | Booxin Bridge（自研） | `libbooxin_bridge.so` | 绿 | Booxin 自有；替代原 exec/input/EGL 桥 |
 | ~~libpojavexec / libfcl~~ | 已移出 APK（`tools/_quarantine_gpl/`） | 红 | **不再打包** |
@@ -39,6 +41,7 @@
 1. ART / 业务层只通过 `com.booxin.runtime` / `GameRuntimeBackend` 访问运行时。
 2. 红区组件仅由 `LegacyCompatBackend` 加载；目标是 Phase 2+ 用自研 bridge 替换。
 3. `tools/_quarantine_gpl/` 仅供对照，**不参与 APK 构建**。
+4. **Path A 自研**：默认 `BOOXIN_GLUES` 只走 MIT/BSD 后端；MobileGlues 降为手动选项。LGPL 细则见 `xrq/booxin-glues/docs/LICENSE_COMPLIANCE.md`。
 
 ## 免责
 

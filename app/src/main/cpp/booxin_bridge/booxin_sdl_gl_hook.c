@@ -55,15 +55,23 @@ static int g_egl_redirected = 0;
 static int g_use_mg_egl = 0;
 
 static void *load_bytehook(void) {
-    void *bh = dlopen("libbytehook.so", RTLD_NOW | RTLD_GLOBAL);
-    if (bh) return bh;
+    /* Prefer absolute staged path — bare soname often fails under HotSpot LD path. */
     const char *nd = getenv("BOOXIN_NATIVEDIR");
     if (!nd || !nd[0]) nd = getenv("POJAV_NATIVEDIR");
+    if (!nd || !nd[0]) nd = getenv("FCL_NATIVEDIR");
     if (nd && nd[0]) {
         char path[512];
         snprintf(path, sizeof(path), "%s/libbytehook.so", nd);
-        bh = dlopen(path, RTLD_NOW | RTLD_GLOBAL);
+        void *bh = dlopen(path, RTLD_NOW | RTLD_GLOBAL);
+        if (bh) {
+            LOGI("bytehook loaded: %s", path);
+            return bh;
+        }
+        LOGW("bytehook NATIVEDIR fail %s: %s", path, dlerror());
     }
+    void *bh = dlopen("libbytehook.so", RTLD_NOW | RTLD_GLOBAL);
+    if (bh) LOGI("bytehook loaded via soname");
+    else LOGW("bytehook soname fail: %s", dlerror());
     return bh;
 }
 
@@ -225,6 +233,12 @@ int booxin_sdl_force_gles(void *sdl_handle) {
 
     int red = redirect_libegl_to_mobileglues();
     LOGI("redirect_libegl_to_mobileglues rc=%d", red);
+    if (red != 0) {
+        /* Without this, SDL presents via system libEGL while LWJGL uses MobileGlues —
+         * classic 26.3 black TextureView with working touch controls. */
+        LOGW("CRITICAL: libEGL→MobileGlues redirect failed (rc=%d) — "
+             "SDL may black-screen (GL init ok, no TextureView frames)", red);
+    }
 
     sdl_set_hint_pri_fn set_hint_pri =
         (sdl_set_hint_pri_fn)dlsym(sdl_handle, "SDL_SetHintWithPriority");
@@ -251,8 +265,9 @@ int booxin_sdl_force_gles(void *sdl_handle) {
     g_real_gl_set_attr(BOOXIN_SDL_GL_CONTEXT_PROFILE_MASK, BOOXIN_SDL_GL_CONTEXT_PROFILE_ES);
     g_real_gl_set_attr(BOOXIN_SDL_GL_CONTEXT_MAJOR_VERSION, 3);
     g_real_gl_set_attr(BOOXIN_SDL_GL_CONTEXT_MINOR_VERSION, 0);
-    LOGI("default GLES3 (mg_egl=%d)", g_use_mg_egl);
-    return 0;
+    LOGI("default GLES3 (mg_egl=%d redirect_rc=%d)", g_use_mg_egl, red);
+    /* Still return 0 so the game can try; UI must wait for TextureView frames. */
+    return red == 0 ? 0 : 1;
 }
 
 int booxin_sdl_rebind_lwjgl_gl_set_attribute(JNIEnv *env) {

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <item name="tag_community_translate_job" type="id" />
+    <item name="tag_community_translate_src" type="id" />
+    <item name="tag_ui_plugin_font_host" type="id" />
+    <item name="tag_ui_plugin_font_hook" type="id" />
+    <item name="tag_ui_plugin_font_applied" type="id" />
+    <item name="tag_ui_plugin_keep_font" type="id" />
+    <item name="tag_ui_plugin_theme_host" type="id" />
+    <item name="tag_ui_plugin_theme_hook" type="id" />
+    <item name="tag_ui_plugin_color_applied" type="id" />
+    <item name="tag_ui_plugin_keep_color" type="id" />
+</resources>

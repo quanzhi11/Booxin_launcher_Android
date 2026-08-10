@@ -4,6 +4,7 @@ import android.view.LayoutInflater
 import android.view.ViewGroup
 import androidx.recyclerview.widget.RecyclerView
 import com.booxin.launcher.R
+import com.booxin.launcher.core.version.AndroidIncompatibleMods
 import com.booxin.launcher.core.version.VersionModFile
 import com.booxin.launcher.databinding.ItemVersionModBinding
 
@@ -40,17 +41,21 @@ class VersionModsAdapter(
     ) : RecyclerView.ViewHolder(binding.root) {
         fun bind(item: VersionModFile) {
             val context = binding.root.context
+            val androidBlocked = AndroidIncompatibleMods.match(item) != null
             binding.textModName.text = item.displayName
-            binding.textModStatus.text = if (item.enabled) {
-                context.getString(R.string.version_manage_mod_enabled)
-            } else {
-                context.getString(R.string.version_manage_mod_disabled)
+            binding.textModStatus.text = when {
+                item.enabled -> context.getString(R.string.version_manage_mod_enabled)
+                androidBlocked -> context.getString(R.string.version_manage_mod_disabled_android)
+                else -> context.getString(R.string.version_manage_mod_disabled)
             }
             binding.buttonToggle.text = if (item.enabled) {
                 context.getString(R.string.version_manage_mod_disable)
             } else {
                 context.getString(R.string.version_manage_mod_enable)
             }
+            // Blacklisted mods stay disabled — enable is blocked in the fragment.
+            binding.buttonToggle.isEnabled = item.enabled || !androidBlocked
+            binding.buttonToggle.alpha = if (binding.buttonToggle.isEnabled) 1f else 0.45f
             binding.buttonToggle.setOnClickListener { onToggle(item) }
             binding.buttonUninstall.setOnClickListener { onUninstall(item) }
         }

@@ -17,6 +17,7 @@ import androidx.navigation.fragment.findNavController
 import androidx.recyclerview.widget.GridLayoutManager
 import com.booxin.launcher.AppContainer
 import com.booxin.launcher.R
+import com.booxin.launcher.core.community.CommunityDescriptionTranslator
 import com.booxin.launcher.core.community.ModrinthClient
 import com.booxin.launcher.data.model.CommunityContentType
 import com.booxin.launcher.data.model.CommunityLoader
@@ -31,7 +32,7 @@ class CommunityFragment : Fragment() {
     private var _binding: FragmentCommunityBinding? = null
     private val binding get() = _binding!!
 
-    private val adapter = CommunityAdapter(::openProject)
+    private lateinit var adapter: CommunityAdapter
     private var contentType: CommunityContentType = CommunityContentType.MOD
     private var loader: CommunityLoader = CommunityLoader.ANY
     private var lastPage: ModrinthSearchPage? = null
@@ -48,6 +49,7 @@ class CommunityFragment : Fragment() {
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
+        adapter = CommunityAdapter(viewLifecycleOwner.lifecycleScope, ::openProject)
         val span = if (resources.configuration.orientation ==
             android.content.res.Configuration.ORIENTATION_LANDSCAPE
         ) {
@@ -110,6 +112,13 @@ class CommunityFragment : Fragment() {
                 performSearch(0)
             }
         }
+        binding.chipShaders.setOnCheckedChangeListener { _, checked ->
+            if (checked) {
+                contentType = CommunityContentType.SHADER
+                refreshLoaderVisibility()
+                performSearch(0)
+            }
+        }
         binding.chipResourcePacks.setOnCheckedChangeListener { _, checked ->
             if (checked) {
                 contentType = CommunityContentType.RESOURCE_PACK
@@ -150,7 +159,10 @@ class CommunityFragment : Fragment() {
         b.loaderDivider.isVisible = show
         b.textHint.text = when (contentType) {
             CommunityContentType.MOD ->
-                getString(R.string.community_hint_mods)
+                getString(R.string.community_hint_mods) + "\n" +
+                    getString(R.string.community_hint_translate)
+            CommunityContentType.SHADER ->
+                getString(R.string.community_hint_shaders)
             CommunityContentType.RESOURCE_PACK ->
                 getString(R.string.community_hint_resourcepacks)
             CommunityContentType.MODPACK ->
@@ -190,6 +202,7 @@ class CommunityFragment : Fragment() {
                 return@launch
             }
             lastPage = page
+            CommunityDescriptionTranslator.prefetch(page.projects.map { it.description })
             adapter.submit(page.projects)
             ui.textEmpty.isVisible = page.projects.isEmpty()
             updatePagination(page)

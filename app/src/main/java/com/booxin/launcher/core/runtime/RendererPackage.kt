@@ -98,13 +98,31 @@ object RendererPackages {
                 "MESA_GLSL_VERSION_OVERRIDE" to "330",
                 "LIB_MESA" to "libOSMesa.so"
             )
+        ),
+        RendererPackage(
+            id = "angle",
+            kind = GlRendererKind.ANGLE,
+            downloadUrl = "$RENDERER_PLUGIN_BASE/ANGLE.Renderer.apk",
+            glLib = "libGLESv2_angle.so",
+            eglLib = "libEGL_angle.so",
+            rendererToken = "opengles3",
+            libGlEs = "3",
+            disguiseAsGl4es = false,
+            extraEnv = mapOf(
+                "LIBGL_EGL" to "libEGL_angle.so",
+                "BOOXIN_ANGLE_EGL" to "libEGL_angle.so",
+                "BOOXIN_ANGLE_GLES" to "libGLESv2_angle.so"
+            )
         )
     )
 
     fun forKind(kind: GlRendererKind): RendererPackage? = all.firstOrNull { it.kind == kind }
 
-    fun selectableKinds(): List<GlRendererKind> = listOf(
-        GlRendererKind.GL4ES,
-        GlRendererKind.MOBILE_GLUES
-    ) + all.map { it.kind }
+    /**
+     * Built-ins first (MobileGlues, then GL4ES), then downloadable plugins.
+     * BooxinGlues is not listed in the manual picker.
+     */
+    fun selectableKinds(): List<GlRendererKind> =
+        listOf(GlRendererKind.MOBILE_GLUES, GlRendererKind.GL4ES) +
+            all.map { it.kind }
 }

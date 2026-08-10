@@ -1,6 +1,37 @@
 <?xml version="1.0" encoding="utf-8"?>
-<shape xmlns:android="http://schemas.android.com/apk/res/android"
-    android:shape="rectangle">
-    <solid android:color="@color/md_theme_light_surface" />
-    <corners android:radius="20dp" />
-</shape>
+<!-- Liquid glass card — more translucent so wallpaper shows through -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:angle="135"
+                android:centerColor="#2410141E"
+                android:endColor="#180C1018"
+                android:startColor="#33161C28"
+                android:type="linear" />
+            <corners android:radius="16dp" />
+            <stroke
+                android:width="1dp"
+                android:color="#99FFFFFF" />
+        </shape>
+    </item>
+    <item
+        android:bottom="52dp"
+        android:left="1dp"
+        android:right="1dp"
+        android:top="1dp">
+        <shape android:shape="rectangle">
+            <gradient
+                android:angle="270"
+                android:centerColor="#14FFFFFF"
+                android:endColor="#00FFFFFF"
+                android:startColor="#55FFFFFF"
+                android:type="linear" />
+            <corners
+                android:bottomLeftRadius="0dp"
+                android:bottomRightRadius="0dp"
+                android:topLeftRadius="15dp"
+                android:topRightRadius="15dp" />
+        </shape>
+    </item>
+</layer-list>

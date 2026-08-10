@@ -19,13 +19,12 @@ class BooxinMultiplayerApi {
     companion object {
         const val DEFAULT_ROOT = "https://boonix.art/bbx"
         const val DEFAULT_ECO_ROOT = "https://boonix.art/eco"
+        // Use domain only: cert is for boonix.art. IP is pinned in ResilientDns.
         private val ROOTS = listOf(
-            "https://boonix.art/bbx",
-            "https://175.178.174.103/bbx"
+            "https://boonix.art/bbx"
         )
         private val ECO_ROOTS = listOf(
-            "https://boonix.art/eco",
-            "https://175.178.174.103/eco"
+            "https://boonix.art/eco"
         )
         private val JSON = "application/json; charset=utf-8".toMediaType()
     }

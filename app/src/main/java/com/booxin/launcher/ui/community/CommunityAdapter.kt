@@ -5,12 +5,15 @@ import android.view.ViewGroup
 import androidx.recyclerview.widget.RecyclerView
 import coil.load
 import com.booxin.launcher.R
+import com.booxin.launcher.core.community.CommunityDescriptionTranslator
 import com.booxin.launcher.data.model.ModrinthProject
 import com.booxin.launcher.databinding.ItemCommunityProjectBinding
 import java.text.NumberFormat
 import java.util.Locale
+import kotlinx.coroutines.CoroutineScope
 
 class CommunityAdapter(
+    private val scope: CoroutineScope,
     private val onInstall: (ModrinthProject) -> Unit
 ) : RecyclerView.Adapter<CommunityAdapter.ViewHolder>() {
 
@@ -28,7 +31,7 @@ class CommunityAdapter(
             parent,
             false
         )
-        return ViewHolder(binding, onInstall)
+        return ViewHolder(binding, scope, onInstall)
     }
 
     override fun onBindViewHolder(holder: ViewHolder, position: Int) {
@@ -39,14 +42,17 @@ class CommunityAdapter(
 
     class ViewHolder(
         private val binding: ItemCommunityProjectBinding,
+        private val scope: CoroutineScope,
         private val onInstall: (ModrinthProject) -> Unit
     ) : RecyclerView.ViewHolder(binding.root) {
 
         fun bind(item: ModrinthProject) {
             binding.textTitle.text = item.title
-            binding.textDescription.text = item.description.ifBlank {
-                binding.root.context.getString(R.string.community_no_description)
-            }
+            CommunityDescriptionTranslator.bind(
+                binding.textDescription,
+                item.description,
+                scope
+            )
             binding.textMeta.text = binding.root.context.getString(
                 R.string.community_project_meta,
                 item.author.ifBlank { "unknown" },

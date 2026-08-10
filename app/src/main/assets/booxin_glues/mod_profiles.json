@@ -1,0 +1,92 @@
+{
+  "version": 3,
+  "path": "A-cleanroom",
+  "profiles": [
+    {
+      "id": "iris",
+      "matchAny": ["iris-", "iris_", "oculus-", "irisflywheel"],
+      "preferredRenderer": "BOOXIN_GLUES",
+      "fallback": ["VULKAN_ZINK", "ANGLE", "GL4ES", "MOBILE_GLUES"],
+      "features": ["shaders", "multidraw", "dsa"],
+      "env": {
+        "BOOXIN_GLUES_PROFILE": "iris",
+        "BOOXIN_GLUES_BACKEND": "gl4es"
+      }
+    },
+    {
+      "id": "sodium",
+      "matchAny": ["sodium-", "sodium_", "embeddium-", "rubidium-", "indium-"],
+      "preferredRenderer": "BOOXIN_GLUES",
+      "fallback": ["VULKAN_ZINK", "LTW", "ANGLE", "MOBILE_GLUES"],
+      "features": ["multidraw", "buffer_storage", "dsa"],
+      "env": {
+        "BOOXIN_GLUES_PROFILE": "sodium",
+        "BOOXIN_GLUES_BACKEND": "gl4es"
+      }
+    },
+    {
+      "id": "distanthorizons",
+      "matchAny": ["distanthorizons", "distant-horizons", "distant_horizons"],
+      "preferredRenderer": "BOOXIN_GLUES",
+      "fallback": ["VULKAN_ZINK", "ANGLE", "MOBILE_GLUES"],
+      "features": ["custom_render", "multidraw", "dsa"],
+      "env": {
+        "BOOXIN_GLUES_PROFILE": "heavy_custom",
+        "BOOXIN_GLUES_DSA_EMULATE": "1"
+      }
+    },
+    {
+      "id": "immersiveportals",
+      "matchAny": ["immersiveportals", "immersive_portals", "imm_ptl"],
+      "preferredRenderer": "BOOXIN_GLUES",
+      "fallback": ["VULKAN_ZINK", "ANGLE", "MOBILE_GLUES"],
+      "features": ["custom_render", "dsa"],
+      "env": {
+        "BOOXIN_GLUES_PROFILE": "heavy_custom",
+        "BOOXIN_GLUES_DSA_EMULATE": "1"
+      }
+    },
+    {
+      "id": "create",
+      "matchAny": ["create-", "create_"],
+      "preferredRenderer": "BOOXIN_GLUES",
+      "fallback": ["VULKAN_ZINK", "ANGLE", "GL4ES", "MOBILE_GLUES"],
+      "features": ["custom_render", "compute_emulate", "dsa"],
+      "env": {
+        "BOOXIN_GLUES_PROFILE": "create",
+        "BOOXIN_GLUES_BACKEND": "gl4es",
+        "BOOXIN_GLUES_DSA_EMULATE": "1",
+        "BOOXIN_GLUES_COMPUTE_EMULATE": "1"
+      }
+    },
+    {
+      "id": "journeymap",
+      "matchAny": ["journeymap", "xaero", "voxelmap"],
+      "preferredRenderer": "BOOXIN_GLUES",
+      "fallback": ["GL4ES", "MOBILE_GLUES"],
+      "features": ["custom_render"],
+      "env": {
+        "BOOXIN_GLUES_PROFILE": "heavy_custom"
+      }
+    },
+    {
+      "id": "neoforge",
+      "matchLoader": ["neoforge"],
+      "preferredRenderer": "BOOXIN_GLUES",
+      "fallback": ["GL4ES", "MOBILE_GLUES"],
+      "env": {
+        "BOOXIN_GLUES_PROFILE": "neoforge"
+      }
+    },
+    {
+      "id": "vanilla",
+      "matchAny": [],
+      "preferredRenderer": "BOOXIN_GLUES",
+      "fallback": ["VULKAN_ZINK", "GL4ES", "MOBILE_GLUES"],
+      "env": {
+        "BOOXIN_GLUES_PROFILE": "vanilla",
+        "BOOXIN_GLUES_BACKEND": "gl4es"
+      }
+    }
+  ]
+}

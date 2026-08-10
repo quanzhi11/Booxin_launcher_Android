@@ -1,0 +1,919 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Booxin 插件开发者文档</title>
+  <style>
+    :root {
+      --card: #1a2330; --text: #e8eef6; --muted: #8b9bb0; --accent: #3d8bfd;
+      --line: #2a3648; --code: #0d1218; --warn: #d4a017; --ok: #3cb371; --bad: #e35d6a;
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: linear-gradient(160deg, #0f1419, #152033 45%, #101820);
+      color: var(--text); min-height: 100vh; line-height: 1.65;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .hero {
+      border-bottom: 1px solid var(--line); padding: 40px 24px 28px;
+      background:
+        radial-gradient(900px 280px at 15% -10%, rgba(61, 139, 253, 0.2), transparent 60%),
+        linear-gradient(180deg, rgba(26, 35, 48, 0.55), transparent);
+    }
+    .hero-inner { max-width: 1100px; margin: 0 auto; }
+    .brand { margin: 0 0 8px; font-size: 2rem; font-weight: 800; letter-spacing: 0.04em; }
+    .hero h1 { margin: 0 0 10px; font-size: clamp(1.35rem, 2.4vw, 1.85rem); }
+    .lead { margin: 0; max-width: 48rem; color: var(--muted); }
+    .hero-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      padding: 9px 14px; border-radius: 10px; border: 1px solid var(--line);
+      background: #243248; color: var(--text); font-weight: 600; text-decoration: none;
+    }
+    .btn:hover { text-decoration: none; filter: brightness(1.08); }
+    .btn.primary { background: var(--accent); border-color: transparent; color: #fff; }
+    .layout {
+      max-width: 1100px; margin: 0 auto; padding: 24px;
+      display: grid; grid-template-columns: 220px 1fr; gap: 20px; align-items: start;
+    }
+    .toc {
+      position: sticky; top: 16px; display: grid; gap: 6px; padding: 14px;
+      border: 1px solid var(--line); border-radius: 12px; background: rgba(26, 35, 48, 0.75);
+    }
+    .toc-title {
+      margin: 0 0 4px; font-size: 0.75rem; color: var(--muted);
+      letter-spacing: 0.06em; text-transform: uppercase;
+    }
+    .toc a { color: var(--text); font-size: 0.88rem; }
+    .toc a:hover { color: var(--accent); }
+    .content { display: grid; gap: 16px; min-width: 0; }
+    .card {
+      background: var(--card); border: 1px solid var(--line);
+      border-radius: 14px; padding: 20px 22px;
+    }
+    .card h2 { margin: 0 0 12px; font-size: 1.25rem; }
+    .card h3 { margin: 22px 0 8px; font-size: 1.05rem; }
+    .card h4 { margin: 16px 0 6px; font-size: 0.98rem; color: #c9d6e8; }
+    .muted { color: var(--muted); font-size: 0.92rem; }
+    .note, .warn, .ok, .bad {
+      margin: 12px 0 0; padding: 10px 12px; border-radius: 0 8px 8px 0;
+      border-left: 3px solid var(--accent); background: rgba(61, 139, 253, 0.08);
+      color: #c5d4e8; font-size: 0.92rem;
+    }
+    .warn { border-left-color: var(--warn); background: rgba(212, 160, 23, 0.1); }
+    .ok { border-left-color: var(--ok); background: rgba(60, 179, 113, 0.1); }
+    .bad { border-left-color: var(--bad); background: rgba(227, 93, 106, 0.1); }
+    ol, ul { padding-left: 1.25rem; }
+    li { margin: 0.4rem 0; }
+    ul.check { list-style: none; padding-left: 0; }
+    ul.check li { position: relative; padding: 0.35rem 0 0.35rem 1.55rem; }
+    ul.check li::before { content: "☐"; position: absolute; left: 0; color: var(--muted); }
+    code, pre {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.85rem;
+    }
+    code {
+      background: var(--code); border: 1px solid var(--line);
+      border-radius: 6px; padding: 0.1em 0.35em;
+    }
+    pre {
+      margin: 0; padding: 14px; overflow: auto; background: var(--code);
+      border: 1px solid var(--line); border-radius: 10px;
+    }
+    pre code { border: 0; padding: 0; background: transparent; }
+    .table-wrap { overflow-x: auto; margin-top: 8px; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    th, td {
+      border-bottom: 1px solid var(--line); padding: 10px 8px;
+      text-align: left; vertical-align: top;
+    }
+    th { color: var(--muted); font-weight: 600; white-space: nowrap; }
+    .tag {
+      display: inline-block; padding: 1px 8px; border-radius: 999px;
+      font-size: 0.75rem; background: #243248; color: #c9d6e8;
+    }
+    .tag.req { background: rgba(227, 93, 106, 0.25); color: #ffb4bc; }
+    .tag.now { background: rgba(60, 179, 113, 0.2); color: #9be3b8; }
+    .tag.soon { background: rgba(212, 160, 23, 0.2); color: #f0d48a; }
+    .steps-num {
+      display: inline-flex; width: 1.4em; height: 1.4em; align-items: center;
+      justify-content: center; border-radius: 50%; background: var(--accent);
+      color: #fff; font-size: 0.8rem; font-weight: 700; margin-right: 6px;
+    }
+    .cmp {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 10px;
+    }
+    .cmp > div {
+      border: 1px solid var(--line); border-radius: 10px; padding: 12px;
+      background: rgba(13, 18, 24, 0.55);
+    }
+    .cmp .good { border-color: rgba(60, 179, 113, 0.45); }
+    .cmp .ugly { border-color: rgba(227, 93, 106, 0.45); }
+    .cmp h4 { margin: 0 0 8px; }
+    .foot { padding: 8px 4px 32px; color: var(--muted); font-size: 0.9rem; }
+    @media (max-width: 900px) {
+      .layout { grid-template-columns: 1fr; }
+      .toc { position: static; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .toc-title { grid-column: 1 / -1; }
+      .cmp { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header class="hero">
+    <div class="hero-inner">
+      <p class="brand">booxin</p>
+      <h1>插件开发者文档</h1>
+      <p class="lead">
+        按当前手机版启动器真实行为编写：字段怎么填、包怎么打、装到哪、怎样自测、商店点下载后走哪条安装路径。
+      </p>
+      <div class="hero-actions">
+        <a class="btn primary" href="#quickstart">从问候语插件开始</a>
+        <a class="btn" href="#studio">Booxin Studio</a>
+        <a class="btn" href="#ui-fields">清单字段</a>
+        <a class="btn" href="#renderer">渲染器 APK</a>
+        <a class="btn" href="#publish">申请上架</a>
+      </div>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="toc">
+      <p class="toc-title">目录</p>
+      <a href="#reality">1. 能力边界</a>
+      <a href="#quickstart">2. 问候语插件手把手</a>
+      <a href="#ui-fields">3. UI 清单与目录</a>
+      <a href="#greeting">4. 问候语 / 图标 / 字体</a>
+      <a href="#test">5. 本地自测</a>
+      <a href="#renderer">6. 渲染器 / 驱动</a>
+      <a href="#download-rules">7. 商店下载规则</a>
+      <a href="#publish">8. 申请上架</a>
+      <a href="#types">9. 类型对照</a>
+      <a href="#errors">10. 报错对照</a>
+      <a href="#checklist">11. 发布清单</a>
+      <a href="#studio">附录 · Booxin Studio</a>
+    </aside>
+
+    <main class="content">
+      <section id="reality" class="card">
+        <h2>1. 能力边界（先看这个）</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>能力</th><th>状态</th><th>具体表现</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>主页按时段问候</td>
+                <td><span class="tag now">可用</span></td>
+                <td>UI zip 开启 <code>homeGreetingByTime</code> 后，主页标题变为早上好/中午好/晚上好</td>
+              </tr>
+              <tr>
+                <td>主页品牌图标</td>
+                <td><span class="tag now">可用</span></td>
+                <td>开启 <code>customLauncherIcon</code> 并附带图片后，替换主页左侧品牌圆标（不改系统桌面图标）</td>
+              </tr>
+              <tr>
+                <td>自定义界面字体</td>
+                <td><span class="tag now">可用</span></td>
+                <td>开启 <code>customFont</code>（或主题包）并附带 <code>.ttf</code>/<code>.otf</code></td>
+              </tr>
+              <tr>
+                <td>完整主题包 customTheme</td>
+                <td><span class="tag now">可用</span></td>
+                <td>品牌名、欢迎语、配色、顶栏导航文案、壁纸图/视频；并解锁同包图标与字体</td>
+              </tr>
+              <tr>
+                <td>本机插件启用/禁用/卸载</td>
+                <td><span class="tag now">可用</span></td>
+                <td>侧边栏「本机插件」列表操作；禁用不删文件，写 <code>.disabled</code></td>
+              </tr>
+              <tr>
+                <td>渲染器/驱动 so 安装</td>
+                <td><span class="tag now">可用</span></td>
+                <td>APK 导入或商店下载；解压到本机渲染器目录</td>
+              </tr>
+              <tr>
+                <td>换布局 / 自定义页面 XML</td>
+                <td><span class="tag soon">未接线</span></td>
+                <td>不能替换布局文件或注入任意页面</td>
+              </tr>
+              <tr>
+                <td>虚拟按键自动导入</td>
+                <td><span class="tag soon">未接线</span></td>
+                <td>可先按 zip 规范上架，简介写手动用法</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="warn">
+          UI 插件可深度换肤，但不能改系统桌面图标、系统字体、游戏内 UI，也不能替换布局 XML。
+          推荐一把梭：<code>features.customTheme: true</code> + <code>theme</code> 对象。
+        </p>
+      </section>
+
+      <section id="quickstart" class="card">
+        <h2>2. 手把手：做一个真正会生效的问候语插件</h2>
+
+        <h3><span class="steps-num">1</span>在电脑建目录</h3>
+        <pre><code>D:\plugins\my-greeting\
+└── booxin-plugin.json</code></pre>
+        <p class="muted">文件名必须恰好是 <code>booxin-plugin.json</code>（全小写，中间是连字符）。</p>
+
+        <h3><span class="steps-num">2</span>写入以下内容（可原样复制）</h3>
+        <pre><code>{
+  "id": "my-greeting",
+  "name": "按时段问候",
+  "version": "1.0.0",
+  "type": "ui",
+  "description": "启用后主页显示早上好/中午好/晚上好。禁用后恢复默认欢迎语。",
+  "features": {
+    "homeGreetingByTime": true
+  }
+}</code></pre>
+
+        <h3><span class="steps-num">3</span>打 zip（结构必须对）</h3>
+        <div class="cmp">
+          <div class="good">
+            <h4>正确</h4>
+            <pre><code>my-greeting.zip
+└── booxin-plugin.json</code></pre>
+            <p class="muted">打开 zip 后第一层就能看见清单。</p>
+          </div>
+          <div class="ugly">
+            <h4>错误（装不上）</h4>
+            <pre><code>my-greeting.zip
+└── my-greeting/
+    └── booxin-plugin.json</code></pre>
+            <p class="muted">多套一层文件夹时，请保证清单仍能被搜到；最稳是不要多套。</p>
+          </div>
+        </div>
+        <p><strong>Windows 资源管理器：</strong>进入 <code>my-greeting</code> 文件夹 → 选中 <code>booxin-plugin.json</code> → 右键 →「发送到」→「压缩(zipped)文件夹」→ 改名为 <code>my-greeting.zip</code>。</p>
+        <p><strong>PowerShell（推荐，结构更稳）：</strong></p>
+        <pre><code>cd D:\plugins\my-greeting
+Compress-Archive -Path .\booxin-plugin.json -DestinationPath ..\my-greeting.zip -Force</code></pre>
+        <p class="note">
+          也可用官方工具一键打包：文末
+          <a href="#studio">附录 · Booxin Studio</a>
+          （<a href="https://www.coze.cn/s/HE-KO21qqfk/" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">前往下载</a>）。
+          推荐双击 <code>BooxinStudio.exe</code> 点「打包 zip」；命令行则用
+          <code>BooxinStudio-CLI.exe pack 插件目录</code>。
+        </p>
+        <p class="bad">不要用加密 zip、7z、rar、分卷包。客户端只按 zip 解。</p>
+
+        <h3><span class="steps-num">4</span>装进启动器后怎么验证</h3>
+        <ol>
+          <li>手机打开 Booxin → 底部「插件」。</li>
+          <li>左侧点「本机插件」（商店装完会自动切过来；ADB 推送则手动点）。</li>
+          <li>应看到名称「按时段问候」，详情类似：<code>ui · 已启用 · v1.0.0</code>。</li>
+          <li>再点底部「主页」。欢迎语应变成：
+            <ul>
+              <li>0:00–10:59 → <strong>早上好</strong></li>
+              <li>11:00–16:59 → <strong>中午好</strong></li>
+              <li>17:00–23:59 → <strong>晚上好</strong></li>
+            </ul>
+          </li>
+          <li>回「本机插件」点「禁用」→ 再回主页 → 应恢复「欢迎使用 Booxin」。</li>
+        </ol>
+      </section>
+
+      <section id="ui-fields" class="card">
+        <h2>3. UI 插件：清单字段与安装目录（具体）</h2>
+
+        <h3>3.1 安装落盘位置</h3>
+        <pre><code>/data/data/com.booxin.launcher/files/booxin-runtime/ui-plugins/&lt;id&gt;/
+├── booxin-plugin.json
+├── .ready                 ← 安装成功时写入时间戳
+├── .disabled              ← 仅禁用时存在；删除即启用
+└── （zip 里其它文件会一并解压到这里）</code></pre>
+        <ul>
+          <li>包名以实际安装为准：正式包一般为 <code>com.booxin.launcher</code>。</li>
+          <li><code>&lt;id&gt;</code> 来自清单 <code>id</code>；非法字符 <code>\ / : * ? " &lt; &gt; |</code> 会被替换成 <code>_</code>。</li>
+          <li>相同 <code>id</code> 再安装：<strong>先删整个旧目录再写入</strong>（覆盖更新）。</li>
+        </ul>
+
+        <h3>3.2 客户端实际读取的字段</h3>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>JSON 字段</th><th>要求</th><th>默认值</th><th>用途</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>id</code></td>
+                <td><span class="tag req">必需</span></td>
+                <td>—</td>
+                <td>空字符串 → 安装报错「plugin id 为空」</td>
+              </tr>
+              <tr>
+                <td><code>name</code></td>
+                <td>建议</td>
+                <td>等于 <code>id</code></td>
+                <td>本机插件列表标题</td>
+              </tr>
+              <tr>
+                <td><code>version</code></td>
+                <td>建议</td>
+                <td><code>1.0.0</code></td>
+                <td>列表显示 <code>v…</code></td>
+              </tr>
+              <tr>
+                <td><code>type</code></td>
+                <td>建议</td>
+                <td><code>ui</code></td>
+                <td>仅展示；商店筛选另看申请类型</td>
+              </tr>
+              <tr>
+                <td><code>description</code></td>
+                <td>建议</td>
+                <td>空</td>
+                <td>列表下方灰色简介</td>
+              </tr>
+              <tr>
+                <td><code>features.homeGreetingByTime</code></td>
+                <td>可选</td>
+                <td><code>false</code></td>
+                <td>主页按时段问候</td>
+              </tr>
+              <tr>
+                <td><code>features.customLauncherIcon</code></td>
+                <td>可选</td>
+                <td><code>false</code></td>
+                <td>主页左侧品牌图标换成插件图片</td>
+              </tr>
+              <tr>
+                <td><code>features.customFont</code></td>
+                <td>可选</td>
+                <td><code>false</code></td>
+                <td>启动器界面文字使用插件字体</td>
+              </tr>
+              <tr>
+                <td><code>features.customTheme</code></td>
+                <td>可选</td>
+                <td><code>false</code></td>
+                <td>完整主题包；写了 <code>theme</code> 对象也会自动开启</td>
+              </tr>
+              <tr>
+                <td><code>theme</code></td>
+                <td>可选</td>
+                <td>空对象</td>
+                <td>品牌 / 欢迎语 / 配色 / 导航 / 壁纸，见第 4.4 节</td>
+              </tr>
+              <tr>
+                <td><code>launcherIcon</code> / <code>icon</code></td>
+                <td>可选</td>
+                <td>见下方候选名</td>
+                <td>相对安装目录的图片路径，如 <code>icon.png</code></td>
+              </tr>
+              <tr>
+                <td><code>font</code> / <code>fontFile</code></td>
+                <td>可选</td>
+                <td>见下方候选名</td>
+                <td>相对安装目录的字体路径，如 <code>fonts/MyFont.ttf</code></td>
+              </tr>
+              <tr>
+                <td>根级同名布尔字段</td>
+                <td>可选</td>
+                <td><code>false</code></td>
+                <td><code>homeGreetingByTime</code> / <code>customLauncherIcon</code> / <code>customFont</code> 可写在根级</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>3.3 清单放置位置</h3>
+        <ul>
+          <li>优先：zip 根目录 <code>booxin-plugin.json</code>。</li>
+          <li>也支持：任意子路径，只要条目名以 <code>booxin-plugin.json</code> 结尾（例如 <code>pkg/booxin-plugin.json</code>）。</li>
+          <li>若清单在 <code>pkg/</code> 下，解压时会去掉 <code>pkg/</code> 前缀，使文件落到安装根目录。</li>
+        </ul>
+
+        <h3>3.4 完整主题包示例（推荐）</h3>
+        <pre><code>{
+  "id": "demo-full-theme",
+  "name": "Full Theme Pack",
+  "version": "1.0.0",
+  "type": "ui",
+  "description": "品牌 + 配色 + 壁纸 + 字体 + 图标",
+  "launcherIcon": "icon.png",
+  "font": "fonts/MyFont.ttf",
+  "features": {
+    "customTheme": true,
+    "homeGreetingByTime": true
+  },
+  "theme": {
+    "brandName": "MyLauncher",
+    "welcome": "欢迎回来",
+    "welcomeMorning": "早上好",
+    "welcomeNoon": "中午好",
+    "welcomeEvening": "晚上好",
+    "backgroundImage": "backgrounds/bg.png",
+    "backgroundVideo": "backgrounds/loop.mp4",
+    "backgroundAlpha": 0.85,
+    "colors": {
+      "primary": "#449AD8",
+      "accent": "#FF8A2B",
+      "text": "#F2F6FF",
+      "textSecondary": "#B4C0D4",
+      "rim": "#88FFFFFF",
+      "glassPrimary": "#CC2A6FA8",
+      "surface": "#141A26",
+      "navSelected": "#FFFFFF",
+      "navUnselected": "#B4C0D4"
+    },
+    "nav": {
+      "home": "主页",
+      "versions": "版本",
+      "community": "社区",
+      "multiplayer": "联机",
+      "ai": "AI",
+      "pluginStore": "插件",
+      "settings": "设置"
+    }
+  }
+}</code></pre>
+        <pre><code>demo-full-theme.zip
+├── booxin-plugin.json
+├── icon.png
+├── fonts/MyFont.ttf
+└── backgrounds/
+    ├── bg.png
+    └── loop.mp4</code></pre>
+      </section>
+
+      <section id="greeting" class="card">
+        <h2>4. 问候语 / 图标 / 字体：具体判定规则</h2>
+        <h3>4.1 问候语</h3>
+        <p>代码在进入/回到主页时执行（<code>onResume</code>）。判定顺序：</p>
+        <ol>
+          <li>扫描 <code>ui-plugins/*/</code> 下所有已安装插件。</li>
+          <li>跳过带 <code>.disabled</code> 的目录。</li>
+          <li>读取各自清单；任一启用插件的 <code>homeGreetingByTime == true</code> 即生效。</li>
+          <li>取手机本地时区的小时 <code>HOUR_OF_DAY</code>（0–23）：</li>
+        </ol>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>小时</th><th>显示文案</th><th>例子</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><code>hour &lt; 11</code></td><td>早上好</td><td>07:30 → 早上好</td></tr>
+              <tr><td><code>11 ≤ hour &lt; 17</code></td><td>中午好</td><td>12:00 → 中午好</td></tr>
+              <tr><td><code>hour ≥ 17</code></td><td>晚上好</td><td>20:15 → 晚上好</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <ul>
+          <li>未启用任何问候语插件时：固定显示「欢迎使用 Booxin」。</li>
+          <li>装了但点了「禁用」：等同未启用。</li>
+          <li>多个插件都开了该 feature：只要有一个启用即可（并集）。</li>
+        </ul>
+
+        <h3>4.2 customLauncherIcon（主页品牌图标）</h3>
+        <p class="warn">
+          只替换<strong>主页左侧品牌圆标</strong>，不会改 Android 桌面上的应用图标。
+        </p>
+        <ol>
+          <li>启用插件且 <code>customLauncherIcon == true</code>。</li>
+          <li>按名称排序后取<strong>第一个</strong>找到有效图片的插件。</li>
+          <li>图片路径优先用清单 <code>launcherIcon</code>（或 <code>icon</code>）；未写则依次尝试：
+            <code>icon.png</code> / <code>icon.webp</code> / <code>icon.jpg</code> / <code>icon.jpeg</code> /
+            <code>launcher-icon.png</code> / <code>assets/icon.png</code>。</li>
+          <li>找不到可用图 → 回退默认 <code>ic_launcher_round</code>。</li>
+        </ol>
+        <pre><code>{
+  "id": "my-brand-icon",
+  "name": "自定义主页图标",
+  "version": "1.0.0",
+  "type": "ui",
+  "launcherIcon": "icon.png",
+  "features": {
+    "customLauncherIcon": true
+  }
+}</code></pre>
+
+        <h3>4.3 customFont（界面字体）</h3>
+        <p class="warn">
+          只替换<strong>启动器 App 内文字</strong>（主页、商店、设置、聊天等），不改 Android 系统字体，也不改游戏内字体。
+          等宽日志区域会保留 monospace。
+        </p>
+        <ol>
+          <li>启用插件且 <code>customFont == true</code>。</li>
+          <li>按名称排序后取<strong>第一个</strong>找到有效字体文件的插件。</li>
+          <li>路径优先用清单 <code>font</code>（或 <code>fontFile</code>）；未写则依次尝试：
+            <code>font.ttf</code> / <code>font.otf</code> / <code>fonts/font.ttf</code> /
+            <code>fonts/font.otf</code> / <code>assets/font.ttf</code> / <code>assets/font.otf</code>。</li>
+          <li>支持扩展名：<code>.ttf</code>、<code>.otf</code>、<code>.ttc</code>。请确认字体许可允许分发。</li>
+          <li>启用/禁用/卸载后会立即重刷当前界面；若个别页面未变，切页或回前台即可。</li>
+        </ol>
+        <pre><code>{
+  "id": "my-ui-font",
+  "name": "自定义界面字体",
+  "version": "1.0.0",
+  "type": "ui",
+  "font": "fonts/MyFont.ttf",
+  "features": {
+    "customFont": true
+  }
+}</code></pre>
+
+        <h3>4.4 customTheme（完整主题包，权限最大）</h3>
+        <p>
+          开 <code>customTheme</code>（或清单里写了 <code>theme</code> 对象）后，同一包还可直接带上
+          图标 / 字体文件，无需再单独开 <code>customLauncherIcon</code> / <code>customFont</code>。
+        </p>
+        <ul>
+          <li><code>theme.brandName</code>：顶栏品牌文字</li>
+          <li><code>theme.welcome*</code>：主页欢迎语（可按时段）</li>
+          <li><code>theme.homeLaunchText</code> / <code>homeSwitchVersionText</code> / <code>homeAccountText</code>：主页按钮文案</li>
+          <li><code>theme.homeStatusText</code> / <code>homeSelectedVersionLabel</code>：主页状态与「当前版本」标签</li>
+          <li><code>theme.hideOrbs</code>：隐藏背景装饰光斑</li>
+          <li><code>theme.colors.*</code>：主色 / 文字色 / 按钮玻璃色 / 导航选中色等（<code>#RRGGBB</code> 或 <code>#AARRGGBB</code>）</li>
+          <li><code>theme.nav.*</code>：顶栏各页文案</li>
+          <li><code>theme.backgroundImage</code> / <code>backgroundVideo</code>：覆盖设置里的内置壁纸</li>
+          <li><code>theme.backgroundAlpha</code>：0~1，默认 0.85</li>
+          <li><code>theme.applyAllText</code>：默认 true，把文字色铺到界面 TextView</li>
+        </ul>
+        <p class="muted">
+          插件不能运行任意代码；只能改启动器已接线的这些字段。想加新能力需要发版启动器。
+        </p>
+        <p class="muted">多个主题包同时启用时，按插件名称排序取第一个。</p>
+      </section>
+
+      <section id="test" class="card">
+        <h2>5. 本地自测（不上架）</h2>
+
+        <h3>5.1 ADB 推送 UI 插件</h3>
+        <p>电脑已装 platform-tools，手机开 USB 调试，启动器包名为 <code>com.booxin.launcher</code>：</p>
+        <pre><code># 在电脑当前目录放好 booxin-plugin.json
+
+adb shell mkdir -p /data/data/com.booxin.launcher/files/booxin-runtime/ui-plugins/my-greeting
+
+# 无 root 时优先用 run-as（debug 包通常可用；release 可能受限）
+adb shell run-as com.booxin.launcher mkdir -p files/booxin-runtime/ui-plugins/my-greeting
+
+adb push booxin-plugin.json /sdcard/booxin-plugin.json
+adb shell run-as com.booxin.launcher cp /sdcard/booxin-plugin.json \
+  files/booxin-runtime/ui-plugins/my-greeting/booxin-plugin.json
+
+adb shell run-as com.booxin.launcher sh -c \
+  "echo $(date +%s) > files/booxin-runtime/ui-plugins/my-greeting/.ready"</code></pre>
+        <p>然后：打开启动器 → 插件 → 本机插件 → 点「刷新」→ 回主页看文案。</p>
+        <p><strong>测禁用：</strong></p>
+        <pre><code>adb shell run-as com.booxin.launcher sh -c \
+  "echo 1 > files/booxin-runtime/ui-plugins/my-greeting/.disabled"</code></pre>
+        <p><strong>测卸载：</strong></p>
+        <pre><code>adb shell run-as com.booxin.launcher rm -rf \
+  files/booxin-runtime/ui-plugins/my-greeting</code></pre>
+
+        <h3>5.2 渲染器本地导入</h3>
+        <ol>
+          <li>启动器 → 插件 → 左侧「本机渲染器」。</li>
+          <li>点「导入 APK」。</li>
+          <li>选你的 <code>.apk</code>。</li>
+          <li>成功后列表出现名称、版本、类型「渲染器」、状态「已安装/已启用」。</li>
+        </ol>
+        <p class="muted">UI 插件更省事的新建/打包见文末 <a href="#studio">附录 · Booxin Studio</a>；渲染器请用本页「导入 APK」。</p>
+      </section>
+
+      <section id="renderer" class="card">
+        <h2>6. 渲染器 / 驱动：具体打包要求</h2>
+
+        <h3>6.1 APK 内部结构（按这个做）</h3>
+        <pre><code>my-renderer.apk
+├── plugin.json                 ← 推荐（也认 assets/plugin.json）
+├── AndroidManifest.xml
+└── lib/
+    ├── arm64-v8a/              ← 真机主流，强烈建议有
+    │   ├── libmygl.so          ← 文件名 = glLib
+    │   └── （其它依赖 .so）
+    └── armeabi-v7a/            ← 可选
+        └── libmygl.so</code></pre>
+
+        <h3>6.2 plugin.json 读写位置</h3>
+        <p>客户端按顺序找：</p>
+        <ol>
+          <li><code>assets/plugin.json</code></li>
+          <li><code>plugin.json</code>（APK 根）</li>
+        </ol>
+        <p>都没有时，会按 so 文件名猜（含 <code>gl4es</code> / <code>ltw</code> / <code>angle</code> / <code>OSMesa</code> / <code>mobileglues</code> 等），不稳定，别靠猜。</p>
+
+        <h3>6.3 推荐完整清单</h3>
+        <pre><code>{
+  "id": "my-gl-renderer",
+  "name": "My GL Renderer",
+  "version": "1.0.0",
+  "type": "RENDERER",
+  "glLib": "libmygl.so",
+  "eglLib": "libEGL.so",
+  "rendererToken": "opengles3",
+  "libGlEs": "3",
+  "kindName": null,
+  "disguiseAsGl4es": false,
+  "extraEnv": {
+    "LIBGL_ES": "3"
+  }
+}</code></pre>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>字段</th><th>要求</th><th>具体含义</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>id</code></td>
+                <td><span class="tag req">必需</span></td>
+                <td>安装目录名：<code>…/booxin-runtime/plugins/&lt;id&gt;/</code>（并可能镜像到 <code>renderers/&lt;id&gt;/</code>）</td>
+              </tr>
+              <tr>
+                <td><code>glLib</code></td>
+                <td><span class="tag req">必需</span></td>
+                <td>主库<strong>文件名</strong>。解压后目录里必须有这个文件，否则报「插件缺少 xxx」</td>
+              </tr>
+              <tr>
+                <td><code>type</code></td>
+                <td>建议</td>
+                <td>清单枚举用 <code>RENDERER</code> / <code>DRIVER</code>；商店申请填小写 <code>renderer</code> / <code>driver</code></td>
+              </tr>
+              <tr>
+                <td><code>eglLib</code></td>
+                <td>可选</td>
+                <td>默认 <code>libEGL.so</code></td>
+              </tr>
+              <tr>
+                <td><code>rendererToken</code></td>
+                <td>可选</td>
+                <td>默认 <code>opengles3</code>；给启动链路识别后端</td>
+              </tr>
+              <tr>
+                <td><code>libGlEs</code></td>
+                <td>可选</td>
+                <td>默认 <code>"3"</code>（字符串）</td>
+              </tr>
+              <tr>
+                <td><code>extraEnv</code></td>
+                <td>可选</td>
+                <td>启动游戏时额外环境变量</td>
+              </tr>
+              <tr>
+                <td><code>disguiseAsGl4es</code></td>
+                <td>可选</td>
+                <td>默认 <code>false</code>；gl4es 类方案再开</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>6.4 ABI 提取顺序（客户端行为）</h3>
+        <ol>
+          <li>先按设备 <code>Build.SUPPORTED_ABIS</code> 顺序找 <code>lib/&lt;abi&gt;/*.so</code>。</li>
+          <li>某个 ABI 解出至少一个 so 就停，不再解其它 ABI。</li>
+          <li>只解一层文件名（不要 <code>lib/arm64-v8a/subdir/a.so</code>）。</li>
+          <li>解压后检查是否存在 <code>glLib</code>；没有则尝试在已解压 so 里找近似名并复制改名。</li>
+        </ol>
+
+        <h3>6.5 可选 Manifest 元数据</h3>
+        <pre><code>&lt;meta-data android:name="booxin.plugin" android:value="renderer" /&gt;
+&lt;meta-data android:name="fclPlugin" android:value="renderer" /&gt;
+&lt;meta-data android:name="org.lwjgl.opengl.libname" android:value="libmygl.so" /&gt;</code></pre>
+        <p class="muted">用于扫描「已安装到系统的 FCL 风格插件 APK」。普通导入本地 APK 主要仍看 <code>plugin.json</code> + so。</p>
+      </section>
+
+      <section id="download-rules" class="card">
+        <h2>7. 商店点「下载安装」时，客户端具体怎么走</h2>
+        <p>下载<strong>始终在启动器内部完成</strong>（不跳系统浏览器），并自动跟随 HTTP 重定向（短链 / CDN 跳转可用）。</p>
+        <ol>
+          <li>读上架记录的 <code>downloadUrl</code>（空则提示缺少下载链接）。</li>
+          <li>在 App 内下载文件（支持重定向；最终 URL / Content-Disposition / Content-Type 会参与判断）。</li>
+          <li>再判定包类型并安装：
+            <ul>
+              <li><code>renderer</code> / <code>driver</code> → 按 APK 装进「本机渲染器」</li>
+              <li>URL/响应头像 <code>.apk</code>，或包内有 <code>AndroidManifest.xml</code> / <code>classes.dex</code> → APK</li>
+              <li>包内有 <code>booxin-plugin.json</code>，或类型为 UI 类 / 其它未知 → 按 UI zip 装进「本机插件」</li>
+            </ul>
+          </li>
+        </ol>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>商店 type</th><th>URL 建议</th><th>结果</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>ui</code></td>
+                <td><code>https://…/xxx.zip</code>、短链重定向到 zip、或启动器上传</td>
+                <td>App 内下载 →「本机插件」</td>
+              </tr>
+              <tr>
+                <td><code>renderer</code></td>
+                <td><code>https://…/xxx.apk</code> 或重定向到 apk</td>
+                <td>App 内下载 →「本机渲染器」</td>
+              </tr>
+              <tr>
+                <td>任意</td>
+                <td>网盘「分享页」HTML（不是文件直链/跳转）</td>
+                <td>会下到网页内容导致安装失败；请用真正的文件下载链</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="warn">
+          短链可以，但最终必须落到可下载的 zip/apk 文件。UI 包务必含 <code>booxin-plugin.json</code>；
+          渲染器用 <code>renderer</code>/<code>driver</code>。
+        </p>
+      </section>
+
+      <section id="publish" class="card">
+        <h2>8. 申请上架：逐步点哪里、填什么</h2>
+        <ol>
+          <li>启动器登录<strong>联机账号</strong>（未登录不能提交）。</li>
+          <li>底部导航点「插件」。</li>
+          <li>左侧点「申请上架」（或底部申请按钮，以你版本文案为准）。</li>
+          <li>第 1 步填：
+            <ul>
+              <li><strong>插件名称</strong>：商店显示名，例如「按时段问候」。</li>
+              <li><strong>类型 / 分区</strong>：UI 选「UI 插件」；渲染器选「渲染器」。</li>
+              <li><strong>简介</strong>：写清用途 + 使用步骤 + 能力边界。</li>
+            </ul>
+          </li>
+          <li>第 2 步：上传文件（≤250MB）或填 HTTPS 外链（可只填一种）。</li>
+          <li>提交成功提示「申请已提交，请等待审核」。</li>
+          <li>在「我的申请」可看状态：审核中 / 已通过 / 未通过（未通过有原因）。</li>
+        </ol>
+
+        <h4>简介可直接套用</h4>
+        <pre><code>【功能】启用后，主页欢迎语按本地时间显示早上好/中午好/晚上好。
+【安装】商店下载安装 → 左侧「本机插件」保持「已启用」→ 回到主页查看。
+【关闭】本机插件 → 禁用 或 卸载。
+【说明】本插件不会修改主题色；当前版本支持问候语 / 主页品牌图标 / 界面字体。
+【包格式】zip，内含 booxin-plugin.json，id=my-greeting。</code></pre>
+      </section>
+
+      <section id="types" class="card">
+        <h2>9. 类型对照表</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>申请 type</th><th>中文</th><th>交付物</th><th>装到哪</th><th>下载路径备注</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><code>ui</code></td><td>UI 插件</td><td>zip + 清单</td><td>本机插件</td><td>按 UI zip 安装</td></tr>
+              <tr><td><code>control</code></td><td>操控/虚拟按键</td><td>zip</td><td>本机插件</td><td>按 UI zip 安装</td></tr>
+              <tr><td><code>overlay</code></td><td>悬浮窗/HUD</td><td>zip</td><td>本机插件</td><td>按 UI zip 安装</td></tr>
+              <tr><td><code>utility</code></td><td>工具</td><td>zip</td><td>本机插件</td><td>按 UI zip 安装</td></tr>
+              <tr><td><code>input</code></td><td>输入法/键鼠</td><td>zip</td><td>本机插件</td><td>URL 请带 <code>.zip</code></td></tr>
+              <tr><td><code>pack</code></td><td>整合包附属</td><td>zip</td><td>本机插件</td><td>URL 请带 <code>.zip</code></td></tr>
+              <tr><td><code>other</code></td><td>其他</td><td>视情况</td><td>本机插件或打开链接</td><td>URL 请带后缀</td></tr>
+              <tr><td><code>renderer</code></td><td>渲染器</td><td>apk + so</td><td>本机渲染器</td><td>URL 需含 <code>.apk</code></td></tr>
+              <tr><td><code>driver</code></td><td>驱动</td><td>apk + so</td><td>本机渲染器</td><td>URL 需含 <code>.apk</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="errors" class="card">
+        <h2>10. 常见报错 / 现象对照</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>你看到的</th><th>常见原因</th><th>怎么改</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>缺少 booxin-plugin.json</td>
+                <td>zip 结构错、文件名大小写错、双重压缩</td>
+                <td>按第 2 节重打包，打开 zip 确认第一层有清单</td>
+              </tr>
+              <tr>
+                <td>plugin id 为空</td>
+                <td>清单没写 <code>id</code> 或写成空</td>
+                <td>补上非空 id</td>
+              </tr>
+              <tr>
+                <td>无效的插件包</td>
+                <td>文件长度为 0 / 不是有效 zip</td>
+                <td>重新压缩，别传空文件</td>
+              </tr>
+              <tr>
+                <td>插件缺少 libxxx.so</td>
+                <td>APK 无对应 ABI，或 glLib 文件名不一致</td>
+                <td>补 arm64-v8a，并对齐 glLib</td>
+              </tr>
+              <tr>
+                <td>装上了主页仍是「欢迎使用 Booxin」</td>
+                <td>未开 feature、已禁用、没回到主页</td>
+                <td>检查 features、启用状态、切换一次主页</td>
+              </tr>
+              <tr>
+                <td>开了 customLauncherIcon 图标不变</td>
+                <td>缺图 / 路径写错 / 被别的插件抢先 / 未回主页</td>
+                <td>确认 zip 内有图；禁用其它图标插件；切回主页</td>
+              </tr>
+              <tr>
+                <td>开了 customFont 字体不变</td>
+                <td>缺字体文件 / 扩展名不对 / 被禁用 / 损坏的 ttf</td>
+                <td>确认包内有 .ttf/.otf；用 Studio validate；切页重进</td>
+              </tr>
+              <tr>
+                <td>桌面应用图标没变</td>
+                <td>预期行为</td>
+                <td>该 feature 只改主页内品牌标，不改系统桌面图标</td>
+              </tr>
+              <tr>
+                <td>下载失败 / 安装失败</td>
+                <td>链接最终不是 zip/apk（HTML 分享页）、或包结构不对</td>
+                <td>用可跟随重定向的文件下载链；确认包内清单；见第 7 节</td>
+              </tr>
+              <tr>
+                <td>UI 安装失败但进度走完</td>
+                <td>下到的是 HTML 分享页</td>
+                <td>换真正文件链，或 ≤250MB 用启动器上传</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="checklist" class="card">
+        <h2>11. 发布前逐条勾</h2>
+        <ul class="check">
+          <li>UI：zip 内能直接看到 <code>booxin-plugin.json</code>，<code>id</code> 非空</li>
+          <li>问候语：真机验证 启用→主页文案变 / 禁用→恢复默认</li>
+          <li>图标：真机验证 启用→主页左侧圆标变 / 禁用→恢复默认</li>
+          <li>字体：真机验证 启用→界面文字变 / 禁用→恢复默认；确认许可可分发</li>
+          <li>主题包：品牌名、配色、导航/主页按钮文案、壁纸、hideOrbs 至少验证一项可见变化</li>
+          <li>渲染器：arm64-v8a 下存在与 <code>glLib</code> 同名的 so；可用「导入 APK」装上</li>
+          <li>商店 type 与包格式一致；下载链最终能落到 .zip / .apk（可用短链重定向）</li>
+          <li>简介写了「会做什么 / 不会做什么」，不夸大未接线能力</li>
+          <li>更新版本时保持同一 <code>id</code>，只改 <code>version</code></li>
+          <li>无恶意行为；资源与库许可合规</li>
+        </ul>
+      </section>
+
+      <section id="studio" class="card">
+        <h2>附录 · Booxin Studio（官方打包工具）</h2>
+        <p>
+          用来<strong>新建模板、校验、打 zip</strong>。绿色包免装 Node，解压即用（Windows）。
+          <a href="https://www.coze.cn/s/HE-KO21qqfk/" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">前往下载</a>
+        </p>
+
+        <h3>包内两个版本</h3>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>文件</th><th>适合谁</th><th>怎么用</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>BooxinStudio.exe</code></td>
+                <td><span class="tag now">推荐</span> 日常开发</td>
+                <td>双击打开窗口 → 按钮新建 / 打包 / 校验</td>
+              </tr>
+              <tr>
+                <td><code>BooxinStudio-CLI.exe</code></td>
+                <td>脚本 / 终端</td>
+                <td>在命令行传入子命令（见下）</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>推荐流程（窗口版）</h3>
+        <ol>
+          <li>解压绿色包，双击 <code>BooxinStudio.exe</code>。</li>
+          <li>点「新建完整主题包」（或问候语 / 字体 / 图标）。</li>
+          <li>按弹出目录里的 README 放入 <code>icon.png</code>、字体、壁纸等资源。</li>
+          <li>点「打包 zip」，选插件文件夹，保存 zip。</li>
+          <li>手机 Booxin →「插件」→ 本机安装或走「申请上架」上传该 zip。</li>
+        </ol>
+
+        <h3>命令行版示例</h3>
+        <pre><code>BooxinStudio-CLI.exe help
+BooxinStudio-CLI.exe new theme
+BooxinStudio-CLI.exe new theme D:\plugins\cool-theme cool-theme
+BooxinStudio-CLI.exe pack
+BooxinStudio-CLI.exe pack D:\plugins\cool-theme D:\plugins\cool-theme.zip
+BooxinStudio-CLI.exe validate D:\plugins\cool-theme</code></pre>
+
+        <h3>注意</h3>
+        <ul>
+          <li>zip <strong>根目录</strong>必须能直接看到 <code>booxin-plugin.json</code>（不要多套一层空文件夹）。</li>
+          <li>装到手机请用启动器安装 zip；命令里的 <code>push</code> 依赖 <code>run-as</code>，正式版常失败，仅 debug 用。</li>
+          <li>插件只能改启动器已接线的字段，不能运行任意代码；新能力需等启动器发版。</li>
+        </ul>
+        <p class="ok">打好的 zip 结构不确定时，先 <code>validate</code> 再上传商店，可少踩「安装失败」。</p>
+      </section>
+
+      <footer class="foot">
+        <p>Booxin 插件市场 · 开发者文档</p>
+        <p>以当前手机版启动器实现为准。新 feature 会以清单字段扩展；未知字段请忽略，保持兼容。</p>
+      </footer>
+    </main>
+  </div>
+</body>
+</html>

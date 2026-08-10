@@ -1,7 +1,10 @@
 package com.booxin.launcher.ui
 
+import android.graphics.Color
+import android.os.Build
 import android.os.Bundle
 import android.view.View
+import android.view.WindowManager
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
@@ -10,6 +13,8 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.navigation.NavController
 import androidx.navigation.fragment.NavHostFragment
 import com.booxin.launcher.R
+import com.booxin.launcher.core.uiplugin.UiPluginFonts
+import com.booxin.launcher.core.uiplugin.UiPluginTheme
 import com.booxin.launcher.databinding.ActivityMainBinding
 import com.booxin.launcher.ui.update.LauncherUpdateUi
 import com.google.android.material.button.MaterialButtonToggleGroup
@@ -26,14 +31,32 @@ class MainActivity : AppCompatActivity() {
         R.id.nav_versions,
         R.id.nav_community,
         R.id.nav_multiplayer,
+        R.id.nav_ai,
+        R.id.nav_plugin_store,
         R.id.nav_settings
     )
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
+        window.statusBarColor = Color.TRANSPARENT
+        window.navigationBarColor = Color.TRANSPARENT
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            window.attributes = window.attributes.apply {
+                layoutInDisplayCutoutMode =
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+        }
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        UiPluginFonts.installHost(this)
+        UiPluginTheme.installHost(this)
+        GlassBackground.bind(
+            owner = this,
+            textureView = binding.videoGlassBackground,
+            imageView = binding.imageGlassBackground,
+            orbsView = binding.viewGlassOrbs
+        )
 
         ViewCompat.setOnApplyWindowInsetsListener(binding.root) { _, insets ->
             val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
@@ -58,11 +81,12 @@ class MainActivity : AppCompatActivity() {
             val hideChrome = destination.id == R.id.nav_download ||
                 destination.id == R.id.nav_version_manage ||
                 destination.id == R.id.nav_community_project_detail ||
-                destination.id == R.id.nav_accounts
+                destination.id == R.id.nav_accounts ||
+                destination.id == R.id.nav_plugins
             binding.topChrome.visibility = if (hideChrome) View.GONE else View.VISIBLE
             applyContentInsets(!hideChrome)
             WindowInsetsControllerCompat(window, window.decorView)
-                .isAppearanceLightStatusBars = hideChrome
+                .isAppearanceLightStatusBars = false
             if (!hideChrome && destination.id in topDestinations) {
                 syncingNav = true
                 binding.topNav.check(destination.id)
@@ -77,6 +101,12 @@ class MainActivity : AppCompatActivity() {
                 silentWhenLatest = true
             )
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        UiPluginFonts.applyTo(this)
+        UiPluginTheme.applyTo(this)
     }
 
     private fun setupTopNav(navController: NavController) {

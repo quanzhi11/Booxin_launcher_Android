@@ -6,6 +6,12 @@ import com.booxin.launcher.core.LauncherPaths
 import com.booxin.launcher.core.LauncherPrefs
 import com.booxin.launcher.core.download.DownloadProviders
 import com.booxin.launcher.core.launch.AndroidGameRuntime
+import coil.ImageLoader
+import coil.Coil
+import com.booxin.launcher.core.community.CommunityDescriptionTranslator
+import com.booxin.launcher.core.multiplayer.DmInboxWatcher
+import com.booxin.launcher.core.net.HttpClients
+import com.booxin.launcher.core.plugin.PluginManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -21,8 +27,16 @@ class BooxinApp : Application() {
         LauncherPrefs.init(this)
         LauncherPaths.init(this)
         DownloadProviders.init(this)
+        CommunityDescriptionTranslator.init(this)
+        Coil.setImageLoader(
+            ImageLoader.Builder(this)
+                .okHttpClient { HttpClients.shared }
+                .build()
+        )
         runCatching { AndroidGameRuntime.ensure(this) }
+        DmInboxWatcher.start(this)
         appScope.launch {
+            runCatching { PluginManager.init(this@BooxinApp) }
             runCatching { DownloadProviders.ensureProbed(this@BooxinApp) }
             runCatching { stageHsErrForAdb(this@BooxinApp) }
         }

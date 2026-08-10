@@ -139,6 +139,13 @@
                                 android:text="@string/community_tab_mods" />
 
                             <com.google.android.material.chip.Chip
+                                android:id="@+id/chipShaders"
+                                style="@style/Widget.Material3.Chip.Filter"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="@string/community_tab_shaders" />
+
+                            <com.google.android.material.chip.Chip
                                 android:id="@+id/chipResourcePacks"
                                 style="@style/Widget.Material3.Chip.Filter"
                                 android:layout_width="wrap_content"

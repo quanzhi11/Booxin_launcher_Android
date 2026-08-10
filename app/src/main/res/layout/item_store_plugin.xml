@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginBottom="8dp"
+    android:background="@drawable/bg_surface_card"
+    android:orientation="vertical"
+    android:padding="12dp">
+
+    <TextView
+        android:id="@+id/textStorePluginName"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textColor="@color/booxin_navy"
+        android:textSize="15sp"
+        android:textStyle="bold"
+        tools:text="MobileGlues" />
+
+    <TextView
+        android:id="@+id/textStorePluginMeta"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:textColor="@color/md_theme_light_outline"
+        android:textSize="12sp"
+        tools:text="渲染器 · 开发者 xxx" />
+
+    <TextView
+        android:id="@+id/textStorePluginDesc"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:ellipsize="end"
+        android:maxLines="3"
+        android:textColor="@color/booxin_navy"
+        android:textSize="13sp"
+        tools:text="简介" />
+
+    <TextView
+        android:id="@+id/textStorePluginRating"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:ellipsize="end"
+        android:maxLines="1"
+        android:textColor="@color/md_theme_light_outline"
+        android:textSize="12sp"
+        tools:text="★ 4.5（12）· 3 评" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:gravity="end"
+        android:orientation="horizontal">
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/buttonStoreDetail"
+            style="@style/Widget.Material3.Button.TextButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:minWidth="0dp"
+            android:text="@string/plugin_store_detail" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/buttonStoreDownload"
+            style="@style/Widget.Booxin.PrimaryButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="4dp"
+            android:minWidth="0dp"
+            android:text="@string/plugin_store_download" />
+    </LinearLayout>
+</LinearLayout>

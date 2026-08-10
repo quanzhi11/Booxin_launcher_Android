@@ -10,7 +10,10 @@ import java.util.concurrent.TimeUnit
 
 /**
  * System DNS first; on failure fall back to AliDNS / DNSPod DoH (IPv4 only).
- * Helps Xiaomi private-DNS / intermittent EAI_NODATA for Microsoft hosts.
+ *
+ * Booxin API hosts are pinned to the known IPv4 so OkHttp can keep using the
+ * domain in the URL (TLS cert SAN matches) without falling back to
+ * `https://IP/...` which fails hostname verification.
  */
 class ResilientDns(
     private val bootstrap: OkHttpClient = OkHttpClient.Builder()
@@ -35,6 +38,8 @@ class ResilientDns(
     }
 
     override fun lookup(hostname: String): List<InetAddress> {
+        pinned(hostname)?.let { return it }
+
         val errors = mutableListOf<Throwable>()
         try {
             return Dns.SYSTEM.lookup(hostname)
@@ -56,6 +61,21 @@ class ResilientDns(
             "Unable to resolve host \"$hostname\" (system+DoH failed: ${
                 errors.mapNotNull { it.message }.distinct().joinToString("; ")
             })"
+        )
+    }
+
+    private fun pinned(hostname: String): List<InetAddress>? {
+        val ip = PINNED[hostname.trim().lowercase()] ?: return null
+        return listOf(InetAddress.getByName(ip))
+    }
+
+    companion object {
+        /** Official API / site IPv4 behind nginx TLS for boonix.art. */
+        const val BOONIX_IPV4 = "175.178.174.103"
+
+        private val PINNED = mapOf(
+            "boonix.art" to BOONIX_IPV4,
+            "www.boonix.art" to BOONIX_IPV4
         )
     }
 }

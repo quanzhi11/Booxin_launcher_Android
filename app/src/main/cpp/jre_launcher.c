@@ -1151,6 +1151,8 @@ static void booxin_refresh_game_snapshot(void) {
     if (attached) (*e->runtimeJavaVMPtr)->DetachCurrentThread(e->runtimeJavaVMPtr);
 }
 
+static void force_input_bridge_ready(const char *where);
+
 static bool patch_glfw_fn_field(JNIEnv *env, jclass fnCls, const char *field, void *addr) {
     if (!addr) return false;
     jfieldID fid = (*env)->GetStaticFieldID(env, fnCls, field, "J");
@@ -1162,16 +1164,153 @@ static bool patch_glfw_fn_field(JNIEnv *env, jclass fnCls, const char *field, vo
     return true;
 }
 
-static bool patch_hotspot_pump_function_pointers(JNIEnv *env) {
-    if (!env) return false;
-    jclass fnCls = (*env)->FindClass(env, "org/lwjgl/glfw/GLFW$Functions");
-    if (!fnCls || (*env)->ExceptionCheck(env)) {
-        log_exception(env, "FindClass GLFW$Functions");
-        return false;
+/** findLoadedClass — never forces ClassLoader.loadClass (JNI can call protected). */
+static jclass find_loaded_in_loader(JNIEnv *env, jobject loader, const char *binary_name) {
+    if (!env || !loader || !binary_name) return NULL;
+    jclass clCls = (*env)->FindClass(env, "java/lang/ClassLoader");
+    if (!clCls || (*env)->ExceptionCheck(env)) {
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+        return NULL;
     }
+    jmethodID findLoaded = (*env)->GetMethodID(
+        env, clCls, "findLoadedClass", "(Ljava/lang/String;)Ljava/lang/Class;");
+    if (!findLoaded || (*env)->ExceptionCheck(env)) {
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+        (*env)->DeleteLocalRef(env, clCls);
+        return NULL;
+    }
+    jstring jname = (*env)->NewStringUTF(env, binary_name);
+    jclass cls = (jclass)(*env)->CallObjectMethod(env, loader, findLoaded, jname);
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionClear(env);
+        cls = NULL;
+    }
+    (*env)->DeleteLocalRef(env, jname);
+    (*env)->DeleteLocalRef(env, clCls);
+    return cls;
+}
+
+/** Walk loader → parent looking for an already-loaded class. */
+static jclass find_loaded_in_loader_chain(JNIEnv *env, jobject loader, const char *binary_name) {
+    jclass clCls = (*env)->FindClass(env, "java/lang/ClassLoader");
+    jmethodID getParent = clCls
+        ? (*env)->GetMethodID(env, clCls, "getParent", "()Ljava/lang/ClassLoader;")
+        : NULL;
+    jobject cur = loader;
+    jclass found = NULL;
+    int depth = 0;
+    while (cur && depth < 16) {
+        found = find_loaded_in_loader(env, cur, binary_name);
+        if (found) break;
+        jobject parent = getParent ? (*env)->CallObjectMethod(env, cur, getParent) : NULL;
+        if ((*env)->ExceptionCheck(env)) {
+            (*env)->ExceptionClear(env);
+            parent = NULL;
+        }
+        if (cur != loader) (*env)->DeleteLocalRef(env, cur);
+        cur = parent;
+        depth++;
+    }
+    if (cur && cur != loader) (*env)->DeleteLocalRef(env, cur);
+    if (clCls) (*env)->DeleteLocalRef(env, clCls);
+    return found;
+}
+
+/**
+ * Locate already-loaded org.lwjgl.glfw.GLFW$Functions without loading it.
+ * Forge puts LWJGL on a module layer; FindClass here would pull the Android
+ * fat-jar copy onto the wrong classloader.
+ */
+static jclass find_loaded_glfw_functions(JNIEnv *env) {
+    if (!env) return NULL;
+    const char *binary = "org.lwjgl.glfw.GLFW$Functions";
+
+    jclass threadCls = (*env)->FindClass(env, "java/lang/Thread");
+    if (!threadCls || (*env)->ExceptionCheck(env)) {
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+        return NULL;
+    }
+    jmethodID getAll = (*env)->GetStaticMethodID(
+        env, threadCls, "getAllStackTraces", "()Ljava/util/Map;");
+    jobject map = getAll ? (*env)->CallStaticObjectMethod(env, threadCls, getAll) : NULL;
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionClear(env);
+        map = NULL;
+    }
+    jclass found = NULL;
+    if (map) {
+        jclass mapCls = (*env)->FindClass(env, "java/util/Map");
+        jmethodID keySet = mapCls
+            ? (*env)->GetMethodID(env, mapCls, "keySet", "()Ljava/util/Set;")
+            : NULL;
+        jobject set = keySet ? (*env)->CallObjectMethod(env, map, keySet) : NULL;
+        if ((*env)->ExceptionCheck(env)) {
+            (*env)->ExceptionClear(env);
+            set = NULL;
+        }
+        jclass setCls = (*env)->FindClass(env, "java/util/Set");
+        jmethodID toArray = setCls
+            ? (*env)->GetMethodID(env, setCls, "toArray", "()[Ljava/lang/Object;")
+            : NULL;
+        jobjectArray threads = toArray
+            ? (jobjectArray)(*env)->CallObjectMethod(env, set, toArray)
+            : NULL;
+        if ((*env)->ExceptionCheck(env)) {
+            (*env)->ExceptionClear(env);
+            threads = NULL;
+        }
+        jmethodID getCtx = (*env)->GetMethodID(
+            env, threadCls, "getContextClassLoader", "()Ljava/lang/ClassLoader;");
+        jsize n = threads ? (*env)->GetArrayLength(env, threads) : 0;
+        for (jsize i = 0; i < n && !found; i++) {
+            jobject thr = (*env)->GetObjectArrayElement(env, threads, i);
+            if (!thr) continue;
+            jobject loader = getCtx ? (*env)->CallObjectMethod(env, thr, getCtx) : NULL;
+            if ((*env)->ExceptionCheck(env)) {
+                (*env)->ExceptionClear(env);
+                loader = NULL;
+            }
+            if (loader) {
+                found = find_loaded_in_loader_chain(env, loader, binary);
+                (*env)->DeleteLocalRef(env, loader);
+            }
+            (*env)->DeleteLocalRef(env, thr);
+        }
+        if (threads) (*env)->DeleteLocalRef(env, threads);
+        if (set) (*env)->DeleteLocalRef(env, set);
+        if (setCls) (*env)->DeleteLocalRef(env, setCls);
+        if (mapCls) (*env)->DeleteLocalRef(env, mapCls);
+        (*env)->DeleteLocalRef(env, map);
+    }
+
+    if (!found) {
+        jclass clCls = (*env)->FindClass(env, "java/lang/ClassLoader");
+        jmethodID getSys = clCls
+            ? (*env)->GetStaticMethodID(
+                env, clCls, "getSystemClassLoader", "()Ljava/lang/ClassLoader;")
+            : NULL;
+        jobject sys = getSys ? (*env)->CallStaticObjectMethod(env, clCls, getSys) : NULL;
+        if ((*env)->ExceptionCheck(env)) {
+            (*env)->ExceptionClear(env);
+            sys = NULL;
+        }
+        if (sys) {
+            found = find_loaded_in_loader_chain(env, sys, binary);
+            (*env)->DeleteLocalRef(env, sys);
+        }
+        if (clCls) (*env)->DeleteLocalRef(env, clCls);
+    }
+
+    (*env)->DeleteLocalRef(env, threadCls);
+    return found;
+}
+
+static bool patch_glfw_functions_class(JNIEnv *env, jclass fnCls) {
+    if (!env || !fnCls) return false;
 
     /* Point GLFW$Functions at our bridge so we don't get two environ copies. */
     void *lib = open_pojavexec();
+    int patched = 0;
     if (lib) {
         struct {
             const char *field;
@@ -1193,6 +1332,7 @@ static bool patch_hotspot_pump_function_pointers(JNIEnv *env) {
             void *addr = dlsym(lib, map[i].sym);
             if (patch_glfw_fn_field(env, fnCls, map[i].field, addr)) {
                 LOGI("GLFW$Functions.%s -> %s=%p", map[i].field, map[i].sym, addr);
+                patched++;
             } else {
                 LOGW("GLFW$Functions.%s patch skip (sym=%p)", map[i].field, addr);
             }
@@ -1234,9 +1374,66 @@ static bool patch_hotspot_pump_function_pointers(JNIEnv *env) {
         log_exception(env, "GLFW$Functions pump fields");
     }
 
-    (*env)->DeleteLocalRef(env, fnCls);
     cache_input_hooks_deliver(env);
-    return true;
+    return patched > 0;
+}
+
+static bool patch_hotspot_pump_function_pointers(JNIEnv *env) {
+    if (!env) return false;
+    jclass fnCls = (*env)->FindClass(env, "org/lwjgl/glfw/GLFW$Functions");
+    if (!fnCls || (*env)->ExceptionCheck(env)) {
+        log_exception(env, "FindClass GLFW$Functions");
+        return false;
+    }
+    bool ok = patch_glfw_functions_class(env, fnCls);
+    (*env)->DeleteLocalRef(env, fnCls);
+    return ok;
+}
+
+static atomic_int g_forge_glfw_patch_done = 0;
+
+/** Forge module-layer LWJGL loads after main(); patch as soon as Functions exists. */
+static void *forge_late_glfw_patch_thread(void *arg) {
+    JavaVM *jvm = (JavaVM *)arg;
+    if (!jvm) return NULL;
+    JNIEnv *env = NULL;
+    if ((*jvm)->AttachCurrentThread(jvm, &env, NULL) != 0 || !env) {
+        LOGW("Forge late GLFW patch: AttachCurrentThread failed");
+        return NULL;
+    }
+    LOGI("Forge late GLFW patch: watching for module-layer GLFW$Functions");
+    for (int i = 0; i < 15000 && !atomic_load(&g_forge_glfw_patch_done); i++) {
+        jclass fnCls = find_loaded_glfw_functions(env);
+        if (fnCls) {
+            LOGI("Forge late GLFW patch: found GLFW$Functions after %dms", i * 2);
+            if (patch_glfw_functions_class(env, fnCls)) {
+                atomic_store(&g_forge_glfw_patch_done, 1);
+                force_input_bridge_ready("after Forge late GLFW patch");
+                {
+                    void *lib = open_pojavexec();
+                    typedef void (*bind_fn)(JNIEnv *);
+                    bind_fn bind = lib
+                        ? (bind_fn)dlsym(lib, "booxin_bind_glfw_input_buffers")
+                        : NULL;
+                    if (bind) {
+                        bind(env);
+                        LOGI("booxin_bind_glfw_input_buffers after Forge late patch");
+                    }
+                }
+                LOGI("Forge late GLFW patch: SUCCESS");
+            } else {
+                LOGW("Forge late GLFW patch: class found but patch failed");
+            }
+            (*env)->DeleteLocalRef(env, fnCls);
+            if (atomic_load(&g_forge_glfw_patch_done)) break;
+        }
+        usleep(2000); /* 2ms — must win race before glfwInit */
+    }
+    if (!atomic_load(&g_forge_glfw_patch_done)) {
+        LOGW("Forge late GLFW patch: timed out — game may show GFLW Platform x11 / no GL context");
+    }
+    (*jvm)->DetachCurrentThread(jvm);
+    return NULL;
 }
 
 /* stack-queue + ready=true, or touch gets dropped. */
@@ -1372,9 +1569,23 @@ static void preload_pojav_deps(void) {
         "libfcl.so",
         NULL
     };
+    const char *nativeDir = getenv("BOOXIN_NATIVEDIR");
+    if (!nativeDir || !nativeDir[0]) nativeDir = getenv("POJAV_NATIVEDIR");
     for (int i = 0; libs[i]; i++) {
-        void *h = dlopen(libs[i], RTLD_LAZY | RTLD_GLOBAL);
+        void *h = NULL;
+        if (nativeDir && nativeDir[0]) {
+            char path[PATH_MAX];
+            snprintf(path, sizeof(path), "%s/%s", nativeDir, libs[i]);
+            h = dlopen(path, RTLD_LAZY | RTLD_GLOBAL);
+            if (h) {
+                LOGI("preload %s via NATIVEDIR", libs[i]);
+                continue;
+            }
+            LOGW("preload %s (NATIVEDIR): %s", libs[i], dlerror());
+        }
+        h = dlopen(libs[i], RTLD_LAZY | RTLD_GLOBAL);
         if (!h) LOGW("preload %s: %s", libs[i], dlerror());
+        else LOGI("preload %s via soname", libs[i]);
     }
 }
 
@@ -1628,7 +1839,14 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_pojav) {
     } else if (sdl_like) {
         LOGI("SDL windowing — defer input pump until SDL/LWJGL loads");
     } else {
-        LOGI("Forge-like — defer GLFW pump patch until module-layer LWJGL loads");
+        LOGI("Forge-like — starting late GLFW patch watcher for module-layer LWJGL");
+        atomic_store(&g_forge_glfw_patch_done, 0);
+        pthread_t forge_patch_thr;
+        if (pthread_create(&forge_patch_thr, NULL, forge_late_glfw_patch_thread, jvm) == 0) {
+            pthread_detach(forge_patch_thr);
+        } else {
+            LOGW("Forge-like — failed to spawn late GLFW patch thread");
+        }
     }
 
     /* Skip hookExec / lwjgl dlopen hooks — they crash under embedded HotSpot. */
@@ -1845,6 +2063,11 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_pojav) {
                         if (force) {
                             int grc = force(sdl);
                             LOGI("booxin_sdl_force_gles rc=%d", grc);
+                            if (grc != 0) {
+                                LOGW("SDL EGL→MobileGlues redirect incomplete (rc=%d) — "
+                                     "expect black screen until TextureView frames arrive",
+                                     grc);
+                            }
                         } else {
                             LOGW("booxin_sdl_force_gles missing");
                         }

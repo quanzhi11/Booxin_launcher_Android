@@ -39,11 +39,14 @@ class MultiplayerAuthManager(
         _session.value ?: error("未登录联机账号")
 
     private fun remember(session: BooxinAuthSession) {
+        val fixed = session.copy(
+            apiRoot = MultiplayerSessionStore.normalizeApiRoot(session.apiRoot)
+        )
         // StateFlow skips equal values; still guard against churn from volatile fields.
         val cur = _session.value
-        if (cur == session) return
-        store.save(session)
-        _session.value = session
+        if (cur == fixed) return
+        store.save(fixed)
+        _session.value = fixed
     }
 
     private fun rememberUser(user: BooxinUser) {

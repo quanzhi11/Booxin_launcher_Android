@@ -5,10 +5,13 @@ import android.view.ViewGroup
 import androidx.recyclerview.widget.RecyclerView
 import coil.load
 import com.booxin.launcher.R
+import com.booxin.launcher.core.community.CommunityDescriptionTranslator
 import com.booxin.launcher.data.model.ModrinthResolvedDependency
 import com.booxin.launcher.databinding.ItemCommunityDependencyBinding
+import kotlinx.coroutines.CoroutineScope
 
 class CommunityDependencyAdapter(
+    private val scope: CoroutineScope,
     private val onClick: (ModrinthResolvedDependency) -> Unit
 ) : RecyclerView.Adapter<CommunityDependencyAdapter.ViewHolder>() {
 
@@ -26,7 +29,7 @@ class CommunityDependencyAdapter(
             parent,
             false
         )
-        return ViewHolder(binding, onClick)
+        return ViewHolder(binding, scope, onClick)
     }
 
     override fun onBindViewHolder(holder: ViewHolder, position: Int) {
@@ -37,14 +40,17 @@ class CommunityDependencyAdapter(
 
     class ViewHolder(
         private val binding: ItemCommunityDependencyBinding,
+        private val scope: CoroutineScope,
         private val onClick: (ModrinthResolvedDependency) -> Unit
     ) : RecyclerView.ViewHolder(binding.root) {
 
         fun bind(item: ModrinthResolvedDependency) {
             binding.textTitle.text = item.title
-            binding.textDescription.text = item.description.ifBlank {
-                binding.root.context.getString(R.string.community_no_description)
-            }
+            CommunityDescriptionTranslator.bind(
+                binding.textDescription,
+                item.description,
+                scope
+            )
             binding.imageIcon.load(item.iconUrl) {
                 crossfade(true)
                 placeholder(R.drawable.ic_nav_versions)

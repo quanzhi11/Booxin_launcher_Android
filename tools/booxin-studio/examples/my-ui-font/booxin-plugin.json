@@ -1,0 +1,11 @@
+﻿{
+  "id": "my-ui-font",
+  "name": "自定义界面字体",
+  "version": "1.0.0",
+  "type": "ui",
+  "description": "启用后启动器界面文字使用包内 fonts/MyFont.ttf",
+  "font": "fonts/MyFont.ttf",
+  "features": {
+    "customFont": true
+  }
+}

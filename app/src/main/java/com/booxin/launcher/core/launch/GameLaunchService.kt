@@ -18,10 +18,14 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import com.booxin.launcher.AppContainer
 import com.booxin.launcher.R
+import com.booxin.launcher.core.LauncherPaths
 import com.booxin.launcher.core.diag.DiagEventLog
 import com.booxin.launcher.core.diag.PerfSnapshot
+import com.booxin.launcher.core.download.game.VersionJsonMerger
 import com.booxin.launcher.core.runtime.GameRuntimeBackends
 import com.booxin.launcher.core.runtime.RuntimeEnv
+import com.booxin.launcher.core.version.AndroidIncompatibleMods
+import com.booxin.launcher.core.version.VersionModsManager
 import com.booxin.launcher.ui.launch.LaunchActivity
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -116,18 +120,39 @@ class GameLaunchService : Service() {
 
         launchJob = scope.launch {
             var outcome: LaunchOutcome = LaunchOutcome.Failed("未知错误")
+            var incompatibleRetryUsed = false
             try {
                 coroutineScope {
-                    outcome = runLaunch(
-                        versionId = versionId,
-                        username = username,
-                        windowWidth = windowWidth,
-                        windowHeight = windowHeight,
-                        uuid = uuid,
-                        accessToken = accessToken,
-                        userType = userType,
-                        serverAddress = serverAddress
-                    )
+                    while (true) {
+                        outcome = runLaunch(
+                            versionId = versionId,
+                            username = username,
+                            windowWidth = windowWidth,
+                            windowHeight = windowHeight,
+                            uuid = uuid,
+                            accessToken = accessToken,
+                            userType = userType,
+                            serverAddress = serverAddress
+                        )
+                        if (incompatibleRetryUsed) break
+                        if (outcome !is LaunchOutcome.Success &&
+                            outcome !is LaunchOutcome.HardExit
+                        ) {
+                            break
+                        }
+                        if (LaunchSession.current() == LaunchPhase.Stopping) break
+                        val crashedMods = disableIncompatibleFromRecentCrash(versionId)
+                        if (crashedMods.isEmpty()) break
+                        incompatibleRetryUsed = true
+                        appendLog("游戏因不兼容模组退出，已禁用:")
+                        crashedMods.forEach { appendLog("  · $it") }
+                        appendLog("重新加载模组列表并自动重试启动…")
+                        LaunchSession.fail("retry-after-incompatible-mod")
+                        if (!LaunchSession.tryBegin()) {
+                            appendLog("无法重试启动（会话忙）")
+                            break
+                        }
+                    }
                 }
             } catch (e: CancellationException) {
                 outcome = if (LaunchSession.hotspotEntered || hardKillScheduled) {
@@ -270,6 +295,17 @@ class GameLaunchService : Service() {
 
         SodiumPodiumInstaller.ensure(this@GameLaunchService, versionId)?.let { appendLog(it) }
 
+        appendLog("正在扫描模组兼容性…")
+        val modScan = AndroidIncompatibleMods.scanAndDisable(versionId)
+        if (modScan.changed) {
+            appendLog("发现不兼容模组，已禁用并重新加载模组列表:")
+            modScan.disabled.forEach { appendLog("  · $it") }
+        }
+        val enabledMods = VersionModsManager.list(versionId).count { it.enabled }
+        if (VersionJsonMerger.isModLoaderVersion(versionId)) {
+            appendLog("模组列表就绪：启用 $enabledMods 个")
+        }
+
         val java = AppContainer.javaEnvironment.ensureForMinecraft(versionId).getOrElse {
             return LaunchOutcome.Failed("Java 不可用: ${it.message}")
         }
@@ -308,13 +344,19 @@ class GameLaunchService : Service() {
                 versionId
             )
             GameOptionsPatch.applyWindowOverrides(gameDir, width, height)
-            appendLog("options.txt → ${width}x${height}，关垂直同步，maxFps+10")
+            appendLog(
+                "options.txt → ${width}x${height}，" +
+                    "rd=${com.booxin.launcher.core.LauncherPrefs.renderDistance()}，" +
+                    "vsync=${com.booxin.launcher.core.LauncherPrefs.enableVsync()}"
+            )
         }.onFailure {
             appendLog("options.txt 写入失败: ${it.message}")
         }
         appendLog("构建启动命令…（窗口 ${width}x${height}，内存 ${com.booxin.launcher.core.LauncherPrefs.maxMemoryMb()} MB）")
-        if (OemLaunchProfile.needsForgeShortClasspath()) {
-            appendLog("vivo 系启动优化：Forge 短 classpath + legacyClassPath.file（${OemLaunchProfile.describe()}）")
+        if (OemLaunchProfile.isVivoFamily()) {
+            appendLog(
+                "vivo 系 CreateJavaVM 优化：短 classpath / classpath.jar（${OemLaunchProfile.describe()}）"
+            )
         }
         if (com.booxin.launcher.core.java.MinecraftJavaRequirement.usesSdlWindowing(versionId)) {
             val sdl = File(com.booxin.launcher.core.launch.AndroidGameRuntime.nativesDir(), "libSDL3.so")
@@ -468,6 +510,48 @@ class GameLaunchService : Service() {
         } finally {
             logJob.cancel()
         }
+    }
+
+    /**
+     * After JVM exits, read recent crash / launch logs and disable offending mods.
+     */
+    private fun disableIncompatibleFromRecentCrash(versionId: String): List<String> {
+        val cutoff = System.currentTimeMillis() - 5 * 60_000L
+        val chunks = ArrayList<String>()
+        val versionRoot = File(LauncherPaths.versionsDir, versionId)
+        File(versionRoot, "crash-reports").listFiles()
+            ?.filter { it.isFile && it.lastModified() >= cutoff }
+            ?.sortedByDescending { it.lastModified() }
+            ?.take(3)
+            ?.forEach { f ->
+                runCatching { chunks += f.readText().take(120_000) }
+            }
+        versionRoot.listFiles()
+            ?.filter {
+                it.isFile && it.lastModified() >= cutoff &&
+                    (it.name.startsWith("hs_err_pid") || it.name.contains("crash", ignoreCase = true))
+            }
+            ?.sortedByDescending { it.lastModified() }
+            ?.take(2)
+            ?.forEach { f ->
+                runCatching { chunks += f.readText().take(80_000) }
+            }
+        runCatching {
+            val launchLog = File(LauncherPaths.rootDir, "logs/latest-launch.log")
+            if (launchLog.isFile && launchLog.lastModified() >= cutoff) {
+                chunks += launchLog.readText().takeLast(100_000)
+            }
+        }
+        val text = chunks.joinToString("\n")
+        if (text.isBlank()) return emptyList()
+        val looksNativeFail =
+            "UnsatisfiedLinkError" in text ||
+                "EM_X86_64" in text ||
+                "em_x86_64" in text.lowercase() ||
+                "Can't load library" in text ||
+                "libimgui" in text.lowercase()
+        if (!looksNativeFail) return emptyList()
+        return AndroidIncompatibleMods.disableFromCrashText(versionId, text)
     }
 
     private fun startAsForeground(content: String) {

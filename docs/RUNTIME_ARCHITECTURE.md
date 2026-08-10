@@ -27,8 +27,11 @@ GameRuntimeBackend
         ↓
 NativeJvmLauncher / libbooxin_jvm.so
         ↓
-HotSpot + LWJGL + GLES translator + Minecraft
+HotSpot + LWJGL + GLES translator (BooxinGlues / MobileGlues / …) + Minecraft
 ```
+
+Auto 渲染选型：`RendererBackend.kindForLaunch` 结合 MC 版本与 `ModRenderProfiler`（扫描 `versions/<id>/mods`），默认现代版本走 `BOOXIN_GLUES`。
+
 
 ## 不可改动的过渡 ABI
 

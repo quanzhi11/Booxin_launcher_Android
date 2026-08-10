@@ -21,6 +21,14 @@ import kotlin.math.min
  * 下载文件到本地，带进度回调。
  * 大文件在支持 Range 时多分片；小文件或非 Range 主机走单连接。
  */
+data class DownloadedFile(
+    val file: File,
+    /** Final URL after redirects (useful for short/CDN links). */
+    val finalUrl: String,
+    val contentType: String? = null,
+    val contentDisposition: String? = null
+)
+
 class FileDownloader(
     private val client: OkHttpClient = HttpClients.shared
 ) {
@@ -32,13 +40,32 @@ class FileDownloader(
         accelerate: Boolean = true
     ): Result<File> = download(listOf(url), destination, onProgress, accelerate)
 
+    /**
+     * Same as [download], but keeps the final redirected URL / content headers
+     * so callers can sniff `.zip` / `.apk` when the original link has no extension.
+     */
+    suspend fun downloadResolved(
+        url: String,
+        destination: File,
+        onProgress: (downloaded: Long, total: Long) -> Unit = { _, _ -> },
+        accelerate: Boolean = true
+    ): Result<DownloadedFile> =
+        downloadResolved(listOf(url), destination, onProgress, accelerate)
+
     /** 按顺序尝试 [urls]；非最后一个源用短超时，避免卡住备用镜像。 */
     suspend fun download(
         urls: List<String>,
         destination: File,
         onProgress: (downloaded: Long, total: Long) -> Unit = { _, _ -> },
         accelerate: Boolean = true
-    ): Result<File> = withContext(Dispatchers.IO) {
+    ): Result<File> = downloadResolved(urls, destination, onProgress, accelerate).map { it.file }
+
+    suspend fun downloadResolved(
+        urls: List<String>,
+        destination: File,
+        onProgress: (downloaded: Long, total: Long) -> Unit = { _, _ -> },
+        accelerate: Boolean = true
+    ): Result<DownloadedFile> = withContext(Dispatchers.IO) {
         if (urls.isEmpty()) {
             return@withContext Result.failure(IOException("无下载地址"))
         }
@@ -105,7 +132,7 @@ class FileDownloader(
         destination: File,
         onProgress: (downloaded: Long, total: Long) -> Unit,
         accelerate: Boolean
-    ): Result<File> {
+    ): Result<DownloadedFile> {
         cleanupPartials(destination)
         destination.parentFile?.mkdirs()
 
@@ -126,7 +153,11 @@ class FileDownloader(
                         connections,
                         onProgress
                     )
-                    if (multi.isSuccess) return multi
+                    if (multi.isSuccess) {
+                        return multi.map {
+                            DownloadedFile(file = it, finalUrl = url)
+                        }
+                    }
                     Log.w(TAG, "multipart failed, fallback single: ${multi.exceptionOrNull()?.message}")
                     cleanupPartials(destination)
                 }
@@ -271,7 +302,7 @@ class FileDownloader(
         url: String,
         destination: File,
         onProgress: (downloaded: Long, total: Long) -> Unit
-    ): Result<File> {
+    ): Result<DownloadedFile> {
         return try {
             destination.parentFile?.mkdirs()
             val partial = File(destination.parentFile, destination.name + ".part")
@@ -283,10 +314,16 @@ class FileDownloader(
                 .get()
                 .build()
 
+            var finalUrl = url
+            var contentType: String? = null
+            var contentDisposition: String? = null
             attemptClient.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
                     throw IOException("下载失败 HTTP ${response.code}: $url")
                 }
+                finalUrl = response.request.url.toString()
+                contentType = response.header("Content-Type")
+                contentDisposition = response.header("Content-Disposition")
                 val body = response.body ?: throw IOException("空响应体: $url")
                 val total = body.contentLength()
                 body.byteStream().use { input ->
@@ -311,7 +348,14 @@ class FileDownloader(
             }
 
             finalizePartial(partial, destination)
-            Result.success(destination)
+            Result.success(
+                DownloadedFile(
+                    file = destination,
+                    finalUrl = finalUrl,
+                    contentType = contentType,
+                    contentDisposition = contentDisposition
+                )
+            )
         } catch (error: kotlinx.coroutines.CancellationException) {
             throw error
         } catch (error: Exception) {

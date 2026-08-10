@@ -1,10 +1,11 @@
 package com.booxin.launcher.core.launch
 
 import android.util.Log
+import com.booxin.launcher.core.LauncherPrefs
 import java.io.File
 
 /**
- * Patch options.txt: window size + light FPS unlock.
+ * Patch options.txt: window size, launcher graphics/audio prefs, light FPS unlock.
  * Without width/height override, menu hover/click can miss.
  */
 object GameOptionsPatch {
@@ -27,6 +28,7 @@ object GameOptionsPatch {
         map["fullscreen"] = "false"
         map["overrideWidth"] = width.toString()
         map["overrideHeight"] = height.toString()
+        applyLauncherPrefs(map)
         applyFpsBoost(map)
         runCatching {
             file.parentFile?.mkdirs()
@@ -34,20 +36,29 @@ object GameOptionsPatch {
             Log.i(
                 TAG,
                 "options.txt ${width}x${height} fullscreen=false " +
-                    "vsync=${map["enableVsync"]} maxFps=${map["maxFps"]} at ${file.absolutePath}"
+                    "vsync=${map["enableVsync"]} maxFps=${map["maxFps"]} " +
+                    "rd=${map["renderDistance"]} at ${file.absolutePath}"
             )
         }.onFailure {
             Log.w(TAG, "options.txt patch failed: ${it.message}")
         }
     }
 
+    private fun applyLauncherPrefs(map: MutableMap<String, String>) {
+        map["renderDistance"] = LauncherPrefs.renderDistance().toString()
+        map["fancyGraphics"] = LauncherPrefs.fancyGraphics().toString()
+        val volume = (LauncherPrefs.masterVolumePercent() / 100.0).coerceIn(0.0, 1.0)
+        map["soundCategory_master"] = String.format(java.util.Locale.US, "%.2f", volume)
+    }
+
     /**
-     * +10 FPS headroom: turn off in-game vsync and raise a finite maxFps cap by 10.
+     * Respect user vsync; when off, raise a finite maxFps cap slightly for headroom.
      */
     private fun applyFpsBoost(map: MutableMap<String, String>) {
-        map["enableVsync"] = "false"
-        // Some older builds also read this key.
-        map["vsync"] = "false"
+        val vsync = LauncherPrefs.enableVsync()
+        map["enableVsync"] = vsync.toString()
+        map["vsync"] = vsync.toString()
+        if (vsync) return
 
         val raw = map["maxFps"]
         val current = raw?.toIntOrNull()

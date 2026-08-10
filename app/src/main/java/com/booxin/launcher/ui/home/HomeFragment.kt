@@ -10,15 +10,19 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.navigation.fragment.findNavController
+import coil.load
 import com.booxin.launcher.AppContainer
 import com.booxin.launcher.R
 import com.booxin.launcher.core.auth.MicrosoftAuthLogger
 import com.booxin.launcher.core.auth.MicrosoftAuthService
+import com.booxin.launcher.core.uiplugin.UiPluginManager
+import com.booxin.launcher.core.uiplugin.UiPluginTheme
 import com.booxin.launcher.data.model.AccountType
 import com.booxin.launcher.data.model.LauncherAccount
 import com.booxin.launcher.databinding.FragmentHomeBinding
 import com.booxin.launcher.ui.auth.MicrosoftAuthErrorDialog
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import java.util.Calendar
 import kotlinx.coroutines.launch
 
 class HomeFragment : Fragment() {
@@ -37,15 +41,24 @@ class HomeFragment : Fragment() {
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
+        applyHomeGreeting()
+        applyCustomLauncherIcon()
+        applyHomeThemeLabels()
         AppContainer.repository.refreshInstalledVersions()
 
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 launch {
-                    AppContainer.repository.session.collect { refreshSelectedVersion() }
+                    AppContainer.repository.session.collect {
+                        refreshSelectedVersion()
+                        refreshCurrentAccount()
+                    }
                 }
                 launch {
                     AppContainer.repository.installedVersions.collect { refreshSelectedVersion() }
+                }
+                launch {
+                    AppContainer.repository.accounts.collect { refreshCurrentAccount() }
                 }
             }
         }
@@ -79,6 +92,67 @@ class HomeFragment : Fragment() {
                 }
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        applyHomeGreeting()
+        applyCustomLauncherIcon()
+        applyHomeThemeLabels()
+    }
+
+    /** UI plugin: theme welcome text and/or homeGreetingByTime */
+    private fun applyHomeGreeting() {
+        val b = _binding ?: return
+        val hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
+        val useTime = UiPluginManager.isFeatureEnabled("homeGreetingByTime")
+        b.textWelcome.text = UiPluginTheme.welcomeText(
+            hourOfDay = hour,
+            defaultWelcome = getString(R.string.home_welcome),
+            defaultMorning = getString(R.string.home_welcome_morning),
+            defaultNoon = getString(R.string.home_welcome_noon),
+            defaultEvening = getString(R.string.home_welcome_evening),
+            useTimeGreeting = useTime
+        )
+        UiPluginTheme.applyDeep(b.root)
+    }
+
+    /** UI plugin feature: customLauncherIcon → replace home brand mark */
+    private fun applyCustomLauncherIcon() {
+        val b = _binding ?: return
+        val icon = UiPluginManager.resolveCustomLauncherIconFile()
+        if (icon == null) {
+            b.imageBrandIcon.setImageResource(R.mipmap.ic_launcher_round)
+            return
+        }
+        b.imageBrandIcon.load(icon) {
+            placeholder(R.mipmap.ic_launcher_round)
+            error(R.mipmap.ic_launcher_round)
+            crossfade(true)
+        }
+    }
+
+    /** customTheme home button / status label overrides */
+    private fun applyHomeThemeLabels() {
+        val b = _binding ?: return
+        val theme = UiPluginTheme.current()?.spec
+        if (theme == null) {
+            b.buttonLaunch.setText(R.string.home_launch)
+            b.buttonSwitchVersion.setText(R.string.home_switch_version)
+            b.buttonAccountManage.setText(R.string.home_account_manage)
+            b.textLaunchStatus.setText(R.string.home_status_placeholder)
+            b.textSelectedVersionLabel.setText(R.string.home_selected_version)
+            return
+        }
+        b.buttonLaunch.text = theme.homeLaunchText.ifBlank { getString(R.string.home_launch) }
+        b.buttonSwitchVersion.text =
+            theme.homeSwitchVersionText.ifBlank { getString(R.string.home_switch_version) }
+        b.buttonAccountManage.text =
+            theme.homeAccountText.ifBlank { getString(R.string.home_account_manage) }
+        b.textLaunchStatus.text =
+            theme.homeStatusText.ifBlank { getString(R.string.home_status_placeholder) }
+        b.textSelectedVersionLabel.text =
+            theme.homeSelectedVersionLabel.ifBlank { getString(R.string.home_selected_version) }
     }
 
     private suspend fun prepareLaunchAccount(): LauncherAccount? {
@@ -154,6 +228,16 @@ class HomeFragment : Fragment() {
         b.textLaunchStatus.text = when {
             version == null || !version.installed -> getString(R.string.home_status_placeholder)
             else -> getString(R.string.home_status_ready)
+        }
+    }
+
+    private fun refreshCurrentAccount() {
+        val b = _binding ?: return
+        val account = AppContainer.repository.selectedAccount()
+        b.textCurrentAccount.text = if (account == null) {
+            getString(R.string.home_no_account)
+        } else {
+            getString(R.string.home_current_account, account.name)
         }
     }
 

@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:paddingHorizontal="20dp"
+    android:paddingTop="12dp"
+    android:paddingBottom="4dp">
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/settings_background_align_hint"
+        android:textColor="@color/md_theme_light_outline"
+        android:textSize="12sp" />
+
+    <RadioGroup
+        android:id="@+id/radioAlignMode"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp">
+
+        <com.google.android.material.radiobutton.MaterialRadioButton
+            android:id="@+id/radioAlignAuto"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/settings_background_align_auto" />
+
+        <com.google.android.material.radiobutton.MaterialRadioButton
+            android:id="@+id/radioAlignStretch"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/settings_background_align_stretch" />
+
+        <com.google.android.material.radiobutton.MaterialRadioButton
+            android:id="@+id/radioAlignCrop"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/settings_background_align_crop" />
+
+        <com.google.android.material.radiobutton.MaterialRadioButton
+            android:id="@+id/radioAlignManual"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/settings_background_align_manual" />
+    </RadioGroup>
+
+    <LinearLayout
+        android:id="@+id/layoutAlignManual"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/textScaleX"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="@color/md_theme_light_onSurface"
+            android:textSize="12sp" />
+
+        <com.google.android.material.slider.Slider
+            android:id="@+id/sliderScaleX"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:valueFrom="50"
+            android:valueTo="300"
+            android:stepSize="5"
+            app:labelBehavior="gone" />
+
+        <TextView
+            android:id="@+id/textScaleY"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textColor="@color/md_theme_light_onSurface"
+            android:textSize="12sp" />
+
+        <com.google.android.material.slider.Slider
+            android:id="@+id/sliderScaleY"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:valueFrom="50"
+            android:valueTo="300"
+            android:stepSize="5"
+            app:labelBehavior="gone" />
+
+        <TextView
+            android:id="@+id/textOffsetX"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textColor="@color/md_theme_light_onSurface"
+            android:textSize="12sp" />
+
+        <com.google.android.material.slider.Slider
+            android:id="@+id/sliderOffsetX"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:valueFrom="-50"
+            android:valueTo="50"
+            android:stepSize="1"
+            app:labelBehavior="gone" />
+
+        <TextView
+            android:id="@+id/textOffsetY"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textColor="@color/md_theme_light_onSurface"
+            android:textSize="12sp" />
+
+        <com.google.android.material.slider.Slider
+            android:id="@+id/sliderOffsetY"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:valueFrom="-50"
+            android:valueTo="50"
+            android:stepSize="1"
+            app:labelBehavior="gone" />
+    </LinearLayout>
+</LinearLayout>

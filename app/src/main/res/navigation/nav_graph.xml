@@ -91,7 +91,30 @@
         android:label="@string/nav_multiplayer" />
 
     <fragment
+        android:id="@+id/nav_ai"
+        android:name="com.booxin.launcher.ui.ai.AiAssistantFragment"
+        android:label="@string/nav_ai" />
+
+    <fragment
+        android:id="@+id/nav_plugin_store"
+        android:name="com.booxin.launcher.ui.pluginstore.PluginStoreFragment"
+        android:label="@string/nav_plugin_store">
+        <action
+            android:id="@+id/action_plugin_store_to_local_plugins"
+            app:destination="@id/nav_plugins" />
+    </fragment>
+
+    <fragment
         android:id="@+id/nav_settings"
         android:name="com.booxin.launcher.ui.settings.SettingsFragment"
-        android:label="@string/nav_settings" />
+        android:label="@string/nav_settings">
+        <action
+            android:id="@+id/action_settings_to_plugins"
+            app:destination="@id/nav_plugins" />
+    </fragment>
+
+    <fragment
+        android:id="@+id/nav_plugins"
+        android:name="com.booxin.launcher.ui.plugin.PluginsFragment"
+        android:label="@string/plugins_title" />
 </navigation>

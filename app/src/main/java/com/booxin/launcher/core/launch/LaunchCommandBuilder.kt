@@ -17,8 +17,12 @@ import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.FileOutputStream
 import java.util.Locale
 import java.util.TimeZone
+import java.util.jar.Attributes
+import java.util.jar.JarOutputStream
+import java.util.jar.Manifest
 
 data class LaunchCommand(
     val javaBinary: File,
@@ -47,6 +51,9 @@ data class LaunchCommand(
             appendLine("cwd=${workingDir.absolutePath}")
             appendLine("main=$mainClass")
             appendLine("cp=${classpath.size} jars")
+            if (classpath.size == 1 && classpath[0].name.contains("classpath", ignoreCase = true)) {
+                appendLine("classpathJar=${classpath[0].absolutePath}")
+            }
             appendLine("jvm=${jvmArgs.size} args")
             val clientJar = jvmArgs.firstOrNull { it.startsWith("-Dminecraft.client.jar=") }
                 ?: jvmArgs.firstOrNull { it.startsWith("-Dfabric.gameJarPath=") }
@@ -118,9 +125,85 @@ class LaunchCommandBuilder(
             ?: root.optString("assets").ifBlank { "legacy" }
 
         AndroidGameRuntime.ensure(context)
-        val requestedRenderer = RendererBackend.kindForVersion(mcVersionId)
-        val renderer = resolveRendererOrFallback(requestedRenderer, mcVersionId)
-        AndroidGameRuntime.applyRenderer(renderer)
+        val modProfile = RendererBackend.lastProfile(versionId)
+        val requestedRenderer = RendererBackend.kindForLaunch(versionId, mcVersionId)
+        val renderer = resolveRendererOrFallback(
+            requestedRenderer,
+            mcVersionId,
+            if (requestedRenderer == GlRendererKind.BOOXIN_GLUES) {
+                com.booxin.launcher.core.runtime.BooxinGlStack.fallbackChain(modProfile)
+            } else {
+                modProfile.fallback
+            }
+        )
+        // Max compat / Path A: heavy → Zink; then ANGLE; then MobileGlues (LGPL) if still needed.
+        if (renderer == GlRendererKind.BOOXIN_GLUES && modProfile.isHeavyGl) {
+            if (!com.booxin.launcher.core.runtime.RendererInstaller.isInstalled(GlRendererKind.VULKAN_ZINK)) {
+                kotlinx.coroutines.runBlocking {
+                    com.booxin.launcher.core.runtime.RendererInstaller.ensureInstalled(
+                        GlRendererKind.VULKAN_ZINK
+                    )
+                }
+            }
+            if ("shaders" in modProfile.features &&
+                !com.booxin.launcher.core.runtime.RendererInstaller.isInstalled(GlRendererKind.VULKAN_ZINK) &&
+                !com.booxin.launcher.core.runtime.RendererInstaller.isInstalled(GlRendererKind.ANGLE)
+            ) {
+                kotlinx.coroutines.runBlocking {
+                    com.booxin.launcher.core.runtime.RendererInstaller.ensureInstalled(
+                        GlRendererKind.ANGLE
+                    )
+                }
+            }
+            val maxCompat = runCatching {
+                com.booxin.launcher.core.LauncherPrefs.isMaxGlCompat()
+            }.getOrDefault(true)
+            val hasCleanroom = File(AndroidGameRuntime.nativesDir(), "libbooxingl.so").isFile
+            if (maxCompat &&
+                !hasCleanroom &&
+                !com.booxin.launcher.core.runtime.RendererInstaller.isInstalled(GlRendererKind.VULKAN_ZINK) &&
+                !com.booxin.launcher.core.runtime.RendererInstaller.isInstalled(GlRendererKind.MOBILE_GLUES)
+            ) {
+                kotlinx.coroutines.runBlocking {
+                    com.booxin.launcher.core.runtime.RendererInstaller.ensureInstalled(
+                        GlRendererKind.MOBILE_GLUES
+                    )
+                }
+            }
+        }
+        val pathA = if (renderer == GlRendererKind.BOOXIN_GLUES) {
+            com.booxin.launcher.core.runtime.BooxinGlStack.resolve(
+                AndroidGameRuntime.nativesDir(),
+                modProfile
+            )
+        } else {
+            null
+        }
+        AndroidGameRuntime.applyRenderer(renderer, modProfile)
+        // Effective GL lib kind (Zink staging under BooxinGlues product name).
+        val glKind = when (pathA?.engine) {
+            com.booxin.launcher.core.runtime.BooxinGlEngine.ZINK -> GlRendererKind.VULKAN_ZINK
+            com.booxin.launcher.core.runtime.BooxinGlEngine.MOBILE_GLUES_COMPAT ->
+                GlRendererKind.MOBILE_GLUES
+            else -> renderer
+        }
+        val eglOverride = when (pathA?.engine) {
+            com.booxin.launcher.core.runtime.BooxinGlEngine.ANGLE_EGL -> {
+                val angleEgl = File(AndroidGameRuntime.nativesDir(), "libEGL_angle.so")
+                if (angleEgl.isFile) angleEgl.absolutePath else "libEGL_angle.so"
+            }
+            com.booxin.launcher.core.runtime.BooxinGlEngine.MOBILE_GLUES_COMPAT ->
+                File(AndroidGameRuntime.nativesDir(), "libmobileglues.so").let {
+                    if (it.isFile) it.absolutePath else "libmobileglues.so"
+                }
+            else -> null
+        }
+        android.util.Log.i(
+            "LaunchCmd",
+            "renderer=${renderer.displayName} glKind=${glKind.displayName} " +
+                "pathA=${pathA?.engine} profile=${modProfile.profileId} " +
+                "matched=${modProfile.matchedMods.take(8)}"
+        )
         val androidLwjgl = AndroidGameRuntime.lwjglJar()
         require(androidLwjgl.isFile) {
             "缺少 Android LWJGL: ${androidLwjgl.absolutePath}"
@@ -241,10 +324,15 @@ class LaunchCommandBuilder(
         val isKnotLoader = isKnotMainClass(mainClass)
         val isOptiFine = isOptiFineVersion(versionId, mainClass, root)
         val isBootstrap = usesBootstrapLauncher(mainClass)
-        // Only vivo/iQOO: short -cp + legacyClassPath.file (CreateJavaVM hang workaround).
-        // Other OEMs keep full -cp like the fast path. Never enable -Dbsl.debug.
+        // vivo/iQOO only: shrink -cp so JNI_CreateJavaVM does not stall.
+        // Forge → bootstrap jar + legacyClassPath.file; others → one classpath.jar.
+        // Other OEMs keep full -cp. Never enable -Dbsl.debug.
         val useForgeShortCp =
             isBootstrap && isForgeOrLoader && OemLaunchProfile.needsForgeShortClasspath()
+        val useClasspathJar =
+            !useForgeShortCp &&
+                OemLaunchProfile.needsClasspathJar() &&
+                existingClasspath.size >= 8
         val launchClasspath: List<File>
         val forgeLegacyClasspathFile: File?
         if (useForgeShortCp) {
@@ -259,6 +347,16 @@ class LaunchCommandBuilder(
                 "LaunchCmd",
                 "vivo-family Forge short -cp: device=${OemLaunchProfile.describe()} " +
                     "bootJars=${launchClasspath.size} legacyLines=${existingClasspath.size}"
+            )
+        } else if (useClasspathJar) {
+            val cpJar = File(context.cacheDir, "booxin-classpath-$versionId.jar")
+            writeClasspathJar(existingClasspath, cpJar)
+            launchClasspath = listOf(cpJar)
+            forgeLegacyClasspathFile = null
+            android.util.Log.i(
+                "LaunchCmd",
+                "vivo-family classpath.jar: device=${OemLaunchProfile.describe()} " +
+                    "entries=${existingClasspath.size} jar=${cpJar.absolutePath}"
             )
         } else {
             launchClasspath = existingClasspath
@@ -280,7 +378,7 @@ class LaunchCommandBuilder(
                 javaHome = java.homeDir,
                 javaMajor = java.majorVersion,
                 classpath = launchClasspathString,
-                renderer = renderer,
+                renderer = glKind,
                 versionRoot = root,
                 tokens = tokens,
                 androidLwjgl = androidLwjgl,
@@ -296,7 +394,7 @@ class LaunchCommandBuilder(
                 javaHome = java.homeDir,
                 javaMajor = java.majorVersion,
                 classpath = launchClasspathString,
-                renderer = renderer,
+                renderer = glKind,
                 versionRoot = root,
                 tokens = tokens,
                 jnaBootPath = jnaBootPath
@@ -310,7 +408,7 @@ class LaunchCommandBuilder(
                 javaHome = java.homeDir,
                 javaMajor = java.majorVersion,
                 classpath = launchClasspathString,
-                renderer = renderer,
+                renderer = glKind,
                 mainClass = mainClass,
                 versionRoot = root,
                 tokens = tokens,
@@ -328,7 +426,7 @@ class LaunchCommandBuilder(
                 javaHome = java.homeDir,
                 javaMajor = java.majorVersion,
                 classpath = launchClasspathString,
-                renderer = renderer,
+                renderer = glKind,
                 jnaBootPath = jnaBootPath
             )
         }
@@ -338,9 +436,9 @@ class LaunchCommandBuilder(
 
         val stagedNativesDir = AndroidGameRuntime.nativesDir()
         val stagedNatives = stagedNativesDir.absolutePath
-        val glLib = RuntimeEnv.glLibraryFile(stagedNativesDir, renderer)
+        val glLib = RuntimeEnv.glLibraryFile(stagedNativesDir, glKind)
         require(glLib.isFile) { "缺少渲染库: ${glLib.absolutePath}" }
-        val pluginDir = com.booxin.launcher.core.runtime.RendererInstaller.pluginNativeDir(renderer)
+        val pluginDir = com.booxin.launcher.core.runtime.RendererInstaller.pluginNativeDir(glKind)
         val libraryPath = buildLibraryPath(
             java.homeDir,
             stagedNatives,
@@ -352,10 +450,10 @@ class LaunchCommandBuilder(
             "TMPDIR" to context.cacheDir.absolutePath,
             "PATH" to "${File(java.homeDir, "bin").absolutePath}:${System.getenv("PATH").orEmpty()}",
             "LD_LIBRARY_PATH" to libraryPath,
-            "LIBGL_ES" to RuntimeEnv.libGlEs(renderer),
+            "LIBGL_ES" to RuntimeEnv.libGlEs(glKind),
             "LIBGL_NAME" to glLib.absolutePath,
             "LIBGL_STRING" to RuntimeEnv.libGlString(renderer),
-            "LIBGL_EGL" to RuntimeEnv.eglLib(renderer),
+            "LIBGL_EGL" to (eglOverride ?: RuntimeEnv.eglLib(glKind)),
             "LIBGL_NOERROR" to "1",
             "LIBGL_MIPMAP" to "3",
             "LIBGL_NOINTOVLHACK" to "1",
@@ -365,13 +463,14 @@ class LaunchCommandBuilder(
             "AWTSTUB_HEIGHT" to windowHeight.toString(),
             "MESA_GLSL_CACHE_DIR" to context.cacheDir.absolutePath
         )
-        if (renderer == GlRendererKind.MOBILE_GLUES) {
-            envBase["MG_DIR_PATH"] = File(context.filesDir, "MG").absolutePath
-            envBase["allow_higher_compat_version"] = "true"
-            envBase["allow_glsl_extension_directive_midshader"] = "true"
-            envBase["force_glsl_extensions_warn"] = "true"
-        }
-        RuntimeEnv.pluginExtraEnv(renderer).forEach { (k, v) -> envBase[k] = v }
+        com.booxin.launcher.core.runtime.BooxinGluesEnv.apply(
+            env = envBase,
+            context = context,
+            kind = renderer,
+            profile = modProfile,
+            resolved = pathA
+        )
+        RuntimeEnv.pluginExtraEnv(glKind).forEach { (k, v) -> envBase[k] = v }
         if (MinecraftJavaRequirement.usesSdlWindowing(mcVersionId)) {
             envBase["BOOXIN_WINDOWING"] = "sdl"
             val sdl3 = File(stagedNativesDir, "libSDL3.so")
@@ -389,7 +488,12 @@ class LaunchCommandBuilder(
             // Help SDL Android find the app (official zlib path; still no SDLActivity yet).
             envBase["SDL_ANDROID_APK_EXPANSION_MAIN_FILE_VERSION"] = "1"
         }
-        val env = RuntimeEnv.withNativeAliases(envBase, stagedNatives, renderer)
+        val env = RuntimeEnv.withNativeAliases(
+            envBase,
+            stagedNatives,
+            glKind,
+            eglOverride = eglOverride
+        )
 
         val injectorArg = InjectorMapResolver.resolveArg(context, versionId, mcVersionId)
         val finalJvmArgs = if (injectorArg.isNullOrBlank()) {
@@ -410,10 +514,33 @@ class LaunchCommandBuilder(
         )
     }
 
+    /**
+     * Empty jar whose Manifest Class-Path lists every real library.
+     * Shrinks -Djava.class.path for OEM CreateJavaVM stalls (vivo).
+     */
+    private fun writeClasspathJar(jars: List<File>, outFile: File) {
+        val manifest = Manifest()
+        val attrs = manifest.mainAttributes
+        attrs[Attributes.Name.MANIFEST_VERSION] = "1.0"
+        // Absolute file: URLs — relative Class-Path would resolve against cacheDir.
+        attrs[Attributes.Name.CLASS_PATH] = jars.joinToString(" ") { jar ->
+            jar.toURI().toURL().toExternalForm()
+        }
+        outFile.parentFile?.mkdirs()
+        JarOutputStream(FileOutputStream(outFile), manifest).use { jos ->
+            // Manifest-only jar; Class-Path entries are loaded by the system loader.
+            jos.flush()
+        }
+        require(outFile.isFile && outFile.length() > 0L) {
+            "classpath.jar 写入失败: ${outFile.absolutePath}"
+        }
+    }
+
     /** Vanilla JVM args (no Forge module-path). */
     private fun resolveRendererOrFallback(
         requested: GlRendererKind,
-        mcVersionId: String
+        mcVersionId: String,
+        profileFallback: List<GlRendererKind> = emptyList()
     ): GlRendererKind {
         if (!requested.requiresPlugin) return requested
         if (com.booxin.launcher.core.runtime.RendererInstaller.isInstalled(requested)) {
@@ -424,13 +551,15 @@ class LaunchCommandBuilder(
         }
         if (installed.isSuccess) return requested
         val err = installed.exceptionOrNull()?.message ?: "unknown"
-        val fallback = GlRendererProfile.forVersion(mcVersionId).let { auto ->
-            if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P && auto == GlRendererKind.GL4ES) {
-                GlRendererKind.MOBILE_GLUES
-            } else {
-                auto
-            }
-        }
+        val chain = (profileFallback + listOf(
+            GlRendererKind.BOOXIN_GLUES,
+            GlRendererKind.MOBILE_GLUES,
+            GlRendererProfile.forVersion(mcVersionId)
+        )).distinct()
+        val fallback = chain.firstOrNull { candidate ->
+            !candidate.requiresPlugin ||
+                com.booxin.launcher.core.runtime.RendererInstaller.isInstalled(candidate)
+        } ?: GlRendererKind.BOOXIN_GLUES
         android.util.Log.w(
             "LaunchCmd",
             "渲染器 ${requested.displayName} 下载失败，回退 ${fallback.displayName}: $err"
@@ -840,6 +969,13 @@ class LaunchCommandBuilder(
             add("-Djava.library.path=$nativeDir")
             add("-Dorg.lwjgl.librarypath=$nativeDir")
             add("-Dorg.lwjgl.opengl.libname=$glLibName")
+            // Android LWJGL GLFW$Functions resolves pojav* from the GLFW SharedLibrary.
+            // Point it at our bridge so Forge/module-layer loads don't fall back to X11.
+            val glfwBridge = File(nativeDir, "libpojavexec.so").takeIf { it.isFile }
+                ?: File(nativeDir, "libbooxin_bridge.so")
+            if (glfwBridge.isFile) {
+                add("-Dorg.lwjgl.glfw.libname=${glfwBridge.absolutePath}")
+            }
             add("-Dorg.lwjgl.freetype.libname=$nativeDir/libfreetype.so")
             add("-Dorg.lwjgl.openal.libname=$nativeDir/libopenal.so")
             add("-Dorg.lwjgl.vulkan.libname=libvulkan.so")

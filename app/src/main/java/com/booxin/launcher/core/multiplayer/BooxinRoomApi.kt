@@ -189,7 +189,8 @@ class BooxinRoomApi {
     )
 
     private fun execute(request: Request): String {
-        HttpClients.shared.newCall(request).execute().use { response ->
+        // Cleartext room host; dedicated client avoids any SSL-redirect to https://IP.
+        HttpClients.cleartextRoom.newCall(request).execute().use { response ->
             val text = response.body?.string().orEmpty()
             if (!response.isSuccessful) {
                 val message = runCatching {

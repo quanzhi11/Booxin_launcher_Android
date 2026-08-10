@@ -4,7 +4,47 @@
     android:id="@+id/root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@color/md_theme_light_background">
+    android:background="@android:color/transparent">
+
+    <FrameLayout
+        android:id="@+id/glassBackground"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent">
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@drawable/bg_glass_env" />
+
+        <!-- Static fallback underneath; TextureView is drawn above when video is ready -->
+        <ImageView
+            android:id="@+id/imageGlassBackground"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:alpha="0.85"
+            android:contentDescription="@null"
+            android:scaleType="centerCrop" />
+
+        <TextureView
+            android:id="@+id/videoGlassBackground"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+
+        <View
+            android:id="@+id/viewGlassOrbs"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@drawable/bg_glass_orbs" />
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@drawable/bg_glass_overlay" />
+    </FrameLayout>
 
     <LinearLayout
         android:id="@+id/top_chrome"
@@ -18,12 +58,15 @@
         app:layout_constraintTop_toTopOf="parent">
 
         <ImageView
+            android:id="@+id/imageChromeBrand"
             android:layout_width="18dp"
             android:layout_height="18dp"
             android:contentDescription="@string/brand_name"
+            android:scaleType="centerCrop"
             android:src="@mipmap/ic_launcher_round" />
 
         <TextView
+            android:id="@+id/textChromeBrand"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginStart="6dp"
@@ -80,6 +123,20 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:text="@string/nav_multiplayer" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/nav_ai"
+                    style="@style/Widget.Booxin.TopNavButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/nav_ai" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/nav_plugin_store"
+                    style="@style/Widget.Booxin.TopNavButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/nav_plugin_store" />
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/nav_settings"

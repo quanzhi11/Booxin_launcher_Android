@@ -1,11 +1,49 @@
 <?xml version="1.0" encoding="utf-8"?>
-<shape xmlns:android="http://schemas.android.com/apk/res/android"
-    android:shape="rectangle">
-    <gradient
-        android:angle="135"
-        android:endColor="@color/booxin_orange"
-        android:centerColor="@color/booxin_blue"
-        android:startColor="@color/booxin_cyan"
-        android:type="linear" />
-    <corners android:radius="28dp" />
-</shape>
+<!-- Home welcome panel — liquid glass (same language as ModernCard) -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:angle="135"
+                android:centerColor="#2E10141E"
+                android:endColor="#180C1018"
+                android:startColor="#40161C28"
+                android:type="linear" />
+            <corners android:radius="20dp" />
+            <stroke
+                android:width="1dp"
+                android:color="#99FFFFFF" />
+        </shape>
+    </item>
+    <item
+        android:bottom="64dp"
+        android:left="1dp"
+        android:right="1dp"
+        android:top="1dp">
+        <shape android:shape="rectangle">
+            <gradient
+                android:angle="270"
+                android:centerColor="#18FFFFFF"
+                android:endColor="#00FFFFFF"
+                android:startColor="#66FFFFFF"
+                android:type="linear" />
+            <corners
+                android:bottomLeftRadius="0dp"
+                android:bottomRightRadius="0dp"
+                android:topLeftRadius="19dp"
+                android:topRightRadius="19dp" />
+        </shape>
+    </item>
+    <!-- Soft brand tint so it still reads as the hero panel -->
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:angle="135"
+                android:centerColor="#182F6BFF"
+                android:endColor="#14FF8A2B"
+                android:startColor="#222EC8F0"
+                android:type="linear" />
+            <corners android:radius="20dp" />
+        </shape>
+    </item>
+</layer-list>

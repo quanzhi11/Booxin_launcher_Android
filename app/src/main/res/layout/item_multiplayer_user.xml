@@ -3,40 +3,40 @@
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:layout_marginBottom="10dp"
+    android:layout_marginBottom="6dp"
     android:background="@drawable/bg_surface_card"
-    android:elevation="1dp"
     android:gravity="center_vertical"
     android:orientation="horizontal"
-    android:padding="12dp">
+    android:paddingHorizontal="10dp"
+    android:paddingVertical="8dp">
 
     <FrameLayout
-        android:layout_width="44dp"
-        android:layout_height="44dp">
+        android:layout_width="36dp"
+        android:layout_height="36dp">
 
         <ImageView
             android:id="@+id/imageAvatar"
-            android:layout_width="44dp"
-            android:layout_height="44dp"
+            android:layout_width="36dp"
+            android:layout_height="36dp"
             android:contentDescription="@string/multiplayer_avatar"
             android:scaleType="centerCrop"
             android:src="@drawable/ic_avatar_placeholder" />
 
         <ImageView
             android:id="@+id/imageFrame"
-            android:layout_width="44dp"
-            android:layout_height="44dp"
+            android:layout_width="36dp"
+            android:layout_height="36dp"
             android:contentDescription="@string/multiplayer_avatar_frame"
             android:scaleType="fitXY"
             android:visibility="gone"
-            tools:visibility="visible"
-            tools:src="@drawable/bg_avatar_frame_gold" />
+            tools:src="@drawable/bg_avatar_frame_gold"
+            tools:visibility="visible" />
     </FrameLayout>
 
     <LinearLayout
         android:layout_width="0dp"
         android:layout_height="wrap_content"
-        android:layout_marginStart="12dp"
+        android:layout_marginStart="8dp"
         android:layout_weight="1"
         android:orientation="vertical">
 
@@ -44,8 +44,10 @@
             android:id="@+id/textName"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:ellipsize="end"
+            android:maxLines="1"
             android:textColor="@color/booxin_navy"
-            android:textSize="16sp"
+            android:textSize="14sp"
             android:textStyle="bold"
             tools:text="friend001" />
 
@@ -53,38 +55,48 @@
             android:id="@+id/textMeta"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="2dp"
+            android:ellipsize="end"
+            android:maxLines="1"
             android:textColor="@color/md_theme_light_outline"
-            android:textSize="13sp"
+            android:textSize="11sp"
             tools:text="在线" />
+    </LinearLayout>
 
-        <LinearLayout
-            android:id="@+id/rowActions"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:gravity="end"
-            android:orientation="horizontal"
+    <LinearLayout
+        android:id="@+id/rowActions"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:visibility="gone"
+        tools:visibility="visible">
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/buttonSecondary"
+            style="@style/Widget.Material3.Button.TextButton"
+            android:layout_width="wrap_content"
+            android:layout_height="32dp"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            android:minWidth="0dp"
+            android:paddingHorizontal="8dp"
+            android:textSize="11sp"
             android:visibility="gone"
-            tools:visibility="visible">
+            tools:text="拒绝"
+            tools:visibility="visible" />
 
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/buttonSecondary"
-                style="@style/Widget.Material3.Button.TextButton"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:visibility="gone"
-                tools:text="拒绝"
-                tools:visibility="visible" />
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/buttonPrimary"
-                style="@style/Widget.Booxin.SecondaryButton"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:visibility="gone"
-                tools:text="接受"
-                tools:visibility="visible" />
-        </LinearLayout>
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/buttonPrimary"
+            style="@style/Widget.Booxin.SecondaryButton"
+            android:layout_width="wrap_content"
+            android:layout_height="32dp"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            android:minWidth="0dp"
+            android:paddingHorizontal="10dp"
+            android:textSize="11sp"
+            android:visibility="gone"
+            tools:text="接受"
+            tools:visibility="visible" />
     </LinearLayout>
 </LinearLayout>

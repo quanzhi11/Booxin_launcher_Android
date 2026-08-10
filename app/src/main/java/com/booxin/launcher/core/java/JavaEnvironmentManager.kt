@@ -54,22 +54,32 @@ class JavaEnvironmentManager(
     }
 
     suspend fun ensureMajor(majorVersion: Int): Result<InstalledJavaRuntime> {
-        findInstalled(majorVersion)?.let { runtime ->
-            return runCatching {
-                withContext(Dispatchers.IO) {
-                    finalizeRuntimeHome(runtime.homeDir)
-                }
-                findInstalled(majorVersion)
-                    ?: error("运行时修复后未找到可用 java")
+        return withContext(Dispatchers.IO) {
+            val componentId = "java-$majorVersion"
+            val legacy = File(LauncherPaths.legacyJavaDir, componentId)
+            if (!LauncherPaths.javaRuntimeDir(componentId).exists() && legacy.isDirectory) {
+                emit(
+                    componentId,
+                    JavaInstallState.EXTRACTING,
+                    message = "正在将 Java $majorVersion 迁到应用私有目录（外置路径无法加载 .so）…"
+                )
             }
-        }
-        val pkg = JavaRuntimeCatalog.find(majorVersion)
-            ?: return Result.failure(
-                IllegalStateException("当前 ABI(${deviceAbi().packageToken}) 没有 Java $majorVersion 的下载源")
-            )
-        return install(pkg).mapCatching {
-            findInstalled(majorVersion)
-                ?: error("安装完成但未找到可用 java 可执行文件")
+            migrateLegacyJavaIfNeeded(componentId)
+            findInstalled(majorVersion)?.let { runtime ->
+                return@withContext runCatching {
+                    finalizeRuntimeHome(runtime.homeDir)
+                    findInstalled(majorVersion)
+                        ?: error("运行时修复后未找到可用 java")
+                }
+            }
+            val pkg = JavaRuntimeCatalog.find(majorVersion)
+                ?: return@withContext Result.failure(
+                    IllegalStateException("当前 ABI(${deviceAbi().packageToken}) 没有 Java $majorVersion 的下载源")
+                )
+            install(pkg).mapCatching {
+                findInstalled(majorVersion)
+                    ?: error("安装完成但未找到可用 java 可执行文件")
+            }
         }
     }
 
@@ -204,6 +214,33 @@ class JavaEnvironmentManager(
             homeDir = home,
             javaBinary = binary
         )
+    }
+
+    /**
+     * Copy Java from game-root `java/` (often on /sdcard) into app-private `booxin-java/`.
+     * Shared-storage .so cannot be dlopen'd by libbooxin_jvm.so (classloader-namespace).
+     */
+    private fun migrateLegacyJavaIfNeeded(componentId: String) {
+        val dest = LauncherPaths.javaRuntimeDir(componentId)
+        if (dest.exists()) return
+        val src = File(LauncherPaths.legacyJavaDir, componentId)
+        if (!src.isDirectory) return
+        if (src.canonicalPath == dest.canonicalPath) return
+        runCatching {
+            android.util.Log.i(
+                "JavaEnv",
+                "migrating $componentId from ${src.absolutePath} → ${dest.absolutePath}"
+            )
+            dest.parentFile?.mkdirs()
+            src.copyRecursively(dest, overwrite = false)
+            finalizeRuntimeHome(dest)
+            // Marker so we don't keep re-copying; leave legacy in place for space reclaim.
+            File(dest, ".migrated-from-legacy").writeText(src.absolutePath)
+            android.util.Log.i("JavaEnv", "migrated $componentId ok")
+        }.onFailure { err ->
+            android.util.Log.w("JavaEnv", "migrate $componentId failed: ${err.message}")
+            runCatching { dest.deleteRecursively() }
+        }
     }
 
     private fun findJavaBinary(home: File): File? {

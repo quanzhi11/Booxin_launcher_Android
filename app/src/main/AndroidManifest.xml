@@ -4,6 +4,7 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
@@ -19,6 +20,37 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
+    <!-- Allow ultrawide / fold landscape without system letterboxing (black side bars). -->
+    <supports-screens
+        android:anyDensity="true"
+        android:largeScreens="true"
+        android:normalScreens="true"
+        android:resizeable="true"
+        android:smallScreens="true"
+        android:xlargeScreens="true" />
+
+    <!-- API 30+: discover FCL-style renderer/driver plugin packages + file pickers. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.GET_CONTENT" />
+            <data android:mimeType="*/*" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.OPEN_DOCUMENT" />
+            <data android:mimeType="*/*" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.OPEN_DOCUMENT" />
+            <category android:name="android.intent.category.OPENABLE" />
+            <data android:mimeType="*/*" />
+        </intent>
+        <package android:name="com.tungsten.fcl" />
+        <package android:name="com.tungsten.fclauncher" />
+    </queries>
+
     <application
         android:name=".BooxinApp"
         android:allowBackup="true"
@@ -29,21 +61,31 @@
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:networkSecurityConfig="@xml/network_security_config"
+        android:resizeableActivity="true"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.BooxinLauncher"
         android:usesCleartextTraffic="false">
 
+        <!-- Default Android max aspect ~1.86 leaves black bars on 20:9 / 21:9 landscape. -->
+        <meta-data
+            android:name="android.max_aspect"
+            android:value="3.0" />
+
         <activity
             android:name=".ui.MainActivity"
             android:exported="true"
+            android:resizeableActivity="true"
             android:screenOrientation="sensorLandscape"
-            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <meta-data
+                android:name="android.max_aspect"
+                android:value="3.0" />
         </activity>
 
         <activity
@@ -53,19 +95,35 @@
             android:launchMode="singleTask"
             android:parentActivityName=".ui.MainActivity"
             android:process=":game"
+            android:resizeableActivity="true"
             android:screenOrientation="sensorLandscape"
             android:showWhenLocked="true"
             android:turnScreenOn="true"
-            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize"
-            android:windowSoftInputMode="adjustResize" />
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
+            android:windowSoftInputMode="adjustResize">
+            <meta-data
+                android:name="android.max_aspect"
+                android:value="3.0" />
+        </activity>
 
         <activity
             android:name=".ui.multiplayer.ChatActivity"
             android:exported="false"
             android:label="@string/multiplayer_chat"
             android:parentActivityName=".ui.MainActivity"
+            android:resizeableActivity="true"
             android:screenOrientation="sensorLandscape"
-            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
+            android:name=".ui.ai.AiChatActivity"
+            android:exported="false"
+            android:label="@string/ai_enter_chat_title"
+            android:parentActivityName=".ui.MainActivity"
+            android:resizeableActivity="true"
+            android:screenOrientation="sensorPortrait"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
             android:windowSoftInputMode="adjustResize" />
 
         <provider

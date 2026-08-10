@@ -19,8 +19,10 @@ object VersionResourcePacksManager {
     fun resourcePacksDir(versionId: String): File =
         File(LauncherPaths.versionsDir, "$versionId/resourcepacks").also { it.mkdirs() }
 
-    fun list(versionId: String): List<VersionResourcePackFile> {
-        val dir = resourcePacksDir(versionId)
+    fun list(versionId: String): List<VersionResourcePackFile> =
+        listIn(resourcePacksDir(versionId))
+
+    fun listIn(dir: File): List<VersionResourcePackFile> {
         if (!dir.isDirectory) return emptyList()
         return dir.listFiles()
             ?.mapNotNull { file -> toEntry(file) }

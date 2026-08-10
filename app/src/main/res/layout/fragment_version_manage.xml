@@ -72,6 +72,11 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="@string/version_manage_tab_resourcepacks" />
+
+        <com.google.android.material.tabs.TabItem
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/version_manage_tab_shaders" />
     </com.google.android.material.tabs.TabLayout>
 
     <LinearLayout
@@ -176,9 +181,25 @@
             android:id="@+id/textResourcePacksPath"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:layout_marginBottom="10dp"
             android:textColor="@color/booxin_navy"
             android:textSize="12sp"
             tools:text="/data/data/.../versions/1.21.1/resourcepacks" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/version_manage_shaders_path"
+            android:textColor="@color/md_theme_light_outline"
+            android:textSize="12sp" />
+
+        <TextView
+            android:id="@+id/textShadersPath"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="@color/booxin_navy"
+            android:textSize="12sp"
+            tools:text="/data/data/.../versions/1.21.1/shaderpacks" />
     </LinearLayout>
 
     <androidx.constraintlayout.widget.ConstraintLayout
@@ -284,6 +305,53 @@
             app:layout_constraintEnd_toEndOf="@id/recyclerResourcePacks"
             app:layout_constraintStart_toStartOf="@id/recyclerResourcePacks"
             app:layout_constraintTop_toTopOf="@id/recyclerResourcePacks"
+            tools:visibility="visible" />
+    </androidx.constraintlayout.widget.ConstraintLayout>
+
+    <androidx.constraintlayout.widget.ConstraintLayout
+        android:id="@+id/panelShaders"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:layout_marginTop="8dp"
+        android:visibility="gone"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/tabManage">
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/buttonDownloadShaderUrl"
+            style="@style/Widget.Booxin.SecondaryButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:text="@string/version_manage_download_url"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toTopOf="parent" />
+
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/recyclerShaders"
+            android:layout_width="0dp"
+            android:layout_height="0dp"
+            android:layout_marginTop="8dp"
+            android:clipToPadding="false"
+            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@id/buttonDownloadShaderUrl"
+            tools:listitem="@layout/item_version_mod" />
+
+        <TextView
+            android:id="@+id/textShadersEmpty"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/version_manage_shaders_empty"
+            android:textColor="@color/md_theme_light_outline"
+            android:visibility="gone"
+            app:layout_constraintBottom_toBottomOf="@id/recyclerShaders"
+            app:layout_constraintEnd_toEndOf="@id/recyclerShaders"
+            app:layout_constraintStart_toStartOf="@id/recyclerShaders"
+            app:layout_constraintTop_toTopOf="@id/recyclerShaders"
             tools:visibility="visible" />
     </androidx.constraintlayout.widget.ConstraintLayout>
 

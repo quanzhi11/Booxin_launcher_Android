@@ -1,0 +1,10 @@
+{
+  "id": "my-greeting",
+  "name": "按时段问候",
+  "version": "1.0.0",
+  "type": "ui",
+  "description": "启用后主页显示早上好/中午好/晚上好",
+  "features": {
+    "homeGreetingByTime": true
+  }
+}

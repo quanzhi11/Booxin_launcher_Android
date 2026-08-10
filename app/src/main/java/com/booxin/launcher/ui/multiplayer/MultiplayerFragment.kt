@@ -1,7 +1,10 @@
 package com.booxin.launcher.ui.multiplayer
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
@@ -9,6 +12,7 @@ import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.core.view.isVisible
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.Lifecycle
@@ -55,9 +59,22 @@ class MultiplayerFragment : Fragment() {
     private var cachedOfficialServer: OfficialServerInfo? = null
     private var officialJoinInProgress = false
     private val officialJoinService = OfficialServerJoinService()
+    private var askedDmNotificationPermission = false
 
     private val pickAvatar = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) uploadAvatar(uri)
+    }
+
+    private val requestDmNotifications = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (!granted && isAdded) {
+            Toast.makeText(
+                requireContext(),
+                R.string.multiplayer_dm_permission_hint,
+                Toast.LENGTH_LONG
+            ).show()
+        }
     }
 
     private val friendsAdapter = MultiplayerUserAdapter(
@@ -91,7 +108,6 @@ class MultiplayerFragment : Fragment() {
         onPrimary = { item ->
             val invite = item.payload as? RoomInvite ?: return@MultiplayerUserAdapter
             binding.inputRoomCode.setText(invite.roomCode)
-            binding.tabMultiplayer.getTabAt(0)?.select()
             joinRoom()
         },
         onSecondary = { item ->
@@ -223,6 +239,7 @@ class MultiplayerFragment : Fragment() {
                         if (authKey != lastAuthKey) {
                             lastAuthKey = authKey
                             if (session != null) {
+                                ensureDmNotificationPermission()
                                 refreshFriends()
                                 refreshLobby()
                                 refreshRooms()
@@ -299,8 +316,8 @@ class MultiplayerFragment : Fragment() {
     }
 
     private fun setupTabs() {
+        // Landscape: rooms stay on the left; right rail switches social pages.
         val tabs = listOf(
-            R.string.multiplayer_tab_rooms,
             R.string.multiplayer_tab_friends,
             R.string.multiplayer_tab_lobby,
             R.string.multiplayer_tab_messages,
@@ -308,11 +325,16 @@ class MultiplayerFragment : Fragment() {
         )
         tabs.forEach { binding.tabMultiplayer.addTab(binding.tabMultiplayer.newTab().setText(it)) }
         binding.tabMultiplayer.addOnTabSelectedListener(object : TabLayout.OnTabSelectedListener {
-            override fun onTabSelected(tab: TabLayout.Tab) = showPage(tab.position)
+            override fun onTabSelected(tab: TabLayout.Tab) = showSocialPage(tab.position)
             override fun onTabUnselected(tab: TabLayout.Tab) = Unit
             override fun onTabReselected(tab: TabLayout.Tab) = Unit
         })
-        showPage(0)
+        if (AppContainer.multiplayerAuth.current() == null) {
+            binding.tabMultiplayer.getTabAt(3)?.select()
+            showSocialPage(3)
+        } else {
+            showSocialPage(0)
+        }
     }
 
     private fun setupFriendsSubTabs() {
@@ -331,12 +353,15 @@ class MultiplayerFragment : Fragment() {
         showFriendsSubPage(0)
     }
 
-    private fun showPage(index: Int) {
-        binding.pageRooms.isVisible = index == 0
-        binding.pageFriends.isVisible = index == 1
-        binding.pageLobby.isVisible = index == 2
-        binding.pageMessages.isVisible = index == 3
-        binding.pageAccount.isVisible = index == 4
+    private fun showSocialPage(index: Int) {
+        binding.pageFriends.isVisible = index == 0
+        binding.pageLobby.isVisible = index == 1
+        binding.pageMessages.isVisible = index == 2
+        binding.pageAccount.isVisible = index == 3
+    }
+
+    private fun selectAccountTab() {
+        binding.tabMultiplayer.getTabAt(3)?.select()
     }
 
     private fun showFriendsSubPage(index: Int) {
@@ -564,10 +589,13 @@ class MultiplayerFragment : Fragment() {
             }
 
             val installed = AppContainer.repository.installedVersions.value.any { ver ->
-                ver.id.contains(server.version, ignoreCase = true) &&
-                    (server.forgeVersion.isBlank() ||
-                        ver.id.contains(server.forgeVersion, ignoreCase = true) ||
-                        ver.id.contains("forge", ignoreCase = true))
+                if (server.forgeVersion.isBlank()) {
+                    ver.id.equals(server.version, ignoreCase = true)
+                } else {
+                    ver.id.contains(server.version, ignoreCase = true) &&
+                        (ver.id.contains(server.forgeVersion, ignoreCase = true) ||
+                            ver.id.contains("forge", ignoreCase = true))
+                }
             }
             if (!installed) {
                 val confirm = suspendCancellableCoroutine { cont ->
@@ -576,8 +604,7 @@ class MultiplayerFragment : Fragment() {
                         .setMessage(
                             getString(
                                 R.string.multiplayer_official_install_confirm,
-                                server.version,
-                                server.forgeVersion.ifBlank { "-" }
+                                server.version
                             )
                         )
                         .setPositiveButton(android.R.string.ok) { _, _ ->
@@ -691,7 +718,7 @@ class MultiplayerFragment : Fragment() {
         }
         if (AppContainer.multiplayerAuth.current() == null) {
             toast(R.string.multiplayer_need_login_first)
-            binding.tabMultiplayer.getTabAt(4)?.select()
+            selectAccountTab()
             return
         }
         viewLifecycleOwner.lifecycleScope.launch {
@@ -999,7 +1026,6 @@ class MultiplayerFragment : Fragment() {
         }
         val b = _binding ?: return
         b.inputRoomCode.setText(code)
-        b.tabMultiplayer.getTabAt(0)?.select()
         joinRoom()
     }
 
@@ -1061,6 +1087,18 @@ class MultiplayerFragment : Fragment() {
                 .putExtra(ChatActivity.EXTRA_PEER_ID, peerId)
                 .putExtra(ChatActivity.EXTRA_PEER_NAME, peerName)
         )
+    }
+
+    private fun ensureDmNotificationPermission() {
+        if (askedDmNotificationPermission) return
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        val granted = ContextCompat.checkSelfPermission(
+            requireContext(),
+            Manifest.permission.POST_NOTIFICATIONS
+        ) == PackageManager.PERMISSION_GRANTED
+        if (granted) return
+        askedDmNotificationPermission = true
+        requestDmNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
 
     private fun addFriend(userId: String, username: String, onSuccess: (() -> Unit)? = null) {
@@ -1135,6 +1173,14 @@ class MultiplayerFragment : Fragment() {
     }
 
     private fun setupAccountActions() {
+        binding.buttonAccountSettings.setOnClickListener {
+            val open = !binding.panelAccountAdvanced.isVisible
+            binding.panelAccountAdvanced.isVisible = open
+            binding.buttonAccountSettings.text = getString(
+                if (open) R.string.multiplayer_account_settings_hide
+                else R.string.multiplayer_account_settings
+            )
+        }
         binding.buttonPickAvatar.setOnClickListener { pickAvatar.launch("image/*") }
         binding.buttonDeleteAvatar.setOnClickListener {
             viewLifecycleOwner.lifecycleScope.launch {
@@ -1255,6 +1301,10 @@ class MultiplayerFragment : Fragment() {
         val loggedIn = session != null
         binding.panelLogin.isVisible = !loggedIn
         binding.panelSession.isVisible = loggedIn
+        if (!loggedIn) {
+            binding.panelAccountAdvanced.isVisible = false
+            binding.buttonAccountSettings.text = getString(R.string.multiplayer_account_settings)
+        }
         if (session != null) {
             val user = session.user
             binding.textSessionUser.text = user.username

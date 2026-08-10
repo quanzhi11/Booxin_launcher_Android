@@ -5,9 +5,20 @@ enum class CommunityContentType(
     val targetSubdir: String
 ) {
     MOD("mod", "mods"),
+    SHADER("shader", "shaderpacks"),
     RESOURCE_PACK("resourcepack", "resourcepacks"),
     MODPACK("modpack", "")
 }
+
+/** Real-time progress while installing a Modrinth `.mrpack`. */
+data class ModpackInstallProgress(
+    val stage: String,
+    val current: Int = 0,
+    val total: Int = 0,
+    val detail: String = "",
+    val bytesDownloaded: Long = -1L,
+    val bytesTotal: Long = -1L
+)
 
 enum class CommunityLoader(val apiValue: String?) {
     ANY(null),

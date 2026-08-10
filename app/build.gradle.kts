@@ -14,8 +14,8 @@ android {
         applicationId = "com.booxin.launcher"
         minSdk = 26
         targetSdk = 35
-        versionCode = 410
-        versionName = "4.1.0"
+        versionCode = 423
+        versionName = "4.2.3"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")

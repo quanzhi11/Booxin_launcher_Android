@@ -3,7 +3,9 @@
 | Backend | Library | Upstream (typical) | Assessment | Closed-source link |
 |---------|---------|--------------------|------------|--------------------|
 | `GL4ES` | `libgl4es_114.so` | ptitSeb/gl4es | MIT | 通常可保留 + NOTICE |
-| `MOBILE_GLUES` | `libmobileglues.so` | MobileGlues project | 以发布仓库 LICENSE 为准 | 披露后按上游条款 |
+| `BOOXIN_GLUES` | Path A 自研：Apache 编排 + **MIT** GL4ES / Mesa Zink / **ANGLE** EGL | `xrq/booxin-glues/cleanroom` + GL4ES/Mesa/ANGLE | **可闭源友好**（保留 MIT/BSD NOTICE）；**不**使用 MobileGlues 源码 | `xrq/booxin-glues/docs/PATH_A_CLEANROOM.md` |
+| `ANGLE` | `libEGL_angle.so` / `libGLESv2_angle.so` | Chromium ANGLE（插件 APK） | BSD 系；作 GLES/EGL 驱动，桌面 GL 仍走 GL4ES/clean-room | FCL `ANGLE.Renderer.apk` |
+| `MOBILE_GLUES` | `libmobileglues.so` | [MobileGlues](https://github.com/MobileGL-Dev/MobileGlues) **LGPL-2.1** | 仅手动选择；动态加载 + 对应源码 | `assets/licenses/MOBILEGLUES_LGPL-2.1.txt` |
 | `KRYPTON` | `libng_gl4es.so`（插件下载） | BZLZHH/NG-GL4ES | MIT（插件侧） | 按上游 NOTICE |
 | `LTW` | `libltw.so`（插件下载） | OpenLTW / 社区插件包 | 以插件 LICENSE 为准 | 条件分发 |
 | `VULKAN_ZINK` / `VIRGL` / `FREEDRENO` | Mesa OSMesa（插件下载） | Mesa3D | MIT | 可保留 + NOTICE |

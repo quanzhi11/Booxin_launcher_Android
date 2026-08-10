@@ -16,15 +16,30 @@ object RuntimeEnv {
     const val LEGACY_POJAVEXEC_EGL = "POJAVEXEC_EGL"
 
     fun rendererToken(kind: GlRendererKind): String {
+        com.booxin.launcher.core.plugin.PluginManager.findByKind(kind)
+            ?.takeIf { it.enabled }
+            ?.let { return it.rendererToken }
         RendererPackages.forKind(kind)?.let { return it.rendererToken }
         return when (kind) {
             GlRendererKind.GL4ES -> "opengles2"
-            GlRendererKind.MOBILE_GLUES -> "opengles3"
+            GlRendererKind.MOBILE_GLUES,
+            GlRendererKind.BOOXIN_GLUES -> "opengles3"
             else -> "opengles3"
         }
     }
 
     fun eglLib(kind: GlRendererKind): String {
+        com.booxin.launcher.core.plugin.PluginManager.findByKind(kind)
+            ?.takeIf { it.enabled }
+            ?.let { p ->
+                if (p.eglLib == "libEGL.so") return "libEGL.so"
+                val dir = p.nativeDir
+                if (dir != null) {
+                    val file = File(dir, p.eglLib)
+                    if (file.isFile) return file.absolutePath
+                }
+                return p.eglLib
+            }
         RendererPackages.forKind(kind)?.let { pkg ->
             if (pkg.eglLib == "libEGL.so") return "libEGL.so"
             val dir = RendererInstaller.pluginNativeDir(kind)
@@ -36,19 +51,35 @@ object RuntimeEnv {
         }
         return when (kind) {
             GlRendererKind.MOBILE_GLUES -> "libmobileglues.so"
+            GlRendererKind.ANGLE -> {
+                val dir = RendererInstaller.pluginNativeDir(kind)
+                val file = dir?.let { File(it, "libEGL_angle.so") }
+                if (file?.isFile == true) file.absolutePath else "libEGL_angle.so"
+            }
+            GlRendererKind.BOOXIN_GLUES -> "libEGL.so"
             else -> "libEGL.so"
         }
     }
 
-    fun libGlString(kind: GlRendererKind): String = kind.displayName
+    fun libGlString(kind: GlRendererKind): String =
+        com.booxin.launcher.core.plugin.PluginManager.findByKind(kind)
+            ?.takeIf { it.enabled }
+            ?.name
+            ?: kind.displayName
 
     fun libGlEs(kind: GlRendererKind): String {
+        com.booxin.launcher.core.plugin.PluginManager.findByKind(kind)
+            ?.takeIf { it.enabled }
+            ?.let { return it.libGlEs }
         RendererPackages.forKind(kind)?.let { return it.libGlEs }
         return if (kind == GlRendererKind.GL4ES) "2" else "3"
     }
 
     fun pluginExtraEnv(kind: GlRendererKind): Map<String, String> =
-        RendererPackages.forKind(kind)?.extraEnv.orEmpty()
+        com.booxin.launcher.core.plugin.PluginManager.findByKind(kind)
+            ?.takeIf { it.enabled }
+            ?.extraEnv
+            ?: RendererPackages.forKind(kind)?.extraEnv.orEmpty()
 
     fun withNativeAliases(
         base: MutableMap<String, String>,
@@ -71,7 +102,8 @@ object RuntimeEnv {
     fun glLibraryFile(stagedNatives: File, kind: GlRendererKind): File {
         RendererInstaller.glLibrary(kind)?.let { return it }
         return when (kind) {
-            GlRendererKind.GL4ES -> File(stagedNatives, "libgl4es_114.so")
+            GlRendererKind.GL4ES,
+            GlRendererKind.BOOXIN_GLUES -> File(stagedNatives, "libgl4es_114.so")
             GlRendererKind.MOBILE_GLUES -> File(stagedNatives, "libmobileglues.so")
             GlRendererKind.KRYPTON, GlRendererKind.LTW -> File(stagedNatives, "libgl4es_114.so")
             else -> File(stagedNatives, "libgl4es_114.so")

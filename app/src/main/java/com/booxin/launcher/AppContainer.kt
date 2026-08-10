@@ -2,6 +2,10 @@ package com.booxin.launcher
 
 import com.booxin.launcher.core.BooxinGameRuntime
 import com.booxin.launcher.core.GameRuntime
+import com.booxin.launcher.core.ai.AiBackendClient
+import com.booxin.launcher.core.ai.AiChatService
+import com.booxin.launcher.core.ai.AiModelSettings
+import com.booxin.launcher.core.ai.AiWebSearchService
 import com.booxin.launcher.data.repository.CommunityRepository
 import com.booxin.launcher.core.download.game.VanillaGameInstaller
 import com.booxin.launcher.core.java.JavaEnvironmentManager
@@ -37,5 +41,17 @@ object AppContainer {
             store = MultiplayerSessionStore(BooxinApp.getAppContext()),
             api = BooxinMultiplayerApi()
         )
+    }
+
+    val aiModelSettings: AiModelSettings by lazy { AiModelSettings() }
+    val aiBackend: AiBackendClient by lazy { AiBackendClient(aiModelSettings) }
+    val aiWebSearch: AiWebSearchService by lazy { AiWebSearchService() }
+    val aiChat: AiChatService by lazy {
+        AiChatService(
+            appContext = BooxinApp.getAppContext(),
+            modelSettings = aiModelSettings,
+            backend = aiBackend,
+            webSearch = aiWebSearch
+        ).also { it.loadHistory() }
     }
 }

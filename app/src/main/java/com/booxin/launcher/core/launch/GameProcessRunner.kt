@@ -70,13 +70,13 @@ class GameProcessRunner(
             val jvmCreated = AtomicBoolean(false)
             val gameProgress = AtomicBoolean(false)
             val tailer = LogcatTailer { line ->
+                // Do NOT treat "JNI_CreateJavaVM starting" as created — vivo can stall there.
                 if (!jvmCreated.get() && (
                         line.contains("JVM created", ignoreCase = true) ||
-                            line.contains("[jvm]", ignoreCase = true) ||
                             line.contains("Invoking main", ignoreCase = true) ||
                             line.contains("main class loaded", ignoreCase = true) ||
-                            line.contains("JNI_CreateJavaVM", ignoreCase = true) ||
-                            line.contains("libjvm.so loaded", ignoreCase = true)
+                            (line.contains("[jvm]", ignoreCase = true) &&
+                                !line.contains("JNI_CreateJavaVM starting", ignoreCase = true))
                         )
                 ) {
                     jvmCreated.set(true)

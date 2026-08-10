@@ -23,6 +23,7 @@ import androidx.fragment.app.Fragment
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import androidx.navigation.fragment.findNavController
 import com.booxin.launcher.AppContainer
 import com.booxin.launcher.BuildConfig
 import com.booxin.launcher.R
@@ -30,16 +31,22 @@ import com.booxin.launcher.core.GameDirItem
 import com.booxin.launcher.core.GameDirLocation
 import com.booxin.launcher.core.GameDirRegistry
 import com.booxin.launcher.core.LauncherPaths
+import com.booxin.launcher.core.LauncherBackgroundAlign
+import com.booxin.launcher.core.LauncherBackgroundAlignMode
+import com.booxin.launcher.core.LauncherBackgroundTheme
 import com.booxin.launcher.core.LauncherPrefs
+import com.booxin.launcher.databinding.DialogBackgroundAlignBinding
 import com.booxin.launcher.core.SafTreePath
 import com.booxin.launcher.core.diag.DiagnosticLogExporter
 import com.booxin.launcher.core.download.DownloadProviders
 import com.booxin.launcher.core.download.DownloadSource
 import com.booxin.launcher.core.java.JavaInstallState
+import com.booxin.launcher.core.launch.GlRendererKind
 import com.booxin.launcher.core.launch.RealtimeLaunchLog
 import com.booxin.launcher.core.runtime.RendererInstaller
 import com.booxin.launcher.core.runtime.RendererPackages
 import com.booxin.launcher.databinding.FragmentSettingsBinding
+import com.booxin.launcher.ui.GlassBackground
 import com.booxin.launcher.ui.update.LauncherUpdateUi
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
@@ -123,20 +130,30 @@ class SettingsFragment : Fragment() {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
         refreshGameDir()
+        refreshBackgroundTheme()
+        refreshBackgroundAlign()
         binding.textAbout.text = getString(R.string.settings_version, BuildConfig.VERSION_NAME)
         refreshDownloadSource()
         refreshJavaStatus()
         setupRendererModeToggle()
+        setupGlCompatToggle()
         refreshRenderer()
+        refreshGlCompat()
         setupMemorySlider()
+        setupGameOptions()
+        setupAiSettings()
         refreshRealtimeLog()
 
+        binding.buttonBackgroundTheme.setOnClickListener { showBackgroundThemePicker() }
+        binding.buttonBackgroundAlign.setOnClickListener { showBackgroundAlignDialog() }
         binding.buttonGameDir.setOnClickListener {
             ensureStoragePermissionThen { showGameDirListDialog() }
         }
         binding.buttonRenderer.setOnClickListener { showRendererPicker() }
         binding.buttonDownloadRenderer.setOnClickListener { downloadSelectedRenderer() }
-
+        binding.buttonManagePlugins.setOnClickListener {
+            findNavController().navigate(R.id.action_settings_to_plugins)
+        }
 
         binding.buttonRealtimeLogStart.setOnClickListener {
             RealtimeLaunchLog.enable()
@@ -258,6 +275,159 @@ class SettingsFragment : Fragment() {
                 }
             }
         }
+    }
+
+    private fun refreshBackgroundTheme() {
+        val theme = LauncherPrefs.backgroundTheme()
+        binding.textBackgroundTheme.text = getString(
+            R.string.settings_background_current,
+            getString(theme.titleRes)
+        )
+    }
+
+    private fun refreshBackgroundAlign() {
+        val mode = LauncherPrefs.backgroundAlign().mode
+        binding.textBackgroundAlign.text = getString(
+            R.string.settings_background_align_current,
+            backgroundAlignModeLabel(mode)
+        )
+    }
+
+    private fun backgroundAlignModeLabel(mode: LauncherBackgroundAlignMode): String {
+        return getString(
+            when (mode) {
+                LauncherBackgroundAlignMode.AUTO -> R.string.settings_background_align_auto
+                LauncherBackgroundAlignMode.STRETCH -> R.string.settings_background_align_stretch
+                LauncherBackgroundAlignMode.CROP -> R.string.settings_background_align_crop
+                LauncherBackgroundAlignMode.MANUAL -> R.string.settings_background_align_manual
+            }
+        )
+    }
+
+    private fun showBackgroundThemePicker() {
+        val themes = LauncherBackgroundTheme.entries
+        val labels = themes.map { theme ->
+            "${getString(theme.titleRes)} · ${getString(theme.descRes)}"
+        }.toTypedArray()
+        val current = themes.indexOf(LauncherPrefs.backgroundTheme()).coerceAtLeast(0)
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle(R.string.settings_background)
+            .setSingleChoiceItems(labels, current) { dialog, which ->
+                val picked = themes[which]
+                LauncherPrefs.setBackgroundTheme(picked)
+                refreshBackgroundTheme()
+                GlassBackground.notifyThemeChanged()
+                dialog.dismiss()
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun showBackgroundAlignDialog() {
+        val dialogBinding = DialogBackgroundAlignBinding.inflate(layoutInflater)
+        var draft = LauncherPrefs.backgroundAlign()
+
+        fun syncUiFromDraft() {
+            when (draft.mode) {
+                LauncherBackgroundAlignMode.AUTO -> dialogBinding.radioAlignAuto.isChecked = true
+                LauncherBackgroundAlignMode.STRETCH -> dialogBinding.radioAlignStretch.isChecked = true
+                LauncherBackgroundAlignMode.CROP -> dialogBinding.radioAlignCrop.isChecked = true
+                LauncherBackgroundAlignMode.MANUAL -> dialogBinding.radioAlignManual.isChecked = true
+            }
+            dialogBinding.layoutAlignManual.isVisible =
+                draft.mode == LauncherBackgroundAlignMode.MANUAL
+            dialogBinding.sliderScaleX.value = (draft.scaleX * 100f).coerceIn(50f, 300f)
+            dialogBinding.sliderScaleY.value = (draft.scaleY * 100f).coerceIn(50f, 300f)
+            dialogBinding.sliderOffsetX.value = (draft.offsetX * 100f).coerceIn(-50f, 50f)
+            dialogBinding.sliderOffsetY.value = (draft.offsetY * 100f).coerceIn(-50f, 50f)
+            dialogBinding.textScaleX.text = getString(
+                R.string.settings_background_align_scale_x,
+                dialogBinding.sliderScaleX.value.toInt()
+            )
+            dialogBinding.textScaleY.text = getString(
+                R.string.settings_background_align_scale_y,
+                dialogBinding.sliderScaleY.value.toInt()
+            )
+            dialogBinding.textOffsetX.text = getString(
+                R.string.settings_background_align_offset_x,
+                dialogBinding.sliderOffsetX.value.toInt()
+            )
+            dialogBinding.textOffsetY.text = getString(
+                R.string.settings_background_align_offset_y,
+                dialogBinding.sliderOffsetY.value.toInt()
+            )
+        }
+
+        fun publishDraft() {
+            LauncherPrefs.setBackgroundAlign(draft)
+            refreshBackgroundAlign()
+            GlassBackground.notifyAlignChanged()
+        }
+
+        fun readManualSliders() {
+            draft = draft.copy(
+                scaleX = dialogBinding.sliderScaleX.value / 100f,
+                scaleY = dialogBinding.sliderScaleY.value / 100f,
+                offsetX = dialogBinding.sliderOffsetX.value / 100f,
+                offsetY = dialogBinding.sliderOffsetY.value / 100f
+            )
+        }
+
+        syncUiFromDraft()
+
+        dialogBinding.radioAlignMode.setOnCheckedChangeListener { _, checkedId ->
+            draft = draft.copy(
+                mode = when (checkedId) {
+                    R.id.radioAlignStretch -> LauncherBackgroundAlignMode.STRETCH
+                    R.id.radioAlignCrop -> LauncherBackgroundAlignMode.CROP
+                    R.id.radioAlignManual -> LauncherBackgroundAlignMode.MANUAL
+                    else -> LauncherBackgroundAlignMode.AUTO
+                }
+            )
+            dialogBinding.layoutAlignManual.isVisible =
+                draft.mode == LauncherBackgroundAlignMode.MANUAL
+            publishDraft()
+        }
+
+        val sliderListener = Slider.OnChangeListener { slider, value, fromUser ->
+            if (!fromUser) return@OnChangeListener
+            when (slider.id) {
+                R.id.sliderScaleX -> dialogBinding.textScaleX.text =
+                    getString(R.string.settings_background_align_scale_x, value.toInt())
+                R.id.sliderScaleY -> dialogBinding.textScaleY.text =
+                    getString(R.string.settings_background_align_scale_y, value.toInt())
+                R.id.sliderOffsetX -> dialogBinding.textOffsetX.text =
+                    getString(R.string.settings_background_align_offset_x, value.toInt())
+                R.id.sliderOffsetY -> dialogBinding.textOffsetY.text =
+                    getString(R.string.settings_background_align_offset_y, value.toInt())
+            }
+            readManualSliders()
+            if (draft.mode == LauncherBackgroundAlignMode.MANUAL) {
+                publishDraft()
+            }
+        }
+        dialogBinding.sliderScaleX.addOnChangeListener(sliderListener)
+        dialogBinding.sliderScaleY.addOnChangeListener(sliderListener)
+        dialogBinding.sliderOffsetX.addOnChangeListener(sliderListener)
+        dialogBinding.sliderOffsetY.addOnChangeListener(sliderListener)
+
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle(R.string.settings_background_align)
+            .setView(dialogBinding.root)
+            .setPositiveButton(android.R.string.ok) { _, _ ->
+                if (draft.mode == LauncherBackgroundAlignMode.MANUAL) {
+                    readManualSliders()
+                }
+                publishDraft()
+            }
+            .setNeutralButton(R.string.settings_background_align_reset) { _, _ ->
+                draft = LauncherBackgroundAlign()
+                LauncherPrefs.setBackgroundAlign(draft)
+                refreshBackgroundAlign()
+                GlassBackground.notifyAlignChanged()
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
     }
 
     private fun refreshGameDir() {
@@ -569,6 +739,34 @@ class SettingsFragment : Fragment() {
         }
     }
 
+    private fun setupGlCompatToggle() {
+        val b = _binding ?: return
+        b.toggleGlCompat.addOnButtonCheckedListener { _, checkedId, isChecked ->
+            if (!isChecked) return@addOnButtonCheckedListener
+            val mode = if (checkedId == R.id.buttonGlCompatMax) {
+                com.booxin.launcher.core.runtime.BooxinGlCompatMode.MAX_COMPAT
+            } else {
+                com.booxin.launcher.core.runtime.BooxinGlCompatMode.PATH_A_ONLY
+            }
+            if (mode == LauncherPrefs.glCompatMode()) {
+                refreshGlCompat()
+                return@addOnButtonCheckedListener
+            }
+            LauncherPrefs.setGlCompatMode(mode)
+            refreshGlCompat()
+        }
+    }
+
+    private fun refreshGlCompat() {
+        val b = _binding ?: return
+        val max = LauncherPrefs.isMaxGlCompat()
+        val checkedId = if (max) R.id.buttonGlCompatMax else R.id.buttonGlCompatPathA
+        if (b.toggleGlCompat.checkedButtonId != checkedId) {
+            b.toggleGlCompat.check(checkedId)
+        }
+        b.textGlCompat.text = getString(R.string.settings_gl_compat_hint)
+    }
+
     private fun refreshRenderer() {
         val b = _binding ?: return
         val auto = LauncherPrefs.isRendererAuto()
@@ -609,7 +807,12 @@ class SettingsFragment : Fragment() {
                 RendererInstaller.isInstalled(kind) -> getString(R.string.settings_renderer_installed)
                 else -> getString(R.string.settings_renderer_missing)
             }
-            kind to "${kind.displayName}（$status）"
+            val name = if (kind == GlRendererKind.MOBILE_GLUES) {
+                "${kind.displayName} · LGPL 兼容（高级）"
+            } else {
+                kind.displayName
+            }
+            kind to "$name（$status）"
         }
         MaterialAlertDialogBuilder(requireContext())
             .setTitle(R.string.settings_renderer_pick)
@@ -682,6 +885,51 @@ class SettingsFragment : Fragment() {
     private fun updateMemoryLabel(mb: Int) {
         val b = _binding ?: return
         b.textMemory.text = getString(R.string.settings_memory_value, mb)
+    }
+
+    private fun setupGameOptions() {
+        val b = _binding ?: return
+        val rd = LauncherPrefs.renderDistance()
+        b.sliderRenderDistance.value = rd.toFloat()
+        b.textRenderDistance.text = getString(R.string.settings_render_distance, rd)
+        b.sliderRenderDistance.addOnChangeListener { _: Slider, value: Float, fromUser: Boolean ->
+            val chunks = value.toInt()
+            b.textRenderDistance.text = getString(R.string.settings_render_distance, chunks)
+            if (fromUser) LauncherPrefs.setRenderDistance(chunks)
+        }
+
+        b.switchVsync.isChecked = LauncherPrefs.enableVsync()
+        b.switchVsync.setOnCheckedChangeListener { _, checked ->
+            LauncherPrefs.setEnableVsync(checked)
+        }
+
+        b.switchFancyGraphics.isChecked = LauncherPrefs.fancyGraphics()
+        b.switchFancyGraphics.setOnCheckedChangeListener { _, checked ->
+            LauncherPrefs.setFancyGraphics(checked)
+        }
+
+        val volume = LauncherPrefs.masterVolumePercent()
+        b.sliderMasterVolume.value = volume.toFloat()
+        b.textMasterVolume.text = getString(R.string.settings_master_volume, volume)
+        b.sliderMasterVolume.addOnChangeListener { _: Slider, value: Float, fromUser: Boolean ->
+            val percent = value.toInt()
+            b.textMasterVolume.text = getString(R.string.settings_master_volume, percent)
+            if (fromUser) LauncherPrefs.setMasterVolumePercent(percent)
+        }
+    }
+
+    private fun setupAiSettings() {
+        val b = _binding ?: return
+        val s = AppContainer.aiModelSettings
+        b.editAiCustomUrl.setText(s.customBaseUrl)
+        b.editAiCustomKey.setText(s.customApiKey)
+        b.editAiCustomModel.setText(s.customModelId)
+        b.buttonSaveAiSettings.setOnClickListener {
+            s.customBaseUrl = b.editAiCustomUrl.text?.toString().orEmpty()
+            s.customApiKey = b.editAiCustomKey.text?.toString().orEmpty()
+            s.customModelId = b.editAiCustomModel.text?.toString().orEmpty()
+            Toast.makeText(requireContext(), R.string.settings_ai_saved, Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun bindJavaButton(button: MaterialButton, major: Int) {

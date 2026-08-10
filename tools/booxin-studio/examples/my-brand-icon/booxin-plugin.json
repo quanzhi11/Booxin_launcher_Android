@@ -1,0 +1,11 @@
+﻿{
+  "id": "my-brand-icon",
+  "name": "自定义主页图标",
+  "version": "1.0.0",
+  "type": "ui",
+  "description": "启用后主页左侧品牌图标换成包内 icon.png",
+  "launcherIcon": "icon.png",
+  "features": {
+    "customLauncherIcon": true
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "id": "my-full-theme",
+  "name": "Full Theme Pack",
+  "version": "1.0.0",
+  "type": "ui",
+  "description": "完整主题：品牌/配色/壁纸/主页文案/字体/图标",
+  "launcherIcon": "icon.png",
+  "font": "fonts/MyFont.ttf",
+  "features": {
+    "customTheme": true,
+    "homeGreetingByTime": true
+  },
+  "theme": {
+    "brandName": "MyLauncher",
+    "welcomeMorning": "早上好",
+    "welcomeNoon": "中午好",
+    "welcomeEvening": "晚上好",
+    "homeLaunchText": "开始游戏",
+    "homeSwitchVersionText": "切换版本",
+    "homeAccountText": "账号管理",
+    "homeStatusText": "主题包已启用",
+    "homeSelectedVersionLabel": "当前版本",
+    "hideOrbs": true,
+    "backgroundImage": "backgrounds/bg.png",
+    "backgroundVideo": "backgrounds/loop.mp4",
+    "backgroundAlpha": 0.85,
+    "colors": {
+      "primary": "#449AD8",
+      "accent": "#FF8A2B",
+      "text": "#F2F6FF",
+      "textSecondary": "#B4C0D4",
+      "rim": "#88FFFFFF",
+      "glassPrimary": "#CC2A6FA8",
+      "surface": "#141A26",
+      "navSelected": "#FFFFFF",
+      "navUnselected": "#B4C0D4"
+    },
+    "nav": {
+      "home": "主页",
+      "versions": "版本",
+      "community": "社区",
+      "multiplayer": "联机",
+      "ai": "AI",
+      "pluginStore": "插件",
+      "settings": "设置"
+    }
+  }
+}

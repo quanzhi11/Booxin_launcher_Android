@@ -15,6 +15,7 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import coil.load
 import com.booxin.launcher.AppContainer
 import com.booxin.launcher.R
+import com.booxin.launcher.core.community.CommunityDescriptionTranslator
 import com.booxin.launcher.data.model.CommunityContentType
 import com.booxin.launcher.data.model.InstallTargetRecommendation
 import com.booxin.launcher.data.model.ModrinthProject
@@ -48,16 +49,8 @@ class CommunityProjectDetailFragment : Fragment() {
         onInstall = ::onInstallVersion,
         onSelect = ::onSelectVersion
     )
-    private val dependencyAdapter = CommunityDependencyAdapter { dep ->
-        if (!isAdded || _binding == null) return@CommunityDependencyAdapter
-        findNavController().navigate(
-            R.id.action_community_project_detail_self,
-            bundleOf(
-                ARG_PROJECT_ID to dep.projectId,
-                ARG_CONTENT_TYPE to CommunityContentType.MOD.name
-            )
-        )
-    }
+    private lateinit var dependencyAdapter: CommunityDependencyAdapter
+    private var translateJob: Job? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -80,6 +73,16 @@ class CommunityProjectDetailFragment : Fragment() {
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
+        dependencyAdapter = CommunityDependencyAdapter(viewLifecycleOwner.lifecycleScope) { dep ->
+            if (!isAdded || _binding == null) return@CommunityDependencyAdapter
+            findNavController().navigate(
+                R.id.action_community_project_detail_self,
+                bundleOf(
+                    ARG_PROJECT_ID to dep.projectId,
+                    ARG_CONTENT_TYPE to CommunityContentType.MOD.name
+                )
+            )
+        }
         binding.buttonBack.setOnClickListener { findNavController().navigateUp() }
         binding.recyclerVersions.layoutManager = LinearLayoutManager(requireContext())
         binding.recyclerVersions.adapter = versionAdapter
@@ -178,11 +181,33 @@ class CommunityProjectDetailFragment : Fragment() {
             placeholder(R.drawable.ic_nav_versions)
             error(R.drawable.ic_nav_versions)
         }
-        fullDescription = item.body?.trim().orEmpty().ifBlank { item.description.trim() }
+        val source = item.body?.trim().orEmpty().ifBlank { item.description.trim() }
             .ifBlank { getString(R.string.community_no_description) }
             .let { stripSimpleMarkdown(it) }
+        fullDescription = source
         descriptionExpanded = false
         applyDescriptionState()
+        val status = b.textTranslateStatus
+        if (!CommunityDescriptionTranslator.needsTranslate(source)) {
+            status.isVisible = false
+            return
+        }
+        status.isVisible = true
+        status.setText(R.string.community_translating)
+        translateJob?.cancel()
+        translateJob = viewLifecycleOwner.lifecycleScope.launch {
+            val zh = CommunityDescriptionTranslator.translate(source)
+            if (_binding == null || project?.id != item.id) return@launch
+            fullDescription = zh
+            applyDescriptionState()
+            val ui = _binding ?: return@launch
+            if (zh != source) {
+                ui.textTranslateStatus.isVisible = true
+                ui.textTranslateStatus.setText(R.string.community_translated_badge)
+            } else {
+                ui.textTranslateStatus.isVisible = false
+            }
+        }
     }
 
     private fun applyDescriptionState() {
@@ -258,7 +283,9 @@ class CommunityProjectDetailFragment : Fragment() {
         versionAdapter.select(version.id)
         refreshDependencies()
         when (contentType) {
-            CommunityContentType.MOD, CommunityContentType.RESOURCE_PACK -> showTargetPicker(version)
+            CommunityContentType.MOD,
+            CommunityContentType.SHADER,
+            CommunityContentType.RESOURCE_PACK -> showTargetPicker(version)
             CommunityContentType.MODPACK -> installModpack(version)
         }
     }
@@ -334,7 +361,35 @@ class CommunityProjectDetailFragment : Fragment() {
     private fun doInstallModpack(targetVersionId: String?, version: ModrinthProjectVersion) {
         viewLifecycleOwner.lifecycleScope.launch {
             showLoading(getString(R.string.community_installing_modpack))
-            val result = AppContainer.communityRepository.installModpack(targetVersionId, version)
+            var lastUiAt = 0L
+            val result = AppContainer.communityRepository.installModpack(
+                requestedTargetVersionId = targetVersionId,
+                version = version,
+                onProgress = { p ->
+                    val now = System.currentTimeMillis()
+                    if (p.bytesDownloaded >= 0L && now - lastUiAt < 200L) return@installModpack
+                    lastUiAt = now
+                    val line = buildString {
+                        append(p.stage)
+                        if (p.total > 0) append(" (${p.current}/${p.total})")
+                        if (p.bytesTotal > 0L) {
+                            append(" · ")
+                            append("%.1f".format(p.bytesDownloaded.coerceAtLeast(0L) / 1048576.0))
+                            append('/')
+                            append("%.1f".format(p.bytesTotal / 1048576.0))
+                            append(" MB")
+                        }
+                        if (p.detail.isNotBlank()) {
+                            append('\n')
+                            append(p.detail)
+                        }
+                    }
+                    viewLifecycleOwner.lifecycleScope.launch(Dispatchers.Main.immediate) {
+                        if (_binding == null) return@launch
+                        showLoading(line)
+                    }
+                }
+            )
             hideLoading()
             result.fold(
                 onSuccess = { target ->
@@ -379,8 +434,10 @@ class CommunityProjectDetailFragment : Fragment() {
     override fun onDestroyView() {
         loadJob?.cancel()
         depsJob?.cancel()
+        translateJob?.cancel()
         loadJob = null
         depsJob = null
+        translateJob = null
         _binding = null
         super.onDestroyView()
     }

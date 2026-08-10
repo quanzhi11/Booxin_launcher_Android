@@ -39,3 +39,6 @@
 -dontwarn okhttp3.**
 -dontwarn okio.**
 -dontwarn org.codehaus.mojo.animal_sniffer.**
+
+# Community auto-translate (keep for release debugging / reflection-safe)
+-keep class com.booxin.launcher.core.community.CommunityDescriptionTranslator { *; }

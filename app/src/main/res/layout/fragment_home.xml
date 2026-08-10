@@ -18,17 +18,20 @@
         android:padding="20dp">
 
         <ImageView
+            android:id="@+id/imageBrandIcon"
             android:layout_width="52dp"
             android:layout_height="52dp"
             android:contentDescription="@string/brand_name"
+            android:scaleType="centerCrop"
             android:src="@mipmap/ic_launcher_round" />
 
         <TextView
+            android:id="@+id/textWelcome"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
             android:text="@string/home_welcome"
-            android:textColor="@color/white"
+            android:textColor="@color/glass_text"
             android:textSize="16sp"
             android:textStyle="bold" />
 
@@ -39,7 +42,7 @@
             android:layout_marginTop="8dp"
             android:gravity="center"
             android:text="@string/home_status_placeholder"
-            android:textColor="#E6FFFFFF"
+            android:textColor="@color/glass_text_secondary"
             android:textSize="11sp" />
     </LinearLayout>
 
@@ -65,6 +68,7 @@
                 android:padding="16dp">
 
                 <TextView
+                    android:id="@+id/textSelectedVersionLabel"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:text="@string/home_selected_version"
@@ -81,6 +85,16 @@
                     android:textSize="18sp"
                     android:textStyle="bold"
                     tools:text="1.21.4" />
+
+                <TextView
+                    android:id="@+id/textCurrentAccount"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="@string/home_no_account"
+                    android:textColor="@color/md_theme_light_outline"
+                    android:textSize="12sp"
+                    tools:text="当前账号：Steve" />
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/buttonLaunch"

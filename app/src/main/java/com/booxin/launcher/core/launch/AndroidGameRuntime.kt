@@ -31,6 +31,7 @@ object AndroidGameRuntime {
         "libmobileglues.so",
         "libmobileglues_info_getter.so",
         "libgl4es_114.so",
+        "libbooxingl.so",
         "libopenal.so",
         "libbooxin_bridge.so",
         "libbytehook.so",
@@ -233,18 +234,21 @@ object AndroidGameRuntime {
     fun ensureNatives(context: Context) {
         val dest = nativesDir().also { it.mkdirs() }
         val marker = File(dest, ".ready")
-        val expected = "v21:${NATIVE_NAMES.size}:${preferredAbiFolder()}"
-        val markerOk = marker.isFile && marker.readText().trim().startsWith("v21:")
+        val expected = "v23:${NATIVE_NAMES.size}:${preferredAbiFolder()}"
+        val markerOk = marker.isFile && marker.readText().trim().startsWith("v23:")
         val missingRequired = !File(dest, "liblwjgl.so").isFile ||
             !File(dest, "libbooxin_bridge.so").isFile ||
             !File(dest, "libpojavexec.so").isFile ||
             !File(dest, "libmobileglues.so").isFile ||
             !File(dest, "libgl4es_114.so").isFile ||
-            !File(dest, "libSDL3.so").isFile
+            !File(dest, "libSDL3.so").isFile ||
+            !File(dest, "libbytehook.so").isFile
         if (markerOk && !missingRequired) {
             syncMissingNatives(context, dest)
             ensureHolyGl4esBackup(context, dest)
             refreshBridgeFromApk(context, dest)
+            refreshMobileGluesFromApk(context, dest)
+            refreshBytehookFromApk(context, dest)
             installBridgeCompatAlias(dest)
             return
         }
@@ -332,6 +336,52 @@ object AndroidGameRuntime {
         }
     }
 
+    /** 26.3+ SDL needs bytehook to redirect libEGL → MobileGlues; keep APK copy staged. */
+    private fun refreshBytehookFromApk(context: Context, dest: File) {
+        val fromApk = File(context.applicationInfo.nativeLibraryDir, "libbytehook.so")
+        val out = File(dest, "libbytehook.so")
+        if (!fromApk.isFile) return
+        if (out.isFile && out.length() == fromApk.length() && out.lastModified() >= fromApk.lastModified()) {
+            return
+        }
+        fromApk.copyTo(out, overwrite = true)
+        out.setReadable(true, false)
+        out.setExecutable(true, false)
+        android.util.Log.i("BooxinRuntime", "refreshed libbytehook.so from APK")
+    }
+
+    /**
+     * Always re-copy MobileGlues from the installed APK.
+     * Experimental REL builds previously left librel.so staged as the active
+     * translator and broke every version with "no OpenGL context".
+     */
+    private fun refreshMobileGluesFromApk(context: Context, dest: File) {
+        val systemNative = File(context.applicationInfo.nativeLibraryDir)
+        val names = listOf("libmobileglues.so", "libmobileglues_info_getter.so")
+        var refreshed = 0
+        for (name in names) {
+            val fromApk = File(systemNative, name)
+            val out = File(dest, name)
+            if (!fromApk.isFile) continue
+            if (out.isFile && out.length() == fromApk.length() &&
+                out.lastModified() >= fromApk.lastModified()
+            ) {
+                continue
+            }
+            fromApk.copyTo(out, overwrite = true)
+            out.setReadable(true, false)
+            out.setExecutable(true, false)
+            refreshed++
+        }
+        // Drop leftover experimental REL translator if present under natives/.
+        listOf("librel.so", "libREL.so").forEach { name ->
+            File(dest, name).takeIf { it.isFile }?.delete()
+        }
+        if (refreshed > 0) {
+            android.util.Log.i("BooxinRuntime", "refreshed MobileGlues natives count=$refreshed")
+        }
+    }
+
     /** 备份真实 gl4es（libgl4es_114 可能被换成 MobileGlues）。 */
     private fun ensureHolyGl4esBackup(context: Context, dest: File) {
         val holy = File(dest, "libgl4es_holy.so")
@@ -370,29 +420,77 @@ object AndroidGameRuntime {
     /**
      * Stages the active translator filename expected by LWJGL.
      * - [GlRendererKind.GL4ES]: restore holy → libgl4es_114.so
-     * - [GlRendererKind.MOBILE_GLUES]: disguise MobileGlues as libgl4es_114.so
+     * - [GlRendererKind.BOOXIN_GLUES]: Path A MIT stack (GL4ES / optional Zink), never MobileGlues
+     * - [GlRendererKind.MOBILE_GLUES]: LGPL opt-in — disguise MobileGlues as libgl4es_114.so
      * - Plugin GLES wrappers (Krypton / LTW): disguise plugin .so as libgl4es_114.so
      * - Mesa (Zink / VirGL / Freedreno): keep holy gl4es as fallback; LIBGL_NAME points at OSMesa
      */
     fun applyRenderer(kind: GlRendererKind) {
+        applyRenderer(kind, profile = null)
+    }
+
+    fun applyRenderer(kind: GlRendererKind, profile: com.booxin.launcher.core.runtime.ModRenderProfile?) {
         val dest = nativesDir()
         val gl4 = File(dest, "libgl4es_114.so")
         val holy = File(dest, "libgl4es_holy.so")
         val mg = File(dest, "libmobileglues.so")
         when (kind) {
             GlRendererKind.GL4ES -> {
-                require(holy.isFile || gl4.isFile) {
-                    "缺少 holy gl4es: ${holy.absolutePath}"
+                stageHolyGl4es(dest, gl4, holy, mg)
+            }
+            GlRendererKind.BOOXIN_GLUES -> {
+                val resolved = com.booxin.launcher.core.runtime.BooxinGlStack.resolve(dest, profile)
+                android.util.Log.i("BooxinRuntime", resolved.note)
+                when (resolved.engine) {
+                    com.booxin.launcher.core.runtime.BooxinGlEngine.ZINK -> {
+                        applyRenderer(GlRendererKind.VULKAN_ZINK, profile)
+                        return
+                    }
+                    com.booxin.launcher.core.runtime.BooxinGlEngine.MOBILE_GLUES_COMPAT -> {
+                        require(mg.isFile) { "最大兼容需要 MobileGlues: ${mg.absolutePath}" }
+                        if (!holy.isFile && gl4.isFile && gl4.length() != mg.length()) {
+                            gl4.copyTo(holy, overwrite = true)
+                        }
+                        mg.copyTo(gl4, overwrite = true)
+                        android.util.Log.i(
+                            "BooxinRuntime",
+                            "最大兼容: staged MobileGlues as libgl4es_114.so (LGPL)"
+                        )
+                    }
+                    com.booxin.launcher.core.runtime.BooxinGlEngine.ANGLE_EGL -> {
+                        stageHolyGl4es(dest, gl4, holy, mg)
+                        stageAngleLibs(dest)
+                        val clean = File(dest, "libbooxingl.so")
+                        if (clean.isFile) {
+                            if (!holy.isFile) gl4.copyTo(holy, overwrite = true)
+                            clean.copyTo(gl4, overwrite = true)
+                        }
+                        android.util.Log.i(
+                            "BooxinRuntime",
+                            "Path A: ANGLE EGL staged; libname=${gl4.name}"
+                        )
+                    }
+                    com.booxin.launcher.core.runtime.BooxinGlEngine.CLEANROOM -> {
+                        // Keep MIT holy GL4ES as backend; stage clean-room as LWJGL libname.
+                        stageHolyGl4es(dest, gl4, holy, mg)
+                        val clean = File(dest, "libbooxingl.so")
+                        require(clean.isFile) { "缺少 clean-room libbooxingl.so" }
+                        if (!holy.isFile) {
+                            gl4.copyTo(holy, overwrite = true)
+                        }
+                        clean.copyTo(gl4, overwrite = true)
+                        android.util.Log.i(
+                            "BooxinRuntime",
+                            "Path A M4: libbooxingl.so as libname, backend=${holy.name}"
+                        )
+                    }
+                    com.booxin.launcher.core.runtime.BooxinGlEngine.GL4ES_MIT -> {
+                        stageHolyGl4es(dest, gl4, holy, mg)
+                    }
                 }
-                val source = when {
-                    holy.isFile && (!mg.isFile || holy.length() != mg.length()) -> holy
-                    gl4.isFile && (!mg.isFile || gl4.length() != mg.length()) -> gl4
-                    else -> holy
-                }
-                source.copyTo(gl4, overwrite = true)
             }
             GlRendererKind.MOBILE_GLUES -> {
-                require(mg.isFile) { "缺少 MobileGlues: ${mg.absolutePath}" }
+                require(mg.isFile) { "缺少 MobileGlues (LGPL): ${mg.absolutePath}" }
                 if (!holy.isFile && gl4.isFile && gl4.length() != mg.length()) {
                     gl4.copyTo(holy, overwrite = true)
                 }
@@ -422,9 +520,48 @@ object AndroidGameRuntime {
                     }
                 }
             }
+            GlRendererKind.ANGLE -> {
+                stageHolyGl4es(dest, gl4, holy, mg)
+                stageAngleLibs(dest)
+            }
         }
         gl4.setReadable(true, false)
         gl4.setExecutable(true, false)
+    }
+
+    private fun stageAngleLibs(dest: File) {
+        val pluginDir = com.booxin.launcher.core.runtime.RendererInstaller.pluginNativeDir(
+            GlRendererKind.ANGLE
+        )
+        pluginDir?.listFiles()?.forEach { lib ->
+            if (lib.isFile && lib.name.endsWith(".so")) {
+                val out = File(dest, lib.name)
+                lib.copyTo(out, overwrite = true)
+                out.setReadable(true, false)
+                out.setExecutable(true, false)
+            }
+        }
+        val hasEgl = File(dest, "libEGL_angle.so").isFile || dest.listFiles()?.any {
+            it.name.contains("EGL", ignoreCase = true) && it.name.contains("angle", ignoreCase = true)
+        } == true
+        require(hasEgl) { "请先在设置中下载 ANGLE（缺少 libEGL_angle.so）" }
+    }
+
+    /** Path A / GL4ES: stage MIT holy gl4es (never MobileGlues bytes). */
+    private fun stageHolyGl4es(dest: File, gl4: File, holy: File, mg: File) {
+        require(holy.isFile || gl4.isFile) {
+            "缺少 holy gl4es (MIT): ${holy.absolutePath}"
+        }
+        val source = when {
+            holy.isFile && (!mg.isFile || holy.length() != mg.length()) -> holy
+            gl4.isFile && (!mg.isFile || gl4.length() != mg.length()) -> gl4
+            holy.isFile -> holy
+            else -> gl4
+        }
+        source.copyTo(gl4, overwrite = true)
+        File(dest, "libbooxingl.so").takeIf { it.isFile }?.let {
+            android.util.Log.i("BooxinRuntime", "clean-room helper present: ${it.name}")
+        }
     }
 
     /** Map LWJGL soname aliases to staged .so filenames. */

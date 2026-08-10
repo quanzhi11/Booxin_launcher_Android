@@ -334,7 +334,8 @@ object DownloadProviders {
 
     private fun isMirrorUrl(url: String): Boolean =
         url.contains("bmclapi", ignoreCase = true) ||
-            url.contains("bangbang93.com", ignoreCase = true)
+            url.contains("bangbang93.com", ignoreCase = true) ||
+            url.contains("mcimirror.top", ignoreCase = true)
 
     private fun label(pref: MirrorPreference): String =
         if (pref == MirrorPreference.MIRROR_FIRST) "BMCL" else "官方"

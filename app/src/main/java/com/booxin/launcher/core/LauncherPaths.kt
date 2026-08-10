@@ -11,27 +11,52 @@ object LauncherPaths {
     lateinit var rootDir: File
         private set
 
+    /** App-private filesDir — used for .so staging (shared storage blocks System.load). */
+    private lateinit var appFilesDir: File
+
     val versionsDir: File get() = File(rootDir, "versions")
     val librariesDir: File get() = File(rootDir, "libraries")
     val assetsDir: File get() = File(rootDir, "assets")
     val accountsFile: File get() = File(rootDir, "accounts.json")
 
-    /** Installed Java runtimes: java/java-8, java/java-17, ... */
-    val javaDir: File get() = File(rootDir, "java")
-    val javaCacheDir: File get() = File(rootDir, "cache/java")
+    /**
+     * Installed Java runtimes: java-8, java-17, …
+     * Always app-private — APK-loaded libbooxin_jvm.so cannot dlopen HotSpot
+     * .so from shared storage (/storage/emulated/0/… → classloader-namespace).
+     */
+    val javaDir: File get() = File(appFilesDir, "booxin-java")
+    val javaCacheDir: File get() = File(appFilesDir, "cache/java")
 
-    /** Android-patched LWJGL / JNA extracted from APK assets. */
-    val runtimeDir: File get() = File(rootDir, "runtime")
+    /** Previous location under the game root (may be on shared storage). */
+    val legacyJavaDir: File get() = File(rootDir, "java")
+
+    /**
+     * Android-patched LWJGL / JNA / bridge natives.
+     * Always under app-private storage — Android classloader namespace rejects
+     * System.load of .so from shared storage (e.g. /storage/emulated/0/...).
+     */
+    val runtimeDir: File get() = File(appFilesDir, "booxin-runtime")
 
     fun javaRuntimeDir(componentId: String): File = File(javaDir, componentId)
 
     val isInitialized: Boolean
-        get() = ::rootDir.isInitialized
+        get() = ::rootDir.isInitialized && ::appFilesDir.isInitialized
 
     fun init(context: Context) {
         val app = context.applicationContext
+        appFilesDir = app.filesDir
         val selected = GameDirRegistry.selectedPath(app)
         rootDir = File(selected).also { ensureWritableTree(it) }
+        ensureRuntimeTree()
+    }
+
+    private fun ensureRuntimeTree() {
+        runtimeDir.mkdirs()
+        File(runtimeDir, "natives").mkdirs()
+        File(runtimeDir, "lwjgl").mkdirs()
+        File(runtimeDir, "jna").mkdirs()
+        javaDir.mkdirs()
+        javaCacheDir.mkdirs()
     }
 
     /**
@@ -43,6 +68,10 @@ object LauncherPaths {
         val target = GameDirRegistry.selectPath(app, path).getOrThrow()
         ensureWritableTree(target)
         rootDir = target
+        if (!::appFilesDir.isInitialized) {
+            appFilesDir = app.filesDir
+        }
+        ensureRuntimeTree()
         target
     }
 
@@ -69,6 +98,10 @@ object LauncherPaths {
         GameDirRegistry.selectPath(app, abs).getOrThrow()
         ensureWritableTree(target)
         rootDir = target
+        if (!::appFilesDir.isInitialized) {
+            appFilesDir = app.filesDir
+        }
+        ensureRuntimeTree()
         target
     }
 

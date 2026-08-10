@@ -85,12 +85,18 @@ class AccountsFragment : Fragment() {
             .setItems(
                 arrayOf(
                     getString(R.string.accounts_microsoft),
-                    getString(R.string.accounts_offline)
+                    getString(R.string.accounts_offline),
+                    getString(R.string.accounts_third_party_coming)
                 )
             ) { _, which ->
                 when (which) {
                     0 -> startMicrosoftLogin()
                     1 -> showAddOfflineDialog()
+                    2 -> Toast.makeText(
+                        requireContext(),
+                        R.string.ai_feature_coming,
+                        Toast.LENGTH_SHORT
+                    ).show()
                 }
             }
             .setNegativeButton(android.R.string.cancel, null)
