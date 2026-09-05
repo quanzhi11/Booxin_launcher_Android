@@ -35,8 +35,16 @@ class ControlLayoutController(
         private set
 
     init {
-        host.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
-            relayoutAll()
+        host.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
+            // Only when host size changes — re-applying layoutParams every frame
+            // caused an infinite requestLayout storm (ColorOS jank / 卡顿).
+            val w = right - left
+            val h = bottom - top
+            val ow = oldRight - oldLeft
+            val oh = oldBottom - oldTop
+            if (w != ow || h != oh) {
+                relayoutAll()
+            }
         }
         joystick.onSelect = {
             clearButtonSelection()
@@ -310,15 +318,25 @@ class ControlLayoutController(
         parent.post {
             if (parent.width <= 0 || parent.height <= 0) return@post
             val size = view.width.coerceAtLeast(1)
-            val lp = (view.layoutParams as? FrameLayout.LayoutParams)
-                ?: FrameLayout.LayoutParams(size, size)
+            val left = (nx * parent.width - size / 2f).toInt()
+                .coerceIn(0, parent.width - size)
+            val top = (ny * parent.height - size / 2f).toInt()
+                .coerceIn(0, parent.height - size)
+            val existing = view.layoutParams as? FrameLayout.LayoutParams
+            if (existing != null &&
+                existing.leftMargin == left &&
+                existing.topMargin == top &&
+                existing.width == view.layoutParams.width &&
+                existing.height == view.layoutParams.height
+            ) {
+                return@post
+            }
+            val lp = existing ?: FrameLayout.LayoutParams(size, size)
             lp.gravity = Gravity.TOP or Gravity.START
             lp.width = view.layoutParams.width
             lp.height = view.layoutParams.height
-            lp.leftMargin = (nx * parent.width - size / 2f).toInt()
-                .coerceIn(0, parent.width - size)
-            lp.topMargin = (ny * parent.height - size / 2f).toInt()
-                .coerceIn(0, parent.height - size)
+            lp.leftMargin = left
+            lp.topMargin = top
             view.layoutParams = lp
         }
     }

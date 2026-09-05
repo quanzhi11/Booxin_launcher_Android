@@ -191,6 +191,16 @@
     <string name="launch_loading_percent_fmt">%1$d%%</string>
     <string name="launch_loading_status_init">正在准备游戏环境…</string>
     <string name="launch_loading_status_fmt">%1$s</string>
+    <string name="launch_loading_hint_black_normal">黑屏属正常，请耐心等待，可玩下方小恐龙</string>
+    <string name="launch_loading_hint_wait_frames">已接近主菜单，正在出画…请稍候</string>
+    <string name="launch_loading_still_mods">模组仍在加载（已等 %1$d 秒）。黑屏正常，请勿退出</string>
+    <string name="launch_loading_tap_wait">模组仍在加载，黑屏属正常，请再等一会儿</string>
+    <string name="launch_mod_progress_title">模组加载进度</string>
+    <string name="launch_mod_waiting">等待模组列表…</string>
+    <string name="launch_mod_current_fmt">正在加载：%1$s</string>
+    <string name="launch_mod_count_fmt">%1$d / %2$d</string>
+    <string name="launch_mod_count_unknown_fmt">已处理 %1$d 个</string>
+    <string name="launch_dino_title">等太久？点一下和小恐龙玩会儿</string>
     <string name="control_floating_ball">控</string>
     <string name="control_menu_edit">自定义布局</string>
     <string name="control_menu_panels">切换按键面板</string>
@@ -1025,6 +1035,13 @@
     <string name="settings_realtime_log_status">状态：%1$s</string>
 
     <string name="crash_dialog_title">游戏意外退出</string>
+    <string name="crash_dialog_reason_label">报错原因</string>
+    <string name="crash_dialog_fix_label">修复建议</string>
+    <string name="crash_dialog_log_label">日志（可转发）</string>
+    <string name="crash_dialog_copy_log">复制日志</string>
+    <string name="crash_dialog_share_log">转发日志</string>
+    <string name="crash_dialog_log_copied">已复制，可直接粘贴转发</string>
+    <string name="crash_dialog_share_subject">Booxin 游戏意外退出日志</string>
     <string name="crash_dialog_mods_title">选择要禁用的模组</string>
     <string name="crash_dialog_deps_title">缺少的依赖模组</string>
     <string name="crash_dialog_mod_hint">勾选疑似导致崩溃的模组，禁用后可重试启动。</string>
@@ -1033,7 +1050,9 @@
     <string name="crash_dialog_native_hint">模组含不兼容原生库（如 x86 / 桌面专用 API），请禁用相关模组。</string>
     <string name="crash_dialog_mixin_hint">模组注入失败，通常与版本不匹配或其他模组冲突有关。</string>
     <string name="crash_dialog_jvm_hint">游戏进程异常退出，请查看下方日志摘要。</string>
-    <string name="crash_dialog_generic_hint">游戏意外退出，请根据日志排查或导出诊断包。</string>
+    <string name="crash_dialog_process_hint">进程被系统结束且没有崩溃报告。请降低画质/关后台后重试，并转发日志。</string>
+    <string name="crash_dialog_pojav_hint">Sodium 误判 Pojav。请更新 Booxin 启动器后重试。</string>
+    <string name="crash_dialog_generic_hint">游戏意外退出，请根据日志排查或转发日志给开发者。</string>
     <string name="crash_dialog_disable_retry">禁用并重试</string>
     <string name="crash_dialog_download_deps">一键下载依赖</string>
     <string name="crash_dialog_retry">重新启动</string>

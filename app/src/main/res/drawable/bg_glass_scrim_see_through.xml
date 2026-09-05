@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Solid dark while mods load (Forge splash disabled → black Surface underneath). -->
+<!-- Light tint after game frames appear under the glass. -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
     android:shape="rectangle">
-    <solid android:color="#F20B1220" />
+    <solid android:color="#99060A12" />
 </shape>

@@ -132,11 +132,10 @@ class GameProcessRunner(
                     // launch() blocks until the game exits — do not keep saying "创建虚拟机".
                     when {
                         gameProgress.get() ->
-                            emitBlocking("游戏仍在加载/运行中…已等待 ${sec}s（主菜单出现后遮罩会自动关闭）")
+                            emitBlocking("游戏仍在加载/运行中…已等待 ${sec}s（模组加载时黑屏正常，可玩加载页小恐龙）")
                         jvmCreated.get() ->
-                            emitBlocking("游戏仍在加载/运行中…已等待 ${sec}s（JVM 已创建，等待主菜单）")
+                            emitBlocking("游戏仍在加载/运行中…已等待 ${sec}s（JVM 已创建，模组加载中请勿退出）")
                         sec >= 90 ->
-                            // Avoid forever "创建虚拟机" spam that resets UI keep-alive semantics.
                             emitBlocking("游戏仍在加载/运行中…已等待 ${sec}s（若已见主菜单可点「强制进入游戏」）")
                         else ->
                             emitBlocking("JVM 仍在启动中…已等待 ${sec}s（创建虚拟机 / 加载主类）")

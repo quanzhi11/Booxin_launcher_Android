@@ -1,96 +1,139 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<androidx.core.widget.NestedScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:orientation="vertical"
-    android:padding="20dp">
+    android:fillViewport="true"
+    android:overScrollMode="ifContentScrolls"
+    android:scrollbars="vertical">
 
-    <TextView
-        android:id="@+id/textCrashSummary"
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:textAppearance="?attr/textAppearanceBodyMedium"
-        android:textColor="?android:attr/textColorPrimary" />
+        android:orientation="vertical"
+        android:padding="20dp">
 
-    <TextView
-        android:id="@+id/textCrashHint"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:textAppearance="?attr/textAppearanceBodySmall"
-        android:textColor="?android:attr/textColorSecondary" />
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/crash_dialog_reason_label"
+            android:textAppearance="?attr/textAppearanceTitleSmall"
+            android:textColor="?android:attr/textColorPrimary" />
 
-    <ScrollView
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="12dp"
-        android:maxHeight="180dp">
+        <TextView
+            android:id="@+id/textCrashSummary"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textAppearance="?attr/textAppearanceBodyMedium"
+            android:textColor="?android:attr/textColorPrimary"
+            android:textIsSelectable="true" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:text="@string/crash_dialog_fix_label"
+            android:textAppearance="?attr/textAppearanceTitleSmall"
+            android:textColor="?android:attr/textColorPrimary" />
+
+        <TextView
+            android:id="@+id/textCrashHint"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textAppearance="?attr/textAppearanceBodySmall"
+            android:textColor="?android:attr/textColorSecondary"
+            android:textIsSelectable="true" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:text="@string/crash_dialog_log_label"
+            android:textAppearance="?attr/textAppearanceTitleSmall"
+            android:textColor="?android:attr/textColorPrimary" />
 
         <TextView
             android:id="@+id/textCrashDetail"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
             android:fontFamily="monospace"
             android:textAppearance="?attr/textAppearanceBodySmall"
             android:textColor="?android:attr/textColorSecondary"
             android:textIsSelectable="true" />
-    </ScrollView>
 
-    <TextView
-        android:id="@+id/textCrashModsTitle"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="12dp"
-        android:text="@string/crash_dialog_mods_title"
-        android:textAppearance="?attr/textAppearanceTitleSmall"
-        android:visibility="gone" />
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:gravity="end"
+            android:orientation="horizontal">
 
-    <ScrollView
-        android:id="@+id/scrollCrashMods"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="6dp"
-        android:maxHeight="160dp"
-        android:visibility="gone">
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnCrashCopyLog"
+                style="@style/Widget.Material3.Button.TextButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/crash_dialog_copy_log" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnCrashShareLog"
+                style="@style/Widget.Material3.Button.TextButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/crash_dialog_share_log" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/textCrashModsTitle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="@string/crash_dialog_mods_title"
+            android:textAppearance="?attr/textAppearanceTitleSmall"
+            android:visibility="gone" />
 
         <LinearLayout
             android:id="@+id/layoutCrashMods"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="vertical" />
-    </ScrollView>
+            android:layout_marginTop="6dp"
+            android:orientation="vertical"
+            android:visibility="gone" />
 
-    <TextView
-        android:id="@+id/textCrashDepsTitle"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="12dp"
-        android:text="@string/crash_dialog_deps_title"
-        android:textAppearance="?attr/textAppearanceTitleSmall"
-        android:visibility="gone" />
+        <TextView
+            android:id="@+id/textCrashDepsTitle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="@string/crash_dialog_deps_title"
+            android:textAppearance="?attr/textAppearanceTitleSmall"
+            android:visibility="gone" />
 
-    <LinearLayout
-        android:id="@+id/layoutCrashDeps"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="6dp"
-        android:orientation="vertical"
-        android:visibility="gone" />
+        <LinearLayout
+            android:id="@+id/layoutCrashDeps"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:orientation="vertical"
+            android:visibility="gone" />
 
-    <com.google.android.material.progressindicator.LinearProgressIndicator
-        android:id="@+id/progressCrashAction"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="12dp"
-        android:indeterminate="true"
-        android:visibility="gone" />
+        <com.google.android.material.progressindicator.LinearProgressIndicator
+            android:id="@+id/progressCrashAction"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:indeterminate="true"
+            android:visibility="gone" />
 
-    <TextView
-        android:id="@+id/textCrashActionStatus"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="6dp"
-        android:textAppearance="?attr/textAppearanceBodySmall"
-        android:visibility="gone" />
+        <TextView
+            android:id="@+id/textCrashActionStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:textAppearance="?attr/textAppearanceBodySmall"
+            android:visibility="gone" />
 
-</LinearLayout>
+    </LinearLayout>
+</androidx.core.widget.NestedScrollView>

@@ -31,15 +31,18 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.core.view.isVisible
 import com.booxin.launcher.R
 import com.booxin.launcher.core.uiplugin.UiPluginFonts
 import com.booxin.launcher.core.uiplugin.UiPluginManager
 import com.booxin.launcher.core.uiplugin.UiPluginTheme
 import com.booxin.launcher.core.download.game.VersionJsonMerger
 import com.booxin.launcher.core.java.MinecraftJavaRequirement
+import com.booxin.launcher.core.version.VersionModsManager
 import com.booxin.launcher.core.launch.BooxinSdlBootstrap
 import com.booxin.launcher.core.launch.GameLaunchLogBus
 import com.booxin.launcher.core.launch.GameLaunchService
+import com.booxin.launcher.core.launch.GameSessionLease
 import com.booxin.launcher.core.launch.GameSurfaceBridge
 import com.booxin.launcher.core.launch.LaunchPhase
 import com.booxin.launcher.core.launch.LaunchSession
@@ -95,6 +98,12 @@ class LaunchActivity : AppCompatActivity() {
     private var inputReady = false
     private var overlayHidden = false
     private var loadingPercent = 0
+    private var modTotal = 0
+    private var modLoaded = 0
+    private var modSoftProgress = 0
+    private var modActivityTicks = 0
+    private var currentModName: String = ""
+    private val modSeenNames = LinkedHashSet<String>()
     private val mainHandler = Handler(Looper.getMainLooper())
     private var overlayHideTimeout: Runnable? = null
     private var inputArmRetries = 0
@@ -280,6 +289,7 @@ class LaunchActivity : AppCompatActivity() {
         if (GameSurfaceBridge.width > 1) gameBufferWidth = GameSurfaceBridge.width
         if (GameSurfaceBridge.height > 1) gameBufferHeight = GameSurfaceBridge.height
         if (!::binding.isInitialized) return
+        runCatching { binding.dinoGame.stopGame() }
         binding.panelOverlay.visibility = View.GONE
         binding.panelOverlay.alpha = 0f
         binding.panelOverlay.isClickable = false
@@ -729,15 +739,17 @@ class LaunchActivity : AppCompatActivity() {
             appendLog("联机直连备用: $pendingServerAddress（优先请用多人游戏→局域网列表）")
         }
         updateLoadingUi(0, getString(R.string.launch_loading_status_init))
+        setupModProgressPanel()
         binding.buttonClose.setOnClickListener { returnToLauncher() }
         binding.buttonStop.setOnClickListener {
             appendLog("用户请求停止…")
             returnToLauncher()
         }
         binding.buttonForceEnter.setOnClickListener { forceEnterGameScreen() }
+        binding.dinoGame.startGame()
 
-        // Glass layer: see-through, swallow touches so GLFW never sees them mid-load
-        // (a tap used to dismiss the overlay early → black Surface).
+        // Swallow empty-area taps so GLFW never sees them mid-load.
+        // Children (dino / buttons) receive touches first via normal dispatch.
         binding.panelOverlay.setOnTouchListener { v, event ->
             if (event.actionMasked == MotionEvent.ACTION_UP && canRetryLaunch) {
                 v.performClick()
@@ -765,10 +777,7 @@ class LaunchActivity : AppCompatActivity() {
                         gameProgressSeen = true
                     }
                 }
-                else -> appendLog(
-                    if (isModLoaderLaunch) "模组仍在加载，请稍候（可透过玻璃看画面）"
-                    else "仍在加载（${loadingPercent}%）"
-                )
+                else -> appendLog(getString(R.string.launch_loading_tap_wait))
             }
         }
 
@@ -840,6 +849,7 @@ class LaunchActivity : AppCompatActivity() {
                         binding.panelOverlay.alpha = 1f
                         binding.panelOverlay.isClickable = true
                         binding.panelOverlay.isFocusable = true
+                        binding.dinoGame.startGame()
                     }
                     overlayHidden = false
                     updateLoadingUi(
@@ -1042,6 +1052,13 @@ class LaunchActivity : AppCompatActivity() {
                 startSdlPresentPoll()
                 return
             }
+            // Modpacks: never peel to black Surface before real frames.
+            if (isModLoaderLaunch && textureFrameCount < 3L) {
+                appendLog("已接近就绪，等待画面出帧后再关遮罩…")
+                binding.textLoadingHint.text = getString(R.string.launch_loading_hint_wait_frames)
+                scheduleSoftHideAfterRender(12_000L)
+                return
+            }
             hideOverlayIfNeeded(force = true, allowWithoutBridge = true)
             return
         }
@@ -1076,7 +1093,16 @@ class LaunchActivity : AppCompatActivity() {
         if (isHeartbeat) {
             if (loadingPercent >= 68) {
                 if (line.contains("游戏仍在加载")) {
-                    binding.textLoadingStatus.text = shortenStatus(line)
+                    val sec = Regex("""已等待\s*(\d+)\s*s""").find(line)?.groupValues?.getOrNull(1)?.toIntOrNull()
+                    binding.textLoadingStatus.text = if (sec != null && isModLoaderLaunch) {
+                        getString(R.string.launch_loading_still_mods, sec)
+                    } else {
+                        shortenStatus(line)
+                    }
+                    if (isModLoaderLaunch) {
+                        binding.textLoadingHint.text = getString(R.string.launch_loading_hint_black_normal)
+                        if (sec != null) advanceModProgressByHeartbeat(sec)
+                    }
                 }
                 return
             }
@@ -1084,6 +1110,7 @@ class LaunchActivity : AppCompatActivity() {
             updateLoadingUi(maxOf(loadingPercent, 65), shortenStatus(line))
             return
         }
+        updateModProgressFromLog(line)
         val modStatus = modLoaderStatus(line)
         if (modStatus != null) {
             modLoadingSeen = true
@@ -1161,6 +1188,164 @@ class LaunchActivity : AppCompatActivity() {
             "mixin" in lower && ("apply" in lower || "load" in lower) ->
                 "正在应用 Mixin…" to 76
             else -> null
+        }
+    }
+
+    private fun setupModProgressPanel() {
+        if (!::binding.isInitialized) return
+        binding.panelModProgress.isVisible = isModLoaderLaunch
+        if (isModLoaderLaunch) {
+            binding.textLaunchTitle.text = getString(R.string.launch_loading_title_mods)
+            binding.textModCurrent.text = getString(R.string.launch_mod_waiting)
+            binding.progressMods.progress = 0
+            modSoftProgress = 0
+            modActivityTicks = 0
+            modLoaded = 0
+            modSeenNames.clear()
+            currentModName = ""
+            // Seed total from disk — Forge rarely logs "Loading mod X" per file.
+            modTotal = runCatching {
+                VersionModsManager.list(pendingVersionId).count { it.enabled }
+            }.getOrDefault(0)
+            refreshModProgressUi()
+            binding.textLoadingHint.text = getString(R.string.launch_loading_hint_black_normal)
+        }
+    }
+
+    private fun updateModProgressFromLog(line: String) {
+        if (!isModLoaderLaunch || !::binding.isInitialized) return
+        binding.panelModProgress.isVisible = true
+        val lower = line.lowercase(Locale.US)
+
+        Regex("""模组列表就绪：启用\s*(\d+)\s*个""").find(line)?.groupValues?.getOrNull(1)
+            ?.toIntOrNull()?.takeIf { it > 0 }?.let { modTotal = maxOf(modTotal, it) }
+
+        // Do NOT use "Found N dependencies" — those are jar-in-jar deps, not user mods.
+
+        val loadingMod =
+            Regex("""Loading mod\s+([^\s,/\\]+)""", RegexOption.IGNORE_CASE)
+                .find(line)?.groupValues?.getOrNull(1)
+                ?: Regex("""正在加载模组[：:]\s*([^\s]+)""").find(line)?.groupValues?.getOrNull(1)
+                ?: Regex(
+                    """(?:mods[/\\]|Mod File[:\s]+)([^/\\\s,]+\.jar)""",
+                    RegexOption.IGNORE_CASE
+                ).find(line)?.groupValues?.getOrNull(1)
+                ?: Regex(
+                    """(?:Constructing|constructed|Initializing|initialized)\s+(?:mod\s+)?([a-z0-9_./+-]+)""",
+                    RegexOption.IGNORE_CASE
+                ).find(line)?.groupValues?.getOrNull(1)
+                ?: Regex(
+                    """(?:mixin|Mixing)\s+.*?[/\s]([a-z0-9_.+-]+\.mixins?\.json)""",
+                    RegexOption.IGNORE_CASE
+                ).find(line)?.groupValues?.getOrNull(1)
+                ?: Regex(
+                    """\[([a-z0-9_.+-]+)/(?:COMMON|CLIENT|main|MOD)\]""",
+                    RegexOption.IGNORE_CASE
+                ).find(line)?.groupValues?.getOrNull(1)
+
+        if (!loadingMod.isNullOrBlank() &&
+            loadingMod.length in 2..64 &&
+            !loadingMod.equals("main", ignoreCase = true) &&
+            !loadingMod.equals("minecraft", ignoreCase = true) &&
+            !loadingMod.equals("forge", ignoreCase = true)
+        ) {
+            currentModName = loadingMod.removeSuffix(".jar").removeSuffix(".json")
+            if (modSeenNames.add(currentModName.lowercase(Locale.US))) {
+                modLoaded = modSeenNames.size
+            }
+        }
+
+        val activity = line.contains("[jvm]", ignoreCase = true) ||
+            "mixin" in lower ||
+            "mod " in lower ||
+            "coremod" in lower ||
+            "loading" in lower ||
+            "construct" in lower ||
+            "registry" in lower ||
+            "dependency" in lower ||
+            ".jar" in lower
+        if (activity) {
+            modActivityTicks++
+            // Soft estimate when Forge doesn't emit per-mod lines (~2 ticks ≈ 1 mod step).
+            if (modTotal > 0) {
+                val soft = (modActivityTicks / 2).coerceAtMost(modTotal - 1).coerceAtLeast(0)
+                if (soft > modLoaded) modLoaded = soft
+            }
+            when {
+                "mod loading completed" in lower || "modloading complete" in lower ->
+                    bumpModSoftProgress(96)
+                "reloading resourcemanager" in lower || "reload of resourcemanager" in lower ->
+                    bumpModSoftProgress(90)
+                "common setup" in lower || "client setup" in lower || "loadcomplete" in lower ->
+                    bumpModSoftProgress(88)
+                "constructing" in lower || "fmlconstruct" in lower ->
+                    bumpModSoftProgress(70)
+                "building mod list" in lower || "mod list built" in lower ->
+                    bumpModSoftProgress(35)
+                "found mod file" in lower || "jarinjar" in lower ->
+                    bumpModSoftProgress(25)
+                "mixin" in lower ->
+                    bumpModSoftProgress(45)
+                else -> bumpModSoftProgress((modActivityTicks).coerceAtMost(55))
+            }
+        }
+
+        refreshModProgressUi()
+    }
+
+    private fun advanceModProgressByHeartbeat(sec: Int) {
+        if (modTotal <= 0) return
+        // Large packs often need 2–5 min; map wait time into soft loaded count.
+        val expectedSec = (45 + modTotal / 2).coerceIn(60, 300)
+        val soft = ((sec * modTotal) / expectedSec).coerceAtMost(modTotal - 1).coerceAtLeast(0)
+        if (soft > modLoaded) {
+            modLoaded = soft
+            if (currentModName.isBlank()) {
+                currentModName = "加载中…"
+            }
+            bumpModSoftProgress(((soft * 100f) / modTotal).toInt().coerceIn(5, 92))
+            refreshModProgressUi()
+        }
+    }
+
+    private fun bumpModSoftProgress(pct: Int) {
+        if (pct > modSoftProgress) modSoftProgress = pct.coerceIn(0, 99)
+    }
+
+    private fun refreshModProgressUi() {
+        if (!::binding.isInitialized) return
+        val displayLoaded = when {
+            modTotal > 0 -> modLoaded.coerceIn(0, modTotal)
+            else -> modLoaded
+        }
+        val barPct = when {
+            modTotal > 0 -> ((displayLoaded * 100f) / modTotal).toInt()
+            else -> modSoftProgress
+        }.coerceIn(0, 99).coerceAtLeast(modSoftProgress.coerceAtMost(99))
+
+        binding.progressMods.progress = maxOf(binding.progressMods.progress, barPct)
+        binding.textModCount.text = if (modTotal > 0) {
+            getString(R.string.launch_mod_count_fmt, displayLoaded, modTotal)
+        } else if (displayLoaded > 0) {
+            getString(R.string.launch_mod_count_unknown_fmt, displayLoaded)
+        } else {
+            getString(R.string.launch_mod_count_fmt, 0, 0)
+        }
+        binding.textModCurrent.text = when {
+            currentModName.isNotBlank() && currentModName != "加载中…" ->
+                getString(R.string.launch_mod_current_fmt, currentModName)
+            displayLoaded > 0 || modSoftProgress > 0 ->
+                getString(R.string.launch_mod_current_fmt, "扫描 / Mixin / 注册中…")
+            else -> getString(R.string.launch_mod_waiting)
+        }
+
+        if (modTotal > 0 && displayLoaded > 0) {
+            val mapped = (68 + (displayLoaded * 20f / modTotal)).toInt().coerceIn(68, 88)
+            if (mapped > loadingPercent) {
+                updateLoadingUi(mapped, binding.textLoadingStatus.text?.toString().orEmpty())
+            }
+        } else if (modSoftProgress >= 40 && loadingPercent < 76) {
+            updateLoadingUi(maxOf(loadingPercent, 72), binding.textLoadingStatus.text?.toString().orEmpty())
         }
     }
 
@@ -1303,6 +1488,7 @@ class LaunchActivity : AppCompatActivity() {
         frameHideArmed = false
         // Stop mirroring Minecraft logs onto the UI thread (Binder + TextView).
         GameLaunchLogBus.muteUiLogs(this)
+        runCatching { binding.dinoGame.stopGame() }
         Log.i(TAG, "hideOverlay percent=$loadingPercent frames=$textureFrameCount")
         updateLoadingUi(100, "进入游戏")
         hideOverlay()
@@ -1315,7 +1501,7 @@ class LaunchActivity : AppCompatActivity() {
         // reset this timer. Modpacks still get more time than vanilla.
         val delayMs = when {
             isSdlLaunch -> 90_000L
-            isModLoaderLaunch -> 120_000L
+            isModLoaderLaunch -> 180_000L
             else -> 45_000L
         }
         overlayHideTimeout = Runnable {
@@ -1325,6 +1511,16 @@ class LaunchActivity : AppCompatActivity() {
                         "请点「强制进入」或返回重试；勿当已进游戏。"
                 )
                 updateLoadingUi(95, "画面未出帧 — 可强制进入/重试")
+                return@Runnable
+            }
+            if (isModLoaderLaunch && textureFrameCount < 3L) {
+                appendLog("模组仍在加载且尚未出画，继续等待（可玩小恐龙或点「强制进入」）")
+                updateLoadingUi(
+                    loadingPercent.coerceAtLeast(85),
+                    getString(R.string.launch_loading_hint_black_normal)
+                )
+                // Re-arm instead of peeling to a black Surface.
+                scheduleOverlayFallbackHide()
                 return@Runnable
             }
             appendLog(
@@ -1368,6 +1564,12 @@ class LaunchActivity : AppCompatActivity() {
                     startSdlPresentPoll()
                     return@Runnable
                 }
+            }
+            if (!isSdlLaunch && textureFrameCount < 3L) {
+                appendLog("仍无画面呈现，保持加载遮罩（可继续玩小恐龙）")
+                updateLoadingUi(92, getString(R.string.launch_loading_hint_wait_frames))
+                scheduleSoftHideAfterRender(10_000L)
+                return@Runnable
             }
             appendLog("检测到游戏画面信号，尝试关闭遮罩…")
             updateLoadingUi(100, "进入游戏")
@@ -1620,6 +1822,8 @@ class LaunchActivity : AppCompatActivity() {
     private fun returnToLauncher() {
         if (isFinishing || isDestroyed) return
         canRetryLaunch = false
+        // Mark intentional leave before async stop / killProcess.
+        GameSessionLease.markUserExit(this)
         // Unpublish / leave before killing :game so public rooms are not zombies.
         // Lease file remains until DELETE succeeds; MainActivity will sweep if this is cut short.
         runCatching {
@@ -1638,6 +1842,8 @@ class LaunchActivity : AppCompatActivity() {
                     Intent.FLAG_ACTIVITY_SINGLE_TOP or
                     Intent.FLAG_ACTIVITY_NEW_TASK
             )
+            // Cross-process file flags can race; Intent is the reliable signal.
+            putExtra(com.booxin.launcher.ui.MainActivity.EXTRA_USER_EXITED_GAME, true)
         }
         startActivity(intent)
         if (UiPluginManager.isFeatureEnabled("pageSlideTransitions")) {
@@ -1858,6 +2064,7 @@ class LaunchActivity : AppCompatActivity() {
     override fun onDestroy() {
         if (foreground === this) foreground = null
         val gameStillRunning = isGameSessionActive()
+        runCatching { if (::binding.isInitialized) binding.dinoGame.stopGame() }
         overlayHideTimeout?.let { mainHandler.removeCallbacks(it) }
         mainHandler.removeCallbacks(inputArmRunnable)
         mainHandler.removeCallbacks(forceRenderWatchdog)

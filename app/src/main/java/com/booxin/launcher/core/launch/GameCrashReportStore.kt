@@ -3,27 +3,30 @@ package com.booxin.launcher.core.launch
 import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 
-/** 暂存待展示的崩溃报告（:game → 主界面）。 */
+/**
+ * Cross-process pending crash report (:game → main).
+ * Uses a file under filesDir — SharedPreferences is not reliable across processes.
+ */
 object GameCrashReportStore {
-    private const val PREFS = "game_crash_report"
-    private const val KEY_PENDING = "pending_json"
+    private const val FILE_NAME = "game_crash_report_pending.json"
 
     fun save(context: Context, report: GameCrashReport) {
         if (!report.shouldPrompt) return
-        context.applicationContext
-            .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .edit()
-            .putString(KEY_PENDING, encode(report))
-            .apply()
+        if (GameSessionLease.hasUserExitFlag(context)) return
+        runCatching {
+            file(context).apply {
+                parentFile?.mkdirs()
+                writeText(encode(report))
+            }
+        }
     }
 
     fun peek(context: Context): GameCrashReport? {
-        val json = context.applicationContext
-            .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getString(KEY_PENDING, null)
-            ?: return null
-        return decode(json)
+        val f = file(context)
+        if (!f.isFile) return null
+        return decode(f.readText())
     }
 
     fun consume(context: Context): GameCrashReport? {
@@ -33,18 +36,18 @@ object GameCrashReportStore {
     }
 
     fun clear(context: Context) {
-        context.applicationContext
-            .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .edit()
-            .remove(KEY_PENDING)
-            .apply()
+        file(context).delete()
     }
+
+    private fun file(context: Context): File =
+        File(context.applicationContext.filesDir, FILE_NAME)
 
     private fun encode(report: GameCrashReport): String {
         val root = JSONObject()
         root.put("versionId", report.versionId)
         root.put("kind", report.kind.name)
         root.put("summary", report.summary)
+        root.put("suggestion", report.suggestion)
         root.put("detail", report.detail)
         root.put("exitCode", report.exitCode)
         root.put("timestampMs", report.timestampMs)
@@ -82,6 +85,9 @@ object GameCrashReportStore {
                 GameCrashKind.valueOf(root.getString("kind"))
             }.getOrDefault(GameCrashKind.UNKNOWN),
             summary = root.optString("summary"),
+            suggestion = root.optString("suggestion").ifBlank {
+                root.optString("summary")
+            },
             detail = root.optString("detail"),
             exitCode = root.optInt("exitCode", -1),
             timestampMs = root.optLong("timestampMs", System.currentTimeMillis()),

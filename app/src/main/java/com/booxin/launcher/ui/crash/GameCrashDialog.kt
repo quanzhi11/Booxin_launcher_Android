@@ -1,10 +1,15 @@
 package com.booxin.launcher.ui.crash
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
 import android.view.LayoutInflater
 import android.widget.CheckBox
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.FileProvider
 import androidx.core.view.isVisible
 import androidx.lifecycle.lifecycleScope
 import com.booxin.launcher.AppContainer
@@ -16,22 +21,32 @@ import com.booxin.launcher.core.version.VersionModsManager
 import com.booxin.launcher.databinding.DialogGameCrashBinding
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import kotlinx.coroutines.launch
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
-/** 游戏意外退出后的处理弹窗。 */
+/** 游戏意外退出后的处理弹窗：原因 → 建议 → 可转发日志。 */
 object GameCrashDialog {
 
     fun showIfNeeded(activity: AppCompatActivity, report: GameCrashReport) {
         val binding = DialogGameCrashBinding.inflate(LayoutInflater.from(activity))
         binding.textCrashSummary.text = report.summary
+        binding.textCrashHint.text = report.suggestion.ifBlank {
+            hintForKind(activity, report.kind)
+        }
         binding.textCrashDetail.text = report.detail
+
+        val shareBody = report.buildShareText()
+        binding.btnCrashCopyLog.setOnClickListener { copyLog(activity, shareBody) }
+        binding.btnCrashShareLog.setOnClickListener { shareLog(activity, shareBody) }
 
         val checkBoxes = ArrayList<CheckBox>()
         val canPickMods = report.suspectMods.isNotEmpty() &&
             report.kind != GameCrashKind.MISSING_DEPENDENCY
         if (canPickMods) {
             binding.textCrashModsTitle.isVisible = true
-            binding.scrollCrashMods.isVisible = true
-            binding.textCrashHint.text = activity.getString(R.string.crash_dialog_mod_hint)
+            binding.layoutCrashMods.isVisible = true
             for (mod in report.suspectMods) {
                 val row = CheckBox(activity).apply {
                     text = buildModLabel(mod)
@@ -47,9 +62,6 @@ object GameCrashDialog {
         if (hasMissing) {
             binding.textCrashDepsTitle.isVisible = true
             binding.layoutCrashDeps.isVisible = true
-            if (!canPickMods) {
-                binding.textCrashHint.text = activity.getString(R.string.crash_dialog_dep_hint)
-            }
             for (dep in report.missingMods) {
                 val line = TextView(activity).apply {
                     text = "· ${dep.displayHint}"
@@ -59,34 +71,68 @@ object GameCrashDialog {
             }
         }
 
-        if (!canPickMods && !hasMissing) {
-            binding.textCrashHint.text = hintForKind(activity, report.kind)
-        }
-
-        var dialogRef: androidx.appcompat.app.AlertDialog? = null
         val builder = MaterialAlertDialogBuilder(activity)
             .setTitle(R.string.crash_dialog_title)
             .setView(binding.root)
             .setNegativeButton(android.R.string.cancel, null)
+            .setNeutralButton(R.string.crash_dialog_share_log) { _, _ ->
+                shareLog(activity, shareBody)
+            }
 
         if (hasMissing) {
-            builder.setNeutralButton(R.string.crash_dialog_download_deps) { _, _ ->
+            builder.setPositiveButton(R.string.crash_dialog_download_deps) { _, _ ->
                 downloadMissingDeps(activity, binding, report)
             }
-        }
-
-        if (canPickMods) {
+        } else if (canPickMods) {
             builder.setPositiveButton(R.string.crash_dialog_disable_retry) { _, _ ->
                 disableSelectedAndRetry(activity, binding, report, checkBoxes)
             }
-        } else if (report.kind == GameCrashKind.VRAM_OOM) {
+        } else {
             builder.setPositiveButton(R.string.crash_dialog_retry) { _, _ ->
                 retryLaunch(activity, report.versionId)
             }
         }
 
-        dialogRef = builder.create()
-        dialogRef.show()
+        val dialog = builder.create()
+        dialog.show()
+        // Cap height so NestedScrollView can actually scroll on small screens.
+        dialog.window?.let { window ->
+            val maxH = (activity.resources.displayMetrics.heightPixels * 0.78f).toInt()
+            val w = (activity.resources.displayMetrics.widthPixels * 0.92f).toInt()
+            window.setLayout(w, maxH)
+        }
+    }
+
+    private fun copyLog(context: Context, log: String) {
+        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        cm?.setPrimaryClip(ClipData.newPlainText("booxin_crash_log", log))
+        Toast.makeText(context, R.string.crash_dialog_log_copied, Toast.LENGTH_SHORT).show()
+    }
+
+    private fun shareLog(context: Context, log: String) {
+        runCatching {
+            val dir = File(context.cacheDir, "diagnostics").apply { mkdirs() }
+            val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
+            val file = File(dir, "booxin-game-crash-$stamp.txt")
+            file.writeText(log)
+            val uri = FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.fileprovider",
+                file
+            )
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_SUBJECT, context.getString(R.string.crash_dialog_share_subject))
+                putExtra(Intent.EXTRA_STREAM, uri)
+                putExtra(Intent.EXTRA_TEXT, log.take(8_000))
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            context.startActivity(
+                Intent.createChooser(intent, context.getString(R.string.crash_dialog_share_log))
+            )
+        }.onFailure {
+            copyLog(context, log)
+        }
     }
 
     private fun buildModLabel(mod: GameCrashSuspectMod): String {
@@ -101,6 +147,8 @@ object GameCrashDialog {
                 activity.getString(R.string.crash_dialog_native_hint)
             GameCrashKind.MIXIN_ERROR -> activity.getString(R.string.crash_dialog_mixin_hint)
             GameCrashKind.JVM_CRASH -> activity.getString(R.string.crash_dialog_jvm_hint)
+            GameCrashKind.PROCESS_DIED -> activity.getString(R.string.crash_dialog_process_hint)
+            GameCrashKind.POJAV_SODIUM -> activity.getString(R.string.crash_dialog_pojav_hint)
             else -> activity.getString(R.string.crash_dialog_generic_hint)
         }
 

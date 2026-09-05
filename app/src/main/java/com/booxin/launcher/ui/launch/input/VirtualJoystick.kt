@@ -114,15 +114,25 @@ class VirtualJoystick @JvmOverloads constructor(
     fun layoutInParent(parentW: Int, parentH: Int) {
         if (parentW <= 0 || parentH <= 0) return
         val sizePx = dp(spec.sizeDp)
-        val lp = (layoutParams as? FrameLayout.LayoutParams)
-            ?: FrameLayout.LayoutParams(sizePx, sizePx).also { layoutParams = it }
+        val left = (spec.x * parentW - sizePx / 2f).toInt()
+            .coerceIn(0, (parentW - sizePx).coerceAtLeast(0))
+        val top = (spec.y * parentH - sizePx / 2f).toInt()
+            .coerceIn(0, (parentH - sizePx).coerceAtLeast(0))
+        val existing = layoutParams as? FrameLayout.LayoutParams
+        if (existing != null &&
+            existing.width == sizePx &&
+            existing.height == sizePx &&
+            existing.leftMargin == left &&
+            existing.topMargin == top
+        ) {
+            return
+        }
+        val lp = existing ?: FrameLayout.LayoutParams(sizePx, sizePx)
         lp.width = sizePx
         lp.height = sizePx
         lp.gravity = Gravity.TOP or Gravity.START
-        lp.leftMargin = (spec.x * parentW - sizePx / 2f).toInt()
-            .coerceIn(0, (parentW - sizePx).coerceAtLeast(0))
-        lp.topMargin = (spec.y * parentH - sizePx / 2f).toInt()
-            .coerceIn(0, (parentH - sizePx).coerceAtLeast(0))
+        lp.leftMargin = left
+        lp.topMargin = top
         layoutParams = lp
     }
 

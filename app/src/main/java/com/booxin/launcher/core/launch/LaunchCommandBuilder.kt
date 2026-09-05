@@ -630,6 +630,8 @@ class LaunchCommandBuilder(
         if (legacyLwjgl) {
             // LWJGL2 Display path — GLFW.<clinit> is unnecessary and can fail on Java 8.
             envBase["BOOXIN_SKIP_GLFW_PREINIT"] = "1"
+            // Keep POJAV_RENDERER visible to Java for lwjglx only (not ColorOS SKIP_GLFW).
+            envBase["BOOXIN_KEEP_JAVA_POJAV_RENDERER"] = "1"
         }
         val env = RuntimeEnv.withNativeAliases(
             envBase,
@@ -1164,7 +1166,12 @@ class LaunchCommandBuilder(
             }
             add("-Dorg.lwjgl.freetype.libname=$nativeDir/libfreetype.so")
             add("-Dorg.lwjgl.openal.libname=$nativeDir/libopenal.so")
-            add("-Dorg.lwjgl.vulkan.libname=libvulkan.so")
+            // Do NOT set org.lwjgl.vulkan.libname on GLES path: MC 26.x then calls
+            // VK.getVulkanDriverHandle() (we return 0) → NPE in SharedLibrary ctor.
+            // Vulkan/Zink is a separate renderer; leave Vulkan probe to fail cleanly.
+            if (renderer == GlRendererKind.VULKAN_ZINK) {
+                add("-Dorg.lwjgl.vulkan.libname=libvulkan.so")
+            }
             add("-Dorg.lwjgl.spvc.libname=spirv-cross-c-shared")
             add("-Dorg.lwjgl.shaderc.libname=shaderc")
             val sdl3 = File(nativeDir, "libSDL3.so")

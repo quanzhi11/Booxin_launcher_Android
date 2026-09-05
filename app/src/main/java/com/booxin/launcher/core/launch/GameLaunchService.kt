@@ -50,6 +50,7 @@ class GameLaunchService : Service() {
     private var muteReceiver: android.content.BroadcastReceiver? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     @Volatile private var hardKillScheduled = false
+    @Volatile private var userRequestedStop = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -119,6 +120,7 @@ class GameLaunchService : Service() {
 
         acquireWakeLock()
         hardKillScheduled = false
+        userRequestedStop = false
 
         launchJob = scope.launch {
             var outcome: LaunchOutcome = LaunchOutcome.Failed("未知错误")
@@ -178,8 +180,12 @@ class GameLaunchService : Service() {
                     LaunchOutcome.Failed(t.message ?: t.javaClass.simpleName)
                 }
             } finally {
-                if (!hardKillScheduled) {
+                if (!hardKillScheduled && !userRequestedStop) {
                     maybeStoreCrashReport(versionId, lastExitCode)
+                    settleOutcome(outcome, startId)
+                } else if (!hardKillScheduled) {
+                    // User exit: still tear down without crash dialog.
+                    GameSessionLease.markUserExit(applicationContext)
                     settleOutcome(outcome, startId)
                 }
             }
@@ -211,6 +217,13 @@ class GameLaunchService : Service() {
     }
 
     private fun requestStop(reason: String) {
+        val intentional = reason == "user_stop" ||
+            reason.contains("取消") ||
+            reason.contains("用户")
+        if (intentional) {
+            userRequestedStop = true
+            GameSessionLease.markUserExit(applicationContext)
+        }
         when (LaunchSession.requestStop()) {
             LaunchSession.StopKind.None -> {
                 if (reason == "user_stop") {
@@ -221,12 +234,15 @@ class GameLaunchService : Service() {
             }
             LaunchSession.StopKind.CancelJob -> {
                 appendLog("取消启动: $reason")
+                // Set kill flag BEFORE cancel so coroutine finally skips crash report.
+                if (intentional) hardKillScheduled = true
                 runner.stop()
                 launchJob?.cancel()
                 scheduleHardKill(reason)
             }
             LaunchSession.StopKind.HardKill -> {
                 appendLog("结束游戏进程: $reason")
+                if (intentional) hardKillScheduled = true
                 runner.stop()
                 launchJob?.cancel()
                 scheduleHardKill(reason)
@@ -235,6 +251,13 @@ class GameLaunchService : Service() {
     }
 
     private fun scheduleHardKill(reason: String) {
+        val intentional = reason == "user_stop" ||
+            reason.contains("取消") ||
+            reason.contains("用户")
+        if (intentional) {
+            userRequestedStop = true
+            GameSessionLease.markUserExit(applicationContext)
+        }
         if (hardKillScheduled) return
         hardKillScheduled = true
         GameLaunchLogBus.finished(applicationContext)
@@ -677,6 +700,7 @@ class GameLaunchService : Service() {
         if (!LaunchSession.enterRunning()) {
             return LaunchOutcome.Failed("已停止")
         }
+        GameSessionLease.mark(applicationContext, versionId, hotspotEntered = true)
 
         val logJob = launch {
             runner.logs.collect { appendLog(it) }
@@ -695,13 +719,21 @@ class GameLaunchService : Service() {
     }
 
     private fun maybeStoreCrashReport(versionId: String, exitCode: Int) {
-        val report = GameCrashAnalyzer.analyze(
-            versionId = versionId,
-            exitCode = exitCode,
-            gameWasRunning = LaunchSession.hotspotEntered
-        ) ?: return
-        GameCrashReportStore.save(applicationContext, report)
-        appendLog("已记录崩溃报告：${report.summary}")
+        if (userRequestedStop) {
+            GameSessionLease.markUserExit(applicationContext)
+            return
+        }
+        try {
+            val report = GameCrashAnalyzer.analyze(
+                versionId = versionId,
+                exitCode = exitCode,
+                gameWasRunning = LaunchSession.hotspotEntered
+            ) ?: return
+            GameCrashReportStore.save(applicationContext, report)
+            appendLog("已记录崩溃报告：${report.summary}")
+        } finally {
+            GameSessionLease.clear(applicationContext)
+        }
     }
 
     private fun startAsForeground(content: String) {
@@ -895,6 +927,9 @@ class GameLaunchService : Service() {
         }
 
         fun stop(context: Context) {
+            // Clear before async STOP — otherwise killProcess can race and MainActivity
+            // treats a normal exit as unexpected death.
+            GameSessionLease.markUserExit(context)
             val intent = Intent(context, GameLaunchService::class.java).apply {
                 action = ACTION_STOP
             }

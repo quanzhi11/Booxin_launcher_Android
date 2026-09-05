@@ -27,6 +27,7 @@ import com.booxin.launcher.core.multiplayer.RoomInviteCoordinator
 import com.booxin.launcher.core.multiplayer.RoomInviteNotifier
 import com.booxin.launcher.core.multiplayer.HostedRoomCleanup
 import com.booxin.launcher.core.launch.GameCrashReportStore
+import com.booxin.launcher.core.launch.GameSessionLease
 import com.booxin.launcher.ui.crash.GameCrashDialog
 import com.booxin.launcher.core.uiplugin.UiPluginFonts
 import com.booxin.launcher.core.uiplugin.UiPluginManager
@@ -52,6 +53,7 @@ class MainActivity : AppCompatActivity() {
     private var syncingNav = false
     private var showingInviteDialog = false
     private var showingCrashDialog = false
+    private var suppressCrashDialogOnce = false
     /** Latest install snapshot; used to hide global bar on pages that already show progress. */
     private var lastInstallSnapshot: InstallProgressHub.Snapshot? = null
     private var currentDestId: Int = 0
@@ -65,6 +67,11 @@ class MainActivity : AppCompatActivity() {
         R.id.nav_plugin_store,
         R.id.nav_settings
     )
+
+    companion object {
+        /** Set by LaunchActivity when user taps 退出游戏 / 返回. */
+        const val EXTRA_USER_EXITED_GAME = "booxin_user_exited_game"
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -203,6 +210,11 @@ class MainActivity : AppCompatActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        if (intent.getBooleanExtra(EXTRA_USER_EXITED_GAME, false)) {
+            suppressCrashDialogOnce = true
+            GameSessionLease.markUserExit(this)
+            intent.removeExtra(EXTRA_USER_EXITED_GAME)
+        }
         handleInviteIntent(intent)
     }
 
@@ -213,15 +225,33 @@ class MainActivity : AppCompatActivity() {
         refreshPluginPageNav()
         // After :game crash, MainActivity comes back — unpublish zombie public rooms.
         HostedRoomCleanup.sweepAsync(this)
+        if (intent?.getBooleanExtra(EXTRA_USER_EXITED_GAME, false) == true) {
+            suppressCrashDialogOnce = true
+            GameSessionLease.markUserExit(this)
+            intent.removeExtra(EXTRA_USER_EXITED_GAME)
+        }
         maybeShowCrashDialog()
     }
 
     private fun maybeShowCrashDialog() {
         if (showingCrashDialog || showingInviteDialog) return
-        val report = GameCrashReportStore.consume(this) ?: return
+        if (suppressCrashDialogOnce) {
+            suppressCrashDialogOnce = false
+            GameCrashReportStore.clear(this)
+            GameSessionLease.clear(this)
+            return
+        }
+        // User tapped 退出游戏 — never show.
+        if (GameSessionLease.consumeUserExit(this) || GameSessionLease.launchLogSaysUserExit()) {
+            GameCrashReportStore.clear(this)
+            GameSessionLease.clear(this)
+            return
+        }
+        val report = GameCrashReportStore.consume(this)
+            ?: GameSessionLease.recoverUnexpectedExit(this)
+            ?: return
         showingCrashDialog = true
         GameCrashDialog.showIfNeeded(this, report)
-        // Dialog 为同步 show；若用户未操作，保持标记避免重复弹出。
         showingCrashDialog = false
     }
 

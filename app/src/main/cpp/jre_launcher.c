@@ -55,13 +55,16 @@ static void ensure_booxin_renderer_env(void) {
  *
  * Legacy LWJGL2 / lwjglx (LaunchWrapper): mglfwCreateWindow does
  * System.getenv("POJAV_RENDERER").equals(...) with no null-check — must keep it
- * visible to Java or Display.create NPEs (black screen).
+ * visible to Java or Display.create NPEs (black screen). That path sets
+ * BOOXIN_KEEP_JAVA_POJAV_RENDERER=1 — do NOT key off BOOXIN_SKIP_GLFW_PREINIT
+ * (ColorOS/realme also sets SKIP_GLFW; exposing POJAV_RENDERER makes Sodium kill
+ * the game with "using PojavLauncher").
  */
 static void freeze_java_env_hide_legacy_renderer(JNIEnv *env) {
     ensure_booxin_renderer_env();
     {
-        const char *skip = getenv("BOOXIN_SKIP_GLFW_PREINIT");
-        if (skip && skip[0] && skip[0] != '0') {
+        const char *keepJava = getenv("BOOXIN_KEEP_JAVA_POJAV_RENDERER");
+        if (keepJava && keepJava[0] && keepJava[0] != '0') {
             const char *booxin_renderer = getenv("BOOXIN_RENDERER");
             if (booxin_renderer && strstr(booxin_renderer, "opengles3_rel")) {
                 setenv("POJAV_RENDERER", "opengles3", 1);
@@ -2176,7 +2179,14 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_bridge) {
              knot_like ? "Knot-like" : "Forge-like",
              pa.mainClass);
     }
-    if (!isolated_loader && !sdl_like) {
+    /* ColorOS/realme sets SKIP_GLFW but still needs GLFW.<clinit> to System.load
+     * the bridge on the LWJGL jar ClassLoader. Early HotSpotNativeLoader.load
+     * binds the .so to a different loader → "already loaded in another classloader"
+     * and nglfw* stay unresolved (vanilla 26.2 crash). LaunchWrapper keeps early load. */
+    int oem_defer_bridge_java_load =
+        skip_glfw_preinit && !launchwrapper_like && !isolated_loader && !sdl_like;
+
+    if (!isolated_loader && !sdl_like && !oem_defer_bridge_java_load) {
         launch_log_line(ANDROID_LOG_INFO, "HotSpot System.load(booxin_bridge)…");
         if (!hotspot_system_load_booxin_bridge(jenv)) {
             launch_log_line(ANDROID_LOG_WARN,
@@ -2207,6 +2217,40 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_bridge) {
         if (launchwrapper_like) {
             hotspot_load_legacy_awt(jenv);
         }
+    } else if (oem_defer_bridge_java_load) {
+        launch_log_line(ANDROID_LOG_INFO,
+            "OEM — skip early HotSpot System.load(booxin_bridge); "
+            "GLFW.<clinit> loads on LWJGL ClassLoader");
+        {
+            void *lib = open_booxin_bridge();
+            typedef void *(*ensure_fn)(void);
+            typedef void (*retain_fn)(void *);
+            ensure_fn ensure = lib
+                ? (ensure_fn)dlsym(lib, "booxin_ensure_native_window")
+                : NULL;
+            retain_fn retain = lib
+                ? (retain_fn)dlsym(lib, "booxin_retain_native_window")
+                : NULL;
+            if (retain && booxin_shared_native_window) {
+                retain(booxin_shared_native_window);
+            }
+            void *win = ensure ? ensure() : NULL;
+            if (!win && booxin_shared_native_window) {
+                win = booxin_shared_native_window;
+            }
+            LOGI("OEM ensure native window=%p shared=%p", win, booxin_shared_native_window);
+            struct booxin_bridge_environ_s **pp = lib
+                ? (struct booxin_bridge_environ_s **)dlsym(lib, "booxin_environ")
+                : NULL;
+            if (pp && *pp) {
+                (*pp)->runtimeJavaVMPtr = jvm;
+                (*pp)->runtimeJNIEnvPtr_JRE = jenv;
+                if (win) (*pp)->nativeWindow = win;
+            }
+            /* Do NOT bind_glfw_input_buffers — FindClass GLFW stalls ColorOS. */
+        }
+        log_booxin_environ("after OEM HotSpot ensure (deferred Java load)");
+        force_input_bridge_ready("after OEM deferred bridge ensure");
     } else if (sdl_like) {
         LOGI("SDL windowing — load liblwjgl + bridge (no GLFW preinit)");
         {

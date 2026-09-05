@@ -22,21 +22,25 @@ object GameCrashAnalyzer {
     fun analyze(
         versionId: String,
         exitCode: Int,
-        gameWasRunning: Boolean
+        gameWasRunning: Boolean,
+        /** Main-process recovery after `:game` SIGKILL / silent death. */
+        forceUnexpected: Boolean = false
     ): GameCrashReport? {
         val text = collectCrashText(versionId)
-        if (!shouldReport(exitCode, gameWasRunning, text)) return null
+        if (!shouldReport(exitCode, gameWasRunning, text, forceUnexpected)) return null
 
         val missingMods = extractMissingMods(text)
-        val kind = classify(text, exitCode, missingMods)
+        val kind = classify(text, exitCode, missingMods, gameWasRunning, forceUnexpected)
         val suspectMods = extractSuspectMods(versionId, text, kind)
-        val summary = buildSummary(kind, missingMods, suspectMods)
-        val detail = buildDetail(text)
+        val summary = buildSummary(kind, missingMods, suspectMods, exitCode)
+        val suggestion = buildSuggestion(kind, missingMods, suspectMods)
+        val detail = buildDetail(text, exitCode, gameWasRunning)
 
         return GameCrashReport(
             versionId = versionId,
             kind = kind,
             summary = summary,
+            suggestion = suggestion,
             detail = detail,
             exitCode = exitCode,
             suspectMods = suspectMods,
@@ -81,13 +85,68 @@ object GameCrashAnalyzer {
         return chunks.joinToString("\n")
     }
 
-    private fun shouldReport(exitCode: Int, gameWasRunning: Boolean, text: String): Boolean {
-        if (text.isBlank() && exitCode == 0) return false
-        if (!gameWasRunning && exitCode == 0 && !hasExceptionMarkers(text)) return false
-        if (gameWasRunning && exitCode == 0 && !hasExceptionMarkers(text) && !hasCrashArtifacts(text)) {
+    private fun shouldReport(
+        exitCode: Int,
+        gameWasRunning: Boolean,
+        text: String,
+        forceUnexpected: Boolean
+    ): Boolean {
+        if (looksLikeUserExit(text)) return false
+        val meaningful = stripBenignNoise(text)
+        if (forceUnexpected) {
+            if (hasCrashArtifacts(meaningful) || hasStrongCrashMarkers(meaningful)) return true
+            // flite/Realms/sysfs only → not a real crash after user leave / silent stop
+            if (isBenignNoiseOnly(text)) return false
+            return true
+        }
+        if (!gameWasRunning && exitCode == 0 && meaningful.isBlank()) return false
+        if (!gameWasRunning && exitCode == 0 && !hasStrongCrashMarkers(meaningful) && !hasCrashArtifacts(meaningful)) {
             return false
         }
-        return exitCode != 0 || hasExceptionMarkers(text) || hasCrashArtifacts(text) || gameWasRunning
+        if (gameWasRunning) {
+            if (hasCrashArtifacts(meaningful) || hasStrongCrashMarkers(meaningful)) return true
+            return false
+        }
+        return exitCode != 0 || hasStrongCrashMarkers(meaningful) || hasCrashArtifacts(meaningful)
+    }
+
+    private fun looksLikeUserExit(text: String): Boolean {
+        if (text.isBlank()) return false
+        return "user_exit intentional" in text ||
+            "user_stop" in text ||
+            "结束游戏进程: user_stop" in text ||
+            "killProcess :game (user_stop)" in text
+    }
+
+    private fun isBenignNoiseOnly(text: String): Boolean {
+        if (text.isBlank()) return true
+        val meaningful = stripBenignNoise(text)
+        return !hasCrashArtifacts(meaningful) && !hasStrongCrashMarkers(meaningful)
+    }
+
+    private fun stripBenignNoise(text: String): String {
+        if (text.isBlank()) return text
+        return text.lineSequence().filterNot { line ->
+            val l = line.lowercase()
+            "libflite" in l ||
+                "flite.so" in l ||
+                ("narrator" in l && ("unsatisfied" in l || "failed to load" in l || "initializeexception" in l)) ||
+                "text2speech" in l ||
+                "realms" in l ||
+                "signedjwt" in l ||
+                "bus_dcvs" in l ||
+                "cur_freq" in l ||
+                ("accessdeniedexception" in l && "/sys/" in l) ||
+                "pack declares support for version newer" in l ||
+                "booxin offline skin" in l ||
+                // Known non-fatal on OEM/Forge deferred bridge load — game often continues.
+                ("already loaded in another classloader" in l &&
+                    ("booxin_bridge" in l || "libbooxin" in l || "pojav" in l)) ||
+                ("unsatisfiedlinkerror" in l &&
+                    ("booxin_bridge" in l || "libbooxin" in l) &&
+                    "already loaded" in l) ||
+                ("system.load" in l && "booxin_bridge" in l && "already loaded" in l)
+        }.joinToString("\n")
     }
 
     private fun hasCrashArtifacts(text: String): Boolean =
@@ -95,7 +154,8 @@ object GameCrashAnalyzer {
             "A detailed walkthrough of the error" in text ||
             "# A fatal error has been detected by the Java Runtime Environment" in text
 
-    private fun hasExceptionMarkers(text: String): Boolean {
+    /** Markers that mean a real failure — not narrator flite / bridge already-loaded. */
+    private fun hasStrongCrashMarkers(text: String): Boolean {
         if (text.isBlank()) return false
         val markers = listOf(
             "ExceptionInInitializerError",
@@ -103,25 +163,48 @@ object GameCrashAnalyzer {
             "Mixin apply failed",
             "MixinTransformerError",
             "OutOfMemoryError",
-            "UnsatisfiedLinkError",
             "SIGSEGV",
             "SIGABRT",
             "FATAL ERROR",
             "Game crashed",
-            "Shutting down",
-            "Caused by:",
-            "---- Minecraft Crash Report ----"
+            "---- Minecraft Crash Report ----",
+            "using PojavLauncher",
+            "nglfwSetFramebufferSizeCallback"
         )
-        return markers.any { text.contains(it, ignoreCase = true) }
+        if (markers.any { text.contains(it, ignoreCase = true) }) return true
+        if (text.contains("UnsatisfiedLinkError", ignoreCase = true) ||
+            text.contains("already loaded in another classloader", ignoreCase = true)
+        ) {
+            val lower = text.lowercase()
+            val benignNative =
+                "flite" in lower ||
+                    "narrator" in lower ||
+                    "text2speech" in lower ||
+                    "booxin_bridge" in lower ||
+                    "libbooxin" in lower
+            if (!benignNative) return true
+        }
+        return false
     }
+
+    private fun hasExceptionMarkers(text: String): Boolean = hasStrongCrashMarkers(text)
 
     private fun classify(
         text: String,
         exitCode: Int,
-        missingMods: List<GameCrashMissingMod>
+        missingMods: List<GameCrashMissingMod>,
+        gameWasRunning: Boolean,
+        forceUnexpected: Boolean
     ): GameCrashKind {
-        val lower = text.lowercase()
+        val meaningful = stripBenignNoise(text)
+        val lower = meaningful.lowercase()
         if (missingMods.isNotEmpty()) return GameCrashKind.MISSING_DEPENDENCY
+        if ("pojavlauncher" in lower && "sodium" in lower) {
+            return GameCrashKind.POJAV_SODIUM
+        }
+        if ("using pojavlauncher" in lower) {
+            return GameCrashKind.POJAV_SODIUM
+        }
         if ("outofmemoryerror" in lower ||
             "out of memory" in lower ||
             "gl_out_of_memory" in lower ||
@@ -135,6 +218,7 @@ object GameCrashAnalyzer {
             "libimgui" in lower ||
             "can't load library" in lower
         ) {
+            // Bridge already-loaded is stripped above; remaining link errors are real.
             return GameCrashKind.NATIVE_INCOMPATIBLE
         }
         if ("mixin apply failed" in lower ||
@@ -151,9 +235,13 @@ object GameCrashAnalyzer {
         ) {
             return GameCrashKind.MOD_CONFLICT
         }
-        if (hasExceptionMarkers(text) || exitCode != 0) {
+        if (hasCrashArtifacts(meaningful) || hasExceptionMarkers(meaningful)) {
             return GameCrashKind.JVM_CRASH
         }
+        if ((forceUnexpected || gameWasRunning) && !hasCrashArtifacts(meaningful)) {
+            return GameCrashKind.PROCESS_DIED
+        }
+        if (exitCode != 0) return GameCrashKind.JVM_CRASH
         return GameCrashKind.UNKNOWN
     }
 
@@ -272,7 +360,8 @@ object GameCrashAnalyzer {
     private fun buildSummary(
         kind: GameCrashKind,
         missingMods: List<GameCrashMissingMod>,
-        suspectMods: List<GameCrashSuspectMod>
+        suspectMods: List<GameCrashSuspectMod>,
+        exitCode: Int
     ): String = when (kind) {
         GameCrashKind.MISSING_DEPENDENCY ->
             if (missingMods.isEmpty()) "检测到模组依赖缺失"
@@ -281,14 +370,49 @@ object GameCrashAnalyzer {
             if (suspectMods.isEmpty()) "疑似模组冲突导致崩溃"
             else "疑似冲突模组：${suspectMods.take(3).joinToString { it.displayName }}"
         GameCrashKind.VRAM_OOM -> "显存或内存不足导致崩溃"
-        GameCrashKind.NATIVE_INCOMPATIBLE -> "模组含不兼容原生库（如 x86 / 桌面专用）"
+        GameCrashKind.NATIVE_INCOMPATIBLE -> "模组/原生库加载失败（不兼容或 ClassLoader 冲突）"
         GameCrashKind.MIXIN_ERROR -> "模组 Mixin 注入失败，可能与版本或其他模组冲突"
-        GameCrashKind.JVM_CRASH -> "游戏进程异常退出"
-        GameCrashKind.UNKNOWN -> "游戏意外退出"
+        GameCrashKind.JVM_CRASH -> "游戏进程异常退出（退出码 $exitCode）"
+        GameCrashKind.PROCESS_DIED -> "游戏进程被系统结束（无崩溃报告，退出码 $exitCode）"
+        GameCrashKind.POJAV_SODIUM -> "Sodium 误判为 PojavLauncher 并主动退出"
+        GameCrashKind.UNKNOWN -> "游戏意外退出（退出码 $exitCode）"
     }
 
-    private fun buildDetail(text: String): String {
-        if (text.isBlank()) return "未找到详细日志，可在设置中导出诊断包。"
+    private fun buildSuggestion(
+        kind: GameCrashKind,
+        missingMods: List<GameCrashMissingMod>,
+        suspectMods: List<GameCrashSuspectMod>
+    ): String = when (kind) {
+        GameCrashKind.MISSING_DEPENDENCY ->
+            if (missingMods.isEmpty()) "请安装缺失依赖模组后重试。"
+            else "请安装：${missingMods.joinToString { it.displayHint }}，或点「一键下载依赖」。"
+        GameCrashKind.MOD_CONFLICT ->
+            if (suspectMods.isEmpty()) "尝试禁用近期新增模组后重试；也可导出日志发给开发者。"
+            else "建议先禁用：${suspectMods.take(3).joinToString { it.displayName }}，再启动。"
+        GameCrashKind.VRAM_OOM ->
+            "降低渲染距离/分辨率，关闭高清材质与光影，或减少分配内存后重试。"
+        GameCrashKind.NATIVE_INCOMPATIBLE ->
+            "禁用含桌面原生库的模组；若日志有 already loaded，请更新启动器到最新版后重开。"
+        GameCrashKind.MIXIN_ERROR ->
+            "检查模组与游戏版本是否匹配，并禁用冲突模组后重试。"
+        GameCrashKind.JVM_CRASH ->
+            "查看下方日志中的 Exception；常见处理：换渲染器、禁用可疑模组、降低画质。"
+        GameCrashKind.PROCESS_DIED ->
+            "多为系统杀进程或显存压力。建议：关闭后台 App、降低画质/视距、关闭联机隧道后重试；仍复现请转发日志。"
+        GameCrashKind.POJAV_SODIUM ->
+            "请更新到最新 Booxin（会隐藏 POJAV_RENDERER）。仍出现则清缓存后重装启动器。"
+        GameCrashKind.UNKNOWN ->
+            "请转发下方日志给开发者；也可先降低画质或禁用近期模组试一次。"
+    }
+
+    private fun buildDetail(text: String, exitCode: Int, gameWasRunning: Boolean): String {
+        if (text.isBlank()) {
+            return buildString {
+                appendLine("未找到详细崩溃文件。")
+                appendLine("exitCode=$exitCode hotspotEntered=$gameWasRunning")
+                appendLine("可转发本段文字；或到设置导出完整诊断包。")
+            }
+        }
         val lines = text.lines()
         val interesting = lines.filter { line ->
             val l = line.lowercase()
@@ -300,13 +424,18 @@ object GameCrashAnalyzer {
                 l.contains("mod ") ||
                 l.contains("missing") ||
                 l.contains("conflict") ||
-                l.contains("memory")
+                l.contains("memory") ||
+                l.contains("pojav") ||
+                l.contains("unsatisfied") ||
+                l.contains("sigsegv") ||
+                l.contains("already loaded") ||
+                l.contains("has died")
         }
         val body = if (interesting.isNotEmpty()) {
-            interesting.takeLast(18).joinToString("\n")
+            interesting.takeLast(40).joinToString("\n")
         } else {
-            lines.takeLast(12).joinToString("\n")
+            lines.takeLast(30).joinToString("\n")
         }
-        return body.take(2_000)
+        return body.take(6_000)
     }
 }

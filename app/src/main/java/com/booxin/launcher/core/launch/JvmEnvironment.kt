@@ -49,11 +49,12 @@ object JvmEnvironment {
         env.forEach { (key, value) ->
             Os.setenv(key, value, true)
         }
-        // Keep POJAV_RENDERER out of the Java-visible env (Create brands it "PojavLauncher"),
-        // except legacy LWJGL2 which needs it in System.getenv (lwjglx NPE otherwise).
+        // Keep POJAV_RENDERER out of the Java-visible env (Sodium/Create brand it
+        // "PojavLauncher"), except legacy LWJGL2 (lwjglx NPE otherwise).
+        // Do NOT tie this to BOOXIN_SKIP_GLFW_PREINIT — ColorOS/realme sets that too.
         val keepPojavRenderer = extraEnv.containsKey(
             com.booxin.launcher.core.runtime.RuntimeEnv.LEGACY_POJAV_RENDERER
-        ) || extraEnv["BOOXIN_SKIP_GLFW_PREINIT"] == "1"
+        ) || extraEnv["BOOXIN_KEEP_JAVA_POJAV_RENDERER"] == "1"
         if (!keepPojavRenderer) {
             runCatching { Os.unsetenv(com.booxin.launcher.core.runtime.RuntimeEnv.LEGACY_POJAV_RENDERER) }
         }
