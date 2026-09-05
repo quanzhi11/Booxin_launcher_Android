@@ -18,6 +18,7 @@ import androidx.recyclerview.widget.GridLayoutManager
 import com.booxin.launcher.AppContainer
 import com.booxin.launcher.R
 import com.booxin.launcher.core.community.CommunityDescriptionTranslator
+import com.booxin.launcher.core.community.CommunitySearchQuery
 import com.booxin.launcher.core.community.ModrinthClient
 import com.booxin.launcher.data.model.CommunityContentType
 import com.booxin.launcher.data.model.CommunityLoader
@@ -177,7 +178,12 @@ class CommunityFragment : Fragment() {
         val selectedLoader = loader
         searchJob?.cancel()
         searchJob = viewLifecycleOwner.lifecycleScope.launch {
-            showLoading(getString(R.string.community_loading))
+            val loadingMsg = if (CommunitySearchQuery.containsChinese(query)) {
+                getString(R.string.community_loading_zh)
+            } else {
+                getString(R.string.community_loading)
+            }
+            showLoading(loadingMsg)
             val result = AppContainer.communityRepository.searchProjects(
                 query = query,
                 contentType = type,

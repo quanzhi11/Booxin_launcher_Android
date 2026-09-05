@@ -20,10 +20,13 @@ object UiPluginManager {
             ?.filter { it.isDirectory }
             ?.mapNotNull { dir ->
                 val manifest = readManifest(File(dir, "booxin-plugin.json")) ?: return@mapNotNull null
+                val store = readStoreMeta(dir)
                 UiPluginInstall(
                     manifest = manifest,
                     dir = dir,
-                    enabled = !File(dir, ".disabled").isFile
+                    enabled = !File(dir, ".disabled").isFile,
+                    storePluginId = store?.optString("storePluginId")?.ifBlank { null },
+                    storeVersion = store?.optString("storeVersion")?.ifBlank { null }
                 )
             }
             .orEmpty()
@@ -38,12 +41,96 @@ object UiPluginManager {
                 "homeGreetingByTime" ->
                     m.homeGreetingByTime ||
                         (m.customTheme && hasAnyWelcomeOverride(m.theme))
+                "pageSlideTransitions" -> m.pageSlideTransitions
+                "home3dModel" -> m.home3dModel
+                "controlLayout" -> m.controlLayout
                 "customLauncherIcon" -> m.customLauncherIcon || m.customTheme
                 "customFont" -> m.customFont || m.customTheme
                 "customTheme" -> m.customTheme
+                "jsCommands" -> m.jsCommands
+                "customPages" -> m.customPages || m.pages.isNotEmpty()
                 else -> false
             }
         }
+    }
+
+    /** Enabled controlLayout pack → layout JSON used by in-game on-screen controls. */
+    fun resolveControlLayoutFile(): File? = resolveControlLayoutFile(layoutId = null)
+
+    /**
+     * Resolve a control layout JSON file.
+     * @param layoutId null / blank / "main" → main [UiPluginManifest.layoutFile];
+     *                 otherwise match [UiPluginManifest.extraLayouts] by id.
+     */
+    fun resolveControlLayoutFile(layoutId: String?): File? {
+        val install = resolveControlLayoutInstall() ?: return null
+        val id = layoutId?.trim().orEmpty()
+        val declared = when {
+            id.isEmpty() || id.equals(MAIN_LAYOUT_ID, ignoreCase = true) ->
+                install.manifest.layoutFile
+            else ->
+                install.manifest.extraLayouts
+                    .firstOrNull { it.id.equals(id, ignoreCase = true) }
+                    ?.file
+                    .orEmpty()
+        }
+        val candidates = buildList {
+            if (declared.isNotBlank()) add(declared)
+            if (id.isEmpty() || id.equals(MAIN_LAYOUT_ID, ignoreCase = true)) {
+                add("control_layout.json")
+                add("layout.json")
+                add("controls.json")
+                add("assets/control_layout.json")
+            }
+        }.distinct()
+        for (rel in candidates) {
+            val f = File(install.dir, rel)
+            if (f.isFile && f.length() > 0L) return f
+        }
+        return null
+    }
+
+    /** Main + extra panels from the active controlLayout pack (empty if none). */
+    fun listControlLayouts(): List<UiPluginExtraLayout> {
+        val install = resolveControlLayoutInstall() ?: return emptyList()
+        val m = install.manifest
+        if (!m.controlLayout) return emptyList()
+        val mainFile = m.layoutFile.ifBlank { "control_layout.json" }
+        return buildList {
+            add(UiPluginExtraLayout(id = MAIN_LAYOUT_ID, name = "主界面", file = mainFile))
+            addAll(m.extraLayouts)
+        }
+    }
+
+    const val MAIN_LAYOUT_ID = "main"
+
+    /** Enabled controlLayout pack install dir (for resolving relative button icons). */
+    fun resolveControlLayoutDir(): File? = resolveControlLayoutInstall()?.dir
+
+    /**
+     * Resolve a button icon path relative to the active controlLayout plugin.
+     * Rejects absolute paths / `..` traversal.
+     */
+    fun resolveControlLayoutAsset(relativePath: String?): File? {
+        val rel = relativePath?.trim().orEmpty()
+        if (rel.isEmpty() || rel.contains("..") || rel.startsWith("/") || rel.startsWith("\\")) return null
+        val dir = resolveControlLayoutDir() ?: return null
+        val f = File(dir, rel)
+        if (!f.isFile || f.length() <= 0L) return null
+        val root = dir.canonicalFile
+        val target = runCatching { f.canonicalFile }.getOrNull() ?: return null
+        if (!target.path.startsWith(root.path)) return null
+        val ext = target.extension.lowercase()
+        if (ext !in setOf("png", "webp", "jpg", "jpeg")) return null
+        return target
+    }
+
+    private fun resolveControlLayoutInstall(): UiPluginInstall? {
+        for (install in listInstalled()) {
+            if (!install.enabled || !install.manifest.controlLayout) continue
+            return install
+        }
+        return null
     }
 
     fun resolveActiveTheme(): UiPluginResolvedTheme? {
@@ -95,6 +182,33 @@ object UiPluginManager {
             resolveIconFor(install, requireFeature = false)?.let { return it }
         }
         return null
+    }
+
+    /**
+     * First enabled plugin with home3dModel and a readable .glb/.gltf.
+     */
+    fun resolveHome3dModelFile(): File? {
+        for (install in listInstalled()) {
+            if (!install.enabled || !install.manifest.home3dModel) continue
+            resolveModelFor(install)?.let { return it }
+        }
+        return null
+    }
+
+    private fun resolveModelFor(install: UiPluginInstall): File? {
+        return resolveAssetFile(
+            install,
+            declared = install.manifest.modelFile,
+            defaults = listOf(
+                "model.glb",
+                "model.gltf",
+                "models/hero.glb",
+                "models/model.glb",
+                "assets/model.glb",
+                "hero.glb"
+            ),
+            allowedExt = setOf("glb", "gltf")
+        )
     }
 
     /**
@@ -178,6 +292,44 @@ object UiPluginManager {
         return null
     }
 
+    /**
+     * Enabled plugins that contribute custom pages (and have at least one valid page entry).
+     */
+    fun listActivePages(): List<Pair<UiPluginInstall, UiPluginPageSpec>> {
+        return buildList {
+            for (install in listInstalled()) {
+                if (!install.enabled) continue
+                if (!install.manifest.customPages && install.manifest.pages.isEmpty()) continue
+                for (page in install.manifest.pages) {
+                    if (page.remoteHttpsUrl() != null) {
+                        add(install to page)
+                        continue
+                    }
+                    val file = resolvePageEntry(install, page) ?: continue
+                    if (file.isFile) add(install to page)
+                }
+            }
+        }
+    }
+
+    fun findInstall(pluginId: String): UiPluginInstall? =
+        listInstalled().firstOrNull { it.manifest.id == pluginId }
+
+    fun resolvePageEntry(install: UiPluginInstall, page: UiPluginPageSpec): File? {
+        val rel = page.entry.trim()
+        if (rel.isEmpty() || rel.contains("..") || rel.startsWith("/") || rel.startsWith("\\")) {
+            return null
+        }
+        val f = File(install.dir, rel)
+        val root = install.dir.canonicalFile
+        val target = runCatching { f.canonicalFile }.getOrNull() ?: return null
+        if (!target.path.startsWith(root.path)) return null
+        if (!target.isFile || target.length() <= 0L) return null
+        val ext = target.extension.lowercase()
+        if (ext !in setOf("html", "htm")) return null
+        return target
+    }
+
     fun installFromZip(zip: File): Result<UiPluginInstall> = runCatching {
         require(zip.isFile && zip.length() > 0L) { "无效的插件包" }
         ZipFile(zip).use { zf ->
@@ -223,6 +375,41 @@ object UiPluginManager {
         }
     }
 
+    fun writeStoreMeta(pluginId: String, storePluginId: String, storeVersion: String) {
+        val dir = File(root(), sanitizeId(pluginId))
+        if (!dir.isDirectory) return
+        val o = JSONObject()
+            .put("storePluginId", storePluginId)
+            .put("storeVersion", storeVersion.ifBlank { "1.0.0" })
+            .put("updatedAt", System.currentTimeMillis())
+        File(dir, STORE_META).writeText(o.toString())
+    }
+
+    fun readStoreMeta(dir: File): JSONObject? {
+        val f = File(dir, STORE_META)
+        if (!f.isFile) return null
+        return runCatching { JSONObject(f.readText()) }.getOrNull()
+    }
+
+    /** Compare dotted versions; returns >0 if a newer than b. */
+    fun compareVersions(a: String, b: String): Int {
+        fun parts(v: String) =
+            v.trim().removePrefix("v").removePrefix("V")
+                .split('.', '-', '_')
+                .map { it.filter(Char::isDigit).toIntOrNull() ?: 0 }
+        val pa = parts(a)
+        val pb = parts(b)
+        val n = maxOf(pa.size, pb.size)
+        for (i in 0 until n) {
+            val x = pa.getOrElse(i) { 0 }
+            val y = pb.getOrElse(i) { 0 }
+            if (x != y) return x.compareTo(y)
+        }
+        return 0
+    }
+
+    private const val STORE_META = ".booxin-store.json"
+
     fun setEnabled(id: String, enabled: Boolean) {
         val dir = File(root(), sanitizeId(id))
         val marker = File(dir, ".disabled")
@@ -262,6 +449,18 @@ object UiPluginManager {
             features?.optString("font"),
             features?.optString("fontFile")
         )
+        val modelFile = firstNonBlank(
+            o.optString("modelFile"),
+            o.optString("model"),
+            features?.optString("modelFile"),
+            features?.optString("model")
+        )
+        val layoutFile = firstNonBlank(
+            o.optString("layoutFile"),
+            o.optString("controlLayoutFile"),
+            features?.optString("layoutFile"),
+            features?.optString("controlLayoutFile")
+        )
         val themeObj = o.optJSONObject("theme")
         val customTheme = features?.optBoolean("customTheme") == true ||
             o.optBoolean("customTheme") ||
@@ -274,6 +473,16 @@ object UiPluginManager {
             description = o.optString("description"),
             homeGreetingByTime = features?.optBoolean("homeGreetingByTime") == true ||
                 o.optBoolean("homeGreetingByTime"),
+            pageSlideTransitions = features?.optBoolean("pageSlideTransitions") == true ||
+                o.optBoolean("pageSlideTransitions"),
+            home3dModel = features?.optBoolean("home3dModel") == true ||
+                o.optBoolean("home3dModel"),
+            modelFile = modelFile,
+            controlLayout = features?.optBoolean("controlLayout") == true ||
+                o.optBoolean("controlLayout") ||
+                o.optString("type").equals("control", ignoreCase = true),
+            layoutFile = layoutFile,
+            extraLayouts = parseExtraLayouts(o.optJSONArray("extraLayouts")),
             customLauncherIcon = features?.optBoolean("customLauncherIcon") == true ||
                 o.optBoolean("customLauncherIcon"),
             launcherIcon = launcherIcon,
@@ -281,8 +490,92 @@ object UiPluginManager {
                 o.optBoolean("customFont"),
             fontFile = fontFile,
             customTheme = customTheme,
-            theme = parseTheme(themeObj)
+            theme = parseTheme(themeObj),
+            jsCommands = features?.optBoolean("jsCommands") == true ||
+                o.optBoolean("jsCommands"),
+            customPages = features?.optBoolean("customPages") == true ||
+                o.optBoolean("customPages") ||
+                (o.optJSONArray("pages")?.length() ?: 0) > 0,
+            pages = parsePages(o.optJSONArray("pages"))
         )
+    }
+
+    private fun parseExtraLayouts(arr: org.json.JSONArray?): List<UiPluginExtraLayout> {
+        if (arr == null || arr.length() == 0) return emptyList()
+        return buildList {
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val id = o.optString("id").trim()
+                val file = firstNonBlank(
+                    o.optString("file"),
+                    o.optString("layoutFile"),
+                    o.optString("path")
+                )
+                if (id.isEmpty() || file.isEmpty()) continue
+                add(
+                    UiPluginExtraLayout(
+                        id = id,
+                        name = o.optString("name").ifBlank { id },
+                        file = file
+                    )
+                )
+            }
+        }
+    }
+
+    private fun parsePages(arr: org.json.JSONArray?): List<UiPluginPageSpec> {
+        if (arr == null || arr.length() == 0) return emptyList()
+        return buildList {
+            for (i in 0 until arr.length()) {
+                val p = arr.optJSONObject(i) ?: continue
+                val id = p.optString("id").trim()
+                if (id.isEmpty()) continue
+                val entry = firstNonBlank(
+                    p.optString("entry"),
+                    p.optString("html"),
+                    p.optString("file")
+                ).orEmpty()
+                val url = firstNonBlank(
+                    p.optString("url"),
+                    p.optString("href"),
+                    p.optString("remote")
+                ).orEmpty()
+                if (entry.isEmpty() && url.isEmpty()) continue
+                if (entry.isNotEmpty() &&
+                    (entry.contains("..") || entry.startsWith("/") || entry.startsWith("\\"))
+                ) {
+                    continue
+                }
+                if (url.isNotEmpty()) {
+                    val uri = runCatching { android.net.Uri.parse(url) }.getOrNull()
+                    if (uri == null ||
+                        !uri.scheme.equals("https", ignoreCase = true) ||
+                        uri.host.isNullOrBlank()
+                    ) {
+                        // Invalid remote URL — still allow local entry alone.
+                        if (entry.isEmpty()) continue
+                    }
+                }
+                val title = p.optString("title").trim().ifBlank { id }
+                val orientation = firstNonBlank(
+                    p.optString("orientation"),
+                    p.optString("screenOrientation")
+                )
+                val fullscreen = p.optBoolean("fullscreen", false) ||
+                    p.optBoolean("fullScreen", false) ||
+                    p.optBoolean("immersive", false)
+                add(
+                    UiPluginPageSpec(
+                        id = id,
+                        title = title,
+                        entry = entry,
+                        url = url,
+                        orientation = orientation,
+                        fullscreen = fullscreen
+                    )
+                )
+            }
+        }
     }
 
     private fun parseTheme(o: JSONObject?): UiPluginThemeSpec {

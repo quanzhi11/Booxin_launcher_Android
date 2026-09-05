@@ -474,9 +474,9 @@ class VersionManageFragment : Fragment() {
     private fun resolveJsonType(json: JSONObject?): String {
         val type = json?.optString("type").orEmpty()
         return when (type.lowercase()) {
-            "release" -> getString(R.string.download_filter_release)
-            "snapshot" -> getString(R.string.download_filter_snapshot)
-            "old_beta", "old_alpha" -> getString(R.string.download_filter_old)
+            "release" -> getString(R.string.download_type_release)
+            "snapshot" -> getString(R.string.download_type_snapshot)
+            "old_beta", "old_alpha" -> getString(R.string.download_type_old)
             else -> type.ifBlank { getString(R.string.version_manage_unknown) }
         }
     }

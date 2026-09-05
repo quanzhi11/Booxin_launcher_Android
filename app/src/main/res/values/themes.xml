@@ -22,6 +22,18 @@
         <item name="android:windowBackground">@drawable/bg_glass_env</item>
         <!-- Use full display on notched / ultrawide landscape phones. -->
         <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+        <!-- OEM AlertDialog list items can inherit an invisible text color. -->
+        <item name="android:textColorAlertDialogListItem">@color/glass_text</item>
+        <item name="materialAlertDialogTheme">@style/ThemeOverlay.Booxin.MaterialAlertDialog</item>
+    </style>
+
+    <style name="ThemeOverlay.Booxin.MaterialAlertDialog" parent="ThemeOverlay.Material3.MaterialAlertDialog">
+        <item name="colorSurface">@color/md_theme_light_surface</item>
+        <item name="colorOnSurface">@color/md_theme_light_onSurface</item>
+        <item name="android:textColorPrimary">@color/glass_text</item>
+        <item name="android:textColorAlertDialogListItem">@color/glass_text</item>
+        <item name="buttonBarNegativeButtonStyle">@style/Widget.Booxin.SecondaryButton</item>
+        <item name="buttonBarPositiveButtonStyle">@style/Widget.Booxin.PrimaryButton</item>
     </style>
 
     <style name="Widget.Booxin.PrimaryButton" parent="Widget.Material3.Button">

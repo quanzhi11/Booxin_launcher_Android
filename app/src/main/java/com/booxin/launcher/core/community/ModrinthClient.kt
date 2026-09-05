@@ -14,6 +14,7 @@ import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.IOException
 
 class ModrinthClient(
     private val downloader: FileDownloader = FileDownloader()
@@ -28,17 +29,16 @@ class ModrinthClient(
     ): Result<ModrinthSearchPage> = withContext(Dispatchers.IO) {
         runCatching {
             val facets = buildFacets(contentType, gameVersion, loader)
-            val url = requireNotNull("$apiRoot/v2/search".toHttpUrlOrNull())
+            val url = requireNotNull("${ModrinthUrlCandidates.API_OFFICIAL}/v2/search".toHttpUrlOrNull())
                 .newBuilder()
                 .addQueryParameter("query", query)
                 .addQueryParameter("facets", facets.toString())
                 .addQueryParameter("offset", offset.toString())
                 .addQueryParameter("limit", limit.toString())
-                // Modrinth search defaults to relevance/name-style sorting.
                 .addQueryParameter("index", "relevance")
                 .build()
                 .toString()
-            val root = JSONObject(downloader.downloadText(url).getOrThrow())
+            val root = JSONObject(downloadApiUrl(url))
             val hits = root.optJSONArray("hits") ?: JSONArray()
             val projects = buildList {
                 for (i in 0 until hits.length()) {
@@ -70,8 +70,7 @@ class ModrinthClient(
 
     suspend fun getProject(projectId: String): Result<ModrinthProject> = withContext(Dispatchers.IO) {
         runCatching {
-            val root = JSONObject(downloader.downloadText("$apiRoot/v2/project/$projectId").getOrThrow())
-            parseProject(root)
+            parseProject(JSONObject(downloadApi("/v2/project/$projectId")))
         }
     }
 
@@ -80,18 +79,26 @@ class ModrinthClient(
             runCatching {
                 if (projectIds.isEmpty()) return@runCatching emptyList()
                 val ids = JSONArray(projectIds.distinct())
-                val url = requireNotNull("$apiRoot/v2/projects".toHttpUrlOrNull())
+                val url = requireNotNull("${ModrinthUrlCandidates.API_OFFICIAL}/v2/projects".toHttpUrlOrNull())
                     .newBuilder()
                     .addQueryParameter("ids", ids.toString())
                     .build()
                     .toString()
-                val arr = JSONArray(downloader.downloadText(url).getOrThrow())
+                val arr = JSONArray(downloadApiUrl(url))
                 buildList {
                     for (i in 0 until arr.length()) {
                         val item = arr.optJSONObject(i) ?: continue
                         add(parseProject(item))
                     }
                 }
+            }
+        }
+
+    suspend fun getVersion(versionId: String): Result<ModrinthProjectVersion> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                parseVersion(JSONObject(downloadApi("/v2/version/$versionId")))
+                    ?: error("未找到 Modrinth 版本 $versionId")
             }
         }
 
@@ -106,7 +113,9 @@ class ModrinthClient(
     ): Result<List<ModrinthProjectVersion>> =
         withContext(Dispatchers.IO) {
             runCatching {
-                val url = requireNotNull("$apiRoot/v2/project/$projectId/version".toHttpUrlOrNull())
+                val url = requireNotNull(
+                    "${ModrinthUrlCandidates.API_OFFICIAL}/v2/project/$projectId/version".toHttpUrlOrNull()
+                )
                     .newBuilder()
                     .apply {
                         if (gameVersions.isNotEmpty()) {
@@ -118,28 +127,11 @@ class ModrinthClient(
                     }
                     .build()
                     .toString()
-                val arr = JSONArray(downloader.downloadText(url).getOrThrow())
+                val arr = JSONArray(downloadApiUrl(url))
                 buildList {
                     for (i in 0 until arr.length()) {
                         val item = arr.optJSONObject(i) ?: continue
-                        val files = item.optJSONArray("files").toFiles()
-                        if (files.isEmpty()) continue
-                        add(
-                            ModrinthProjectVersion(
-                                id = item.optString("id"),
-                                name = item.optString("name").ifBlank {
-                                    item.optString("version_number")
-                                },
-                                versionNumber = item.optString("version_number"),
-                                changelog = item.optString("changelog").ifBlank { null },
-                                datePublished = item.optString("date_published").ifBlank { null },
-                                versionType = item.optString("version_type").ifBlank { "release" },
-                                gameVersions = item.optJSONArray("game_versions").toStringList(),
-                                loaders = item.optJSONArray("loaders").toStringList(),
-                                files = files,
-                                dependencies = item.optJSONArray("dependencies").toDependencies()
-                            )
-                        )
+                        parseVersion(item)?.let(::add)
                     }
                 }.sortedByDescending { it.datePublished.orEmpty() }
             }
@@ -168,6 +160,26 @@ class ModrinthClient(
         )
     }
 
+    private fun parseVersion(item: JSONObject): ModrinthProjectVersion? {
+        val files = item.optJSONArray("files").toFiles()
+        if (files.isEmpty()) return null
+        return ModrinthProjectVersion(
+            id = item.optString("id"),
+            name = item.optString("name").ifBlank {
+                item.optString("version_number")
+            },
+            versionNumber = item.optString("version_number"),
+            changelog = item.optString("changelog").ifBlank { null },
+            datePublished = item.optString("date_published").ifBlank { null },
+            versionType = item.optString("version_type").ifBlank { "release" },
+            gameVersions = item.optJSONArray("game_versions").toStringList(),
+            loaders = item.optJSONArray("loaders").toStringList(),
+            files = files,
+            dependencies = item.optJSONArray("dependencies").toDependencies(),
+            projectId = item.optString("project_id").ifBlank { null }
+        )
+    }
+
     private fun buildFacets(
         contentType: CommunityContentType,
         gameVersion: String?,
@@ -179,10 +191,30 @@ class ModrinthClient(
             outer.put(JSONArray().put("versions:$gameVersion"))
         }
         if (contentType == CommunityContentType.MOD && loader != CommunityLoader.ANY) {
-            // Modrinth search lumps loaders into categories.
             outer.put(JSONArray().put("categories:${loader.apiValue}"))
         }
         return outer
+    }
+
+    private suspend fun downloadApi(path: String): String {
+        return downloadApiUrl(ModrinthUrlCandidates.API_OFFICIAL + path)
+    }
+
+    private suspend fun downloadApiUrl(url: String): String {
+        val candidates = if (url.startsWith(ModrinthUrlCandidates.API_OFFICIAL)) {
+            ModrinthUrlCandidates.api(url.removePrefix(ModrinthUrlCandidates.API_OFFICIAL))
+        } else if (url.startsWith(ModrinthUrlCandidates.API_MIRROR)) {
+            ModrinthUrlCandidates.api(url.removePrefix(ModrinthUrlCandidates.API_MIRROR))
+        } else {
+            listOf(url)
+        }
+        var lastError: Throwable? = null
+        for (candidate in candidates) {
+            val result = downloader.downloadText(candidate)
+            if (result.isSuccess) return result.getOrThrow()
+            lastError = result.exceptionOrNull()
+        }
+        throw lastError ?: IOException("Modrinth 请求失败: $url")
     }
 
     private fun JSONArray?.toStringList(): List<String> = buildList {
@@ -227,6 +259,5 @@ class ModrinthClient(
 
     companion object {
         const val PAGE_SIZE = 20
-        private const val apiRoot = "https://api.modrinth.com"
     }
 }

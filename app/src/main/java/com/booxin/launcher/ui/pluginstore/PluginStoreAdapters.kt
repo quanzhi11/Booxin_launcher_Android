@@ -7,7 +7,10 @@ import androidx.recyclerview.widget.RecyclerView
 import com.booxin.launcher.R
 import com.booxin.launcher.core.pluginstore.PluginApplication
 import com.booxin.launcher.core.pluginstore.PluginComment
+import com.booxin.launcher.core.pluginstore.PluginStorePlatforms
 import com.booxin.launcher.core.pluginstore.PluginStoreTypes
+import com.booxin.launcher.core.pluginstore.StoreInstallAction
+import com.booxin.launcher.core.pluginstore.StoreInstallState
 import com.booxin.launcher.core.pluginstore.StorePlugin
 import com.booxin.launcher.databinding.ItemPluginApplicationBinding
 import com.booxin.launcher.databinding.ItemPluginCommentBinding
@@ -15,7 +18,8 @@ import com.booxin.launcher.databinding.ItemStorePluginBinding
 
 class StorePluginAdapter(
     private val onDetail: (StorePlugin) -> Unit,
-    private val onDownload: (StorePlugin) -> Unit
+    private val onDownload: (StorePlugin) -> Unit,
+    private val onUpdate: (StorePlugin) -> Unit = onDownload
 ) : RecyclerView.Adapter<StorePluginAdapter.Holder>() {
 
     private val items = ArrayList<StorePlugin>()
@@ -45,6 +49,8 @@ class StorePluginAdapter(
                 PluginStoreTypes.label(ctx, item.type),
                 item.developerUsername.ifBlank { item.developerUserId }
             )
+            binding.textStorePluginPlatforms.text =
+                PluginStorePlatforms.label(ctx, item.platforms)
             binding.textStorePluginDesc.text = item.description.ifBlank {
                 ctx.getString(R.string.plugin_store_no_desc)
             }
@@ -58,9 +64,29 @@ class StorePluginAdapter(
             } else {
                 ctx.getString(R.string.plugin_store_rating_none, item.commentCount)
             }
+            val action = StoreInstallState.actionFor(item)
+            when (action) {
+                StoreInstallAction.DOWNLOAD -> {
+                    binding.buttonStoreDownload.isEnabled = true
+                    binding.buttonStoreDownload.alpha = 1f
+                    binding.buttonStoreDownload.setText(R.string.plugin_store_download)
+                    binding.buttonStoreDownload.setOnClickListener { onDownload(item) }
+                }
+                StoreInstallAction.INSTALLED -> {
+                    binding.buttonStoreDownload.isEnabled = false
+                    binding.buttonStoreDownload.alpha = 0.55f
+                    binding.buttonStoreDownload.setText(R.string.plugin_store_downloaded)
+                    binding.buttonStoreDownload.setOnClickListener(null)
+                }
+                StoreInstallAction.UPDATE -> {
+                    binding.buttonStoreDownload.isEnabled = true
+                    binding.buttonStoreDownload.alpha = 1f
+                    binding.buttonStoreDownload.setText(R.string.plugin_store_update)
+                    binding.buttonStoreDownload.setOnClickListener { onUpdate(item) }
+                }
+            }
             binding.root.setOnClickListener { onDetail(item) }
             binding.buttonStoreDetail.setOnClickListener { onDetail(item) }
-            binding.buttonStoreDownload.setOnClickListener { onDownload(item) }
         }
     }
 }
@@ -155,6 +181,8 @@ class PluginApplicationAdapter : RecyclerView.Adapter<PluginApplicationAdapter.H
                 else -> item.status
             }
             binding.textAppStatus.text = status
+            binding.textAppPlatforms.text =
+                PluginStorePlatforms.label(ctx, item.platforms)
             val reason = item.rejectReason.trim()
             binding.textAppReason.isVisible = item.status == "rejected" && reason.isNotEmpty()
             binding.textAppReason.text =

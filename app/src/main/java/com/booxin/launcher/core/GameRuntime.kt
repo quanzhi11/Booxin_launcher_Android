@@ -1,13 +1,19 @@
 package com.booxin.launcher.core
 
+import android.app.ActivityOptions
 import android.content.Context
 import android.content.Intent
 import com.booxin.launcher.AppContainer
+import com.booxin.launcher.R
 import com.booxin.launcher.core.java.JavaEnvironmentManager
+import com.booxin.launcher.core.uiplugin.UiPluginManager
 import com.booxin.launcher.data.model.AccountType
 import com.booxin.launcher.data.model.LauncherAccount
 import com.booxin.launcher.data.repository.LauncherRepository
 import com.booxin.launcher.core.skin.OfflineSkinStore
+import com.booxin.launcher.core.skin.OfflineSkinService
+import com.booxin.launcher.core.skin.OfflineSkinMode
+import com.booxin.launcher.core.skin.AuthlibInjectorInstaller
 import com.booxin.launcher.ui.launch.LaunchActivity
 import java.io.File
 
@@ -97,6 +103,11 @@ class BooxinGameRuntime(
         account: LauncherAccount,
         serverAddress: String?
     ): Result<Unit> {
+        val proceed = com.booxin.launcher.core.launch.LegacyGl4esLaunchGate
+            .confirmIfNeeded(context, versionId)
+        if (!proceed) {
+            return Result.failure(kotlinx.coroutines.CancellationException("legacy renderer cancelled"))
+        }
         return runCatching {
             // Fast path: only ensure Java here. Asset repair runs inside :game
             // (GameLaunchService) so the UI is not blocked / cancelled.
@@ -106,17 +117,26 @@ class BooxinGameRuntime(
                 putExtra(LaunchActivity.EXTRA_USERNAME, account.name)
                 if (account.type == AccountType.OFFLINE) {
                     val gameDir = File(LauncherPaths.versionsDir, versionId)
-                    OfflineSkinStore.installForLaunch(
-                        accountId = account.id,
-                        username = account.name,
-                        versionGameDir = gameDir
-                    )
-                    // 离线账号固定写 token/uuid。
-                    putExtra(
-                        LaunchActivity.EXTRA_UUID,
-                        account.uuid?.replace("-", "")?.ifBlank { null }
-                            ?: com.booxin.launcher.core.launch.OfflineAuth.uuidNoDash(account.name)
-                    )
+                    val mcVersion = OfflineSkinService.resolveMinecraftVersion(versionId)
+                    val launchUuid = OfflineSkinService.resolveLaunchUuid(account, mcVersion)
+                    val mode = OfflineSkinService.effectiveMode(account)
+                    val skinFile = OfflineSkinService.selectedSkinPath(account)?.let(::File)
+                    if (skinFile != null && skinFile.isFile &&
+                        mode in listOf(OfflineSkinMode.PLAYER, OfflineSkinMode.CUSTOM)
+                    ) {
+                        OfflineSkinStore.installForLaunch(
+                            accountId = account.id,
+                            username = account.name,
+                            versionGameDir = gameDir
+                        )
+                        AuthlibInjectorInstaller.ensure().onFailure {
+                            android.util.Log.w("GameRuntime", "authlib-injector prefetch: ${it.message}")
+                        }
+                        putExtra(LaunchActivity.EXTRA_OFFLINE_SKIN_PATH, skinFile.absolutePath)
+                    }
+                    val pack = OfflineSkinService.prepareForLaunch(gameDir, mcVersion, account)
+                    android.util.Log.i("GameRuntime", "offline skin: ${pack.message}")
+                    putExtra(LaunchActivity.EXTRA_UUID, launchUuid)
                     putExtra(LaunchActivity.EXTRA_ACCESS_TOKEN, "0")
                     putExtra(LaunchActivity.EXTRA_USER_TYPE, "legacy")
                 } else {
@@ -124,16 +144,25 @@ class BooxinGameRuntime(
                     account.accessToken?.let { putExtra(LaunchActivity.EXTRA_ACCESS_TOKEN, it) }
                     putExtra(LaunchActivity.EXTRA_USER_TYPE, account.userType)
                 }
-                // 优先显式地址，否则用大厅隧道。
-                (
-                    serverAddress?.takeIf { it.isNotBlank() }
-                        ?: AppContainer.multiplayerAuth.directConnectAddress.value?.takeIf { it.isNotBlank() }
-                    )?.let { putExtra(LaunchActivity.EXTRA_SERVER_ADDRESS, it) }
+                // Prefer Minecraft LAN list (guest LanBroadcast). Only inject --server
+                // when the caller explicitly requests direct-connect backup.
+                serverAddress?.takeIf { it.isNotBlank() }?.let {
+                    putExtra(LaunchActivity.EXTRA_SERVER_ADDRESS, it)
+                }
                 if (context !is android.app.Activity) {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
             }
-            context.startActivity(intent)
+            if (UiPluginManager.isFeatureEnabled("pageSlideTransitions")) {
+                val opts = ActivityOptions.makeCustomAnimation(
+                    context,
+                    R.anim.slide_in_right,
+                    R.anim.slide_out_left
+                )
+                context.startActivity(intent, opts.toBundle())
+            } else {
+                context.startActivity(intent)
+            }
         }
     }
 }

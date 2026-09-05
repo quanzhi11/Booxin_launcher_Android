@@ -4,11 +4,18 @@
     android:layout_height="match_parent"
     android:background="#FF0B1220">
 
-    <!-- TextureView: better background/resume behavior than SurfaceView. -->
+    <!-- TextureView: LWJGL / older MC. Better background/resume than SurfaceView. -->
     <TextureView
         android:id="@+id/surfaceGame"
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
+
+    <!-- SurfaceView: 26.3+ SDL. TextureView BufferQueue often stays frames=0 under MG. -->
+    <SurfaceView
+        android:id="@+id/surfaceGameSdl"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone" />
 
     <!--
       TouchPad at bottom receives blank-area touches as mouse.
@@ -113,6 +120,18 @@
                     android:textSize="13sp" />
 
                 <TextView
+                    android:id="@+id/btnEditFollow"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginEnd="8dp"
+                    android:background="@drawable/bg_control_chip"
+                    android:paddingHorizontal="12dp"
+                    android:paddingVertical="8dp"
+                    android:text="@string/control_edit_follow"
+                    android:textColor="#FFFFFFFF"
+                    android:textSize="13sp" />
+
+                <TextView
                     android:id="@+id/btnEditShrink"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
@@ -170,7 +189,7 @@
             android:layout_marginEnd="10dp"
             android:background="@drawable/bg_floating_ball"
             android:gravity="center"
-            android:text="@string/control_gesture_quick_build"
+            android:text="@string/control_gesture_quick_combined"
             android:textColor="#FFFFFFFF"
             android:textSize="13sp"
             android:textStyle="bold"

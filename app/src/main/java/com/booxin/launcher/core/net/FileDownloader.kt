@@ -76,10 +76,12 @@ class FileDownloader(
             val attemptClient = if (isLast || urls.size == 1) client else HttpClients.cascadeAttempt
             val result = downloadOnce(attemptClient, url, destination, onProgress, accelerate)
             if (result.isSuccess) {
+                android.util.Log.i(TAG, "download ok: $url")
                 DownloadProviders.noteDownloadOutcome(url, success = true)
                 return@withContext result
             }
             lastError = result.exceptionOrNull()
+            android.util.Log.w(TAG, "download failed (${index + 1}/${urls.size}): $url → ${lastError?.message}")
             DownloadProviders.noteDownloadOutcome(url, success = false)
             // Drop partial so the next candidate starts clean.
             cleanupPartials(destination)

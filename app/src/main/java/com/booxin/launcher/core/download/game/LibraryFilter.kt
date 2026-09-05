@@ -58,7 +58,9 @@ object LibraryFilter {
             val minor = versionParts.getOrNull(1)?.toIntOrNull() ?: 0
 
             when {
-                artifact == "asm-all" && major < 5 -> ASM_ALL_5_0_4
+                // Keep ASM 4.x for LaunchWrapper VanillaTweakInjector (ASM4 API).
+                // Only bump truly ancient (<4) copies that break on modern tooling.
+                artifact == "asm-all" && major < 4 -> ASM_ALL_5_0_4
                 group == "net.java.dev.jna" && artifact == "jna" -> {
                     val resolved =
                         if (major > 5 || (major == 5 && minor >= 13)) library else JNA_5_13

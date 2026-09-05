@@ -92,8 +92,20 @@ class MultiplayerAuthManager(
         return result
     }
 
+    suspend fun loadUserDetail(userId: String): Result<BooxinUserDetail> =
+        runCatching { api.fetchUserDetail(requireSession(), userId).getOrThrow() }
+
+    suspend fun updateRelationship(friendUserId: String, relationship: String) =
+        runCatching {
+            api.updateRelationship(requireSession(), friendUserId, relationship).getOrThrow()
+        }
+
+    suspend fun loadPublicRewardProfile(userId: String): Result<RewardProfile> =
+        api.getPublicRewardProfile(userId)
+
     suspend fun loadFriends() = runCatching { api.fetchFriends(requireSession()).getOrThrow() }
-    suspend fun loadLobby() = runCatching { api.fetchLobby(requireSession()).getOrThrow() }
+    suspend fun loadLobby(page: Int = 1) =
+        runCatching { api.fetchLobby(requireSession(), page = page).getOrThrow() }
     suspend fun searchUsers(query: String) =
         runCatching { api.searchUsers(requireSession(), query).getOrThrow() }
 
@@ -142,6 +154,12 @@ class MultiplayerAuthManager(
 
     suspend fun sendMessage(receiverId: String, body: String) =
         runCatching { api.sendMessage(requireSession(), receiverId, body).getOrThrow() }
+
+    suspend fun getLobbyMessages(afterId: Long = 0L) =
+        runCatching { api.getLobbyMessages(requireSession(), afterId).getOrThrow() }
+
+    suspend fun sendLobbyMessage(body: String) =
+        runCatching { api.sendLobbyMessage(requireSession(), body).getOrThrow() }
 
     suspend fun markRead(peerUserId: String, upToMessageId: Long) =
         runCatching { api.markRead(requireSession(), peerUserId, upToMessageId).getOrThrow() }
@@ -258,11 +276,11 @@ class MultiplayerAuthManager(
             _activeLobby.value = result.lobby
             _directConnect.value = result.directConnectAddress
             _roomMembers.value = result.members
-            _joinStatus.value =
-                "已加入 · 直连 ${result.directConnectAddress} · 玩家 ${result.members.size}"
+            _joinStatus.value = RoomJoinCoordinator.JOIN_SUCCESS_STATUS
             DiagEventLog.i(
                 "MultiplayerAuth",
-                "joinRoom ok addr=${result.directConnectAddress} players=${result.members.size}"
+                "joinRoom ok addr=${result.directConnectAddress} " +
+                    "lanBroadcast=${result.lanBroadcastStarted} players=${result.members.size}"
             )
             result
         }.onFailure { err ->

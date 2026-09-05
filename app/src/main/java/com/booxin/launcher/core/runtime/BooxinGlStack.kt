@@ -40,6 +40,18 @@ object BooxinGlStack {
         val angleReady = pluginReady(GlRendererKind.ANGLE) ||
             File(stagedNatives, "libEGL_angle.so").isFile
 
+        // vivo/iQOO / Huawei/Honor: holy GL4ES / Path A clean-room often fails to
+        // present TextureView frames ("Can't map buffer" / black screen). Prefer
+        // MobileGlues BEFORE cleanroom so OEM devices never stay on gl4es.
+        if (OemLaunchProfile.shouldUpgradeGl4esToMobileGlues() && maxCompat && mg.isFile) {
+            return BooxinGlResolved(
+                engine = BooxinGlEngine.MOBILE_GLUES_COMPAT,
+                stageAs = GlRendererKind.MOBILE_GLUES,
+                backendEnv = "mobileglues",
+                note = "OEM: MobileGlues（避免 GL4ES 无帧/map buffer；${OemLaunchProfile.describe()}）"
+            )
+        }
+
         // Prefer shipped clean-room façade whenever present (M7+).
         if (cleanroom.isFile) {
             val useAngle = angleReady && (shaders || heavy)
@@ -70,17 +82,6 @@ object BooxinGlStack {
                 stageAs = GlRendererKind.MOBILE_GLUES,
                 backendEnv = "mobileglues",
                 note = "最大兼容: MobileGlues (LGPL) 覆盖光影/重模组（无 clean-room .so）"
-            )
-        }
-
-        // vivo/iQOO Adreno: holy GL4ES often throws Can't map buffer on 1.17+/26.x
-        // even for vanilla — prefer MobileGlues before Path A gl4es fallback.
-        if (OemLaunchProfile.isVivoFamily() && maxCompat && mg.isFile) {
-            return BooxinGlResolved(
-                engine = BooxinGlEngine.MOBILE_GLUES_COMPAT,
-                stageAs = GlRendererKind.MOBILE_GLUES,
-                backendEnv = "mobileglues",
-                note = "vivo: MobileGlues（避免 GL4ES Can't map buffer）"
             )
         }
 

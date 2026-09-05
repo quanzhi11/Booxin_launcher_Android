@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 两列卡片，整体偏紧凑 -->
+    <dimen name="ingame_community_card_height">96dp</dimen>
+    <dimen name="ingame_community_list_height">240dp</dimen>
+</resources>

@@ -7,7 +7,14 @@ import android.view.MotionEvent
 import android.view.View
 import android.widget.FrameLayout
 
-/** 按指针把空白区触控转发给 fallback（触控板）。 */
+/**
+ * Routes each pointer to the hit child (button / joystick) or to [fallbackTarget]
+ * (look pad) when the blank area is touched.
+ *
+ * Play-mode: if a finger starts on a normal button then slides outside it, the
+ * pointer is cancelled on the button and handed to the look pad so camera look
+ * resumes. Follow-style buttons keep the pointer while outside.
+ */
 class TouchPassthroughLayout @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
@@ -64,11 +71,16 @@ class TouchPassthroughLayout @JvmOverloads constructor(
         for (i in childCount - 1 downTo 0) {
             val child = getChildAt(i)
             if (child.visibility != View.VISIBLE || !child.isEnabled) continue
-            if (x >= child.left && x < child.right && y >= child.top && y < child.bottom) {
-                return child
-            }
+            if (isInsideChild(child, x, y)) return child
         }
         return null
+    }
+
+    /** Hit-test in parent coords; include translation so follow-dragged views stay hittable. */
+    private fun isInsideChild(child: View, x: Float, y: Float): Boolean {
+        val l = child.left + child.translationX
+        val t = child.top + child.translationY
+        return x >= l && x < l + child.width && y >= t && y < t + child.height
     }
 
     private fun assignPointer(ev: MotionEvent, index: Int) {
@@ -79,9 +91,25 @@ class TouchPassthroughLayout @JvmOverloads constructor(
     }
 
     private fun dispatchMoves(ev: MotionEvent) {
+        val fallback = fallbackTarget
         for (i in 0 until ev.pointerCount) {
             val id = ev.getPointerId(i)
             val target = targets.get(id) ?: continue
+            val x = ev.getX(i)
+            val y = ev.getY(i)
+            // Slide off a normal button → hand off to look pad (resume mouse look).
+            if (fallback != null &&
+                target !== fallback &&
+                target is ControlButtonView &&
+                !target.retainsPointerWhileOutside() &&
+                !isInsideChild(target, x, y)
+            ) {
+                dispatchToTarget(target, ev, i, MotionEvent.ACTION_CANCEL)
+                targets.put(id, fallback)
+                dispatchToTarget(fallback, ev, i, MotionEvent.ACTION_DOWN)
+                dispatchToTarget(fallback, ev, i, MotionEvent.ACTION_MOVE)
+                continue
+            }
             dispatchToTarget(target, ev, i, MotionEvent.ACTION_MOVE)
         }
     }
@@ -112,9 +140,12 @@ class TouchPassthroughLayout @JvmOverloads constructor(
         val localX: Float
         val localY: Float
         if (target.parent === this) {
-            localX = xInThis - target.left
-            localY = yInThis - target.top
+            // Must subtract translation: follow modes move views via translationX/Y.
+            // Ignoring it makes local coords grow every frame and the view "flies".
+            localX = xInThis - target.left - target.translationX
+            localY = yInThis - target.top - target.translationY
         } else {
+            // getLocationOnScreen already includes translation.
             getLocationOnScreen(locThis)
             target.getLocationOnScreen(locTarget)
             localX = locThis[0] + xInThis - locTarget[0]

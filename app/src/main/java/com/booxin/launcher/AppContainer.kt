@@ -13,12 +13,19 @@ import com.booxin.launcher.core.multiplayer.BooxinMultiplayerApi
 import com.booxin.launcher.core.multiplayer.MultiplayerAuthManager
 import com.booxin.launcher.core.multiplayer.MultiplayerSessionStore
 import com.booxin.launcher.data.repository.LauncherRepository
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 
 /**
  * 进程内服务定位。
  * Replace with Hilt/Koin when the project grows.
  */
 object AppContainer {
+    /** Survives Fragment navigation — install / asset jobs must not cancel when leaving Download. */
+    val appScope: CoroutineScope =
+        CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
     val javaEnvironment: JavaEnvironmentManager by lazy { JavaEnvironmentManager() }
     val gameInstaller: VanillaGameInstaller by lazy { VanillaGameInstaller() }
     val repository: LauncherRepository by lazy {

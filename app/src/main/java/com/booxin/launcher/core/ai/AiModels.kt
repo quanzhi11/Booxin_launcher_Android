@@ -108,6 +108,14 @@ data class AiSubscriptionCreateResult(
     val plan: String? = null
 )
 
+data class AiSubscriptionStatusResult(
+    val paid: Boolean = false,
+    val upgraded: Boolean = false,
+    val status: String = "",
+    val message: String = "",
+    val snapshot: AiQuotaSnapshot? = null
+)
+
 data class AiPlayPassResult(
     val success: Boolean = false,
     val message: String = "",

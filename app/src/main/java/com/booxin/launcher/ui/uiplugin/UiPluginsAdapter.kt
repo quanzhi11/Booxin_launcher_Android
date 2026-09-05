@@ -10,7 +10,9 @@ import com.booxin.launcher.databinding.ItemUiPluginBinding
 
 class UiPluginsAdapter(
     private val onToggle: (UiPluginInstall) -> Unit,
-    private val onDelete: (UiPluginInstall) -> Unit
+    private val onUpdate: (UiPluginInstall) -> Unit,
+    private val onDelete: (UiPluginInstall) -> Unit,
+    private val onOpenPages: (UiPluginInstall) -> Unit
 ) : RecyclerView.Adapter<UiPluginsAdapter.Holder>() {
 
     private val items = ArrayList<UiPluginInstall>()
@@ -53,6 +55,19 @@ class UiPluginsAdapter(
                 append(status)
                 append(" · v")
                 append(m.version)
+                if (m.jsCommands) append(" · JS")
+                if (m.pages.isNotEmpty()) {
+                    append(" · ")
+                    append(m.pages.size)
+                    append("页")
+                }
+                val storeVer = item.storeVersion
+                if (!storeVer.isNullOrBlank() && storeVer != m.version) {
+                    append(" · 商店 v")
+                    append(storeVer)
+                } else if (!item.storePluginId.isNullOrBlank()) {
+                    append(" · 商店")
+                }
             }
             val desc = m.description.trim()
             binding.textUiPluginDesc.isVisible = desc.isNotEmpty()
@@ -63,8 +78,15 @@ class UiPluginsAdapter(
             } else {
                 ctx.getString(R.string.plugins_action_enable)
             }
+            val hasPages = item.enabled && m.pages.isNotEmpty()
+            binding.buttonUiPluginPages.isVisible = hasPages
+            binding.buttonUiPluginUpdate.isEnabled = !item.storePluginId.isNullOrBlank()
+            binding.buttonUiPluginUpdate.alpha =
+                if (item.storePluginId.isNullOrBlank()) 0.4f else 1f
             binding.buttonUiPluginToggle.setOnClickListener { onToggle(item) }
+            binding.buttonUiPluginUpdate.setOnClickListener { onUpdate(item) }
             binding.buttonUiPluginDelete.setOnClickListener { onDelete(item) }
+            binding.buttonUiPluginPages.setOnClickListener { onOpenPages(item) }
         }
     }
 }

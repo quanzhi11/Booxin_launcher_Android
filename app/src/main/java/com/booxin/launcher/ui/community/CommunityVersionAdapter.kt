@@ -51,11 +51,22 @@ class CommunityVersionAdapter(
     ) : RecyclerView.ViewHolder(binding.root) {
 
         fun bind(version: ModrinthProjectVersion, recommend: String?, selected: Boolean) {
-            binding.textName.text = version.name.ifBlank { version.versionNumber }
+            val number = version.versionNumber.ifBlank { version.name }
+            val title = version.name.ifBlank { number }
+            // Always surface the real version number; name alone is often a changelog title.
+            binding.textName.text = if (
+                number.isNotBlank() &&
+                !title.equals(number, ignoreCase = true) &&
+                !title.contains(number)
+            ) {
+                "$number · $title"
+            } else {
+                number.ifBlank { title }
+            }
             binding.textMeta.text = buildList {
                 add(version.versionType)
-                addAll(version.loaders.take(2))
-                addAll(version.gameVersions.take(2))
+                addAll(version.loaders.take(3))
+                addAll(version.gameVersions.take(4))
             }.joinToString(" · ")
             binding.textRecommend.isVisible = !recommend.isNullOrBlank()
             binding.textRecommend.text = recommend.orEmpty()

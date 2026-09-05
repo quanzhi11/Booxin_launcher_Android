@@ -6,6 +6,8 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.text.Editable
+import android.text.TextWatcher
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -18,6 +20,7 @@ import androidx.fragment.app.Fragment
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.booxin.launcher.AppContainer
 import com.booxin.launcher.R
@@ -27,6 +30,7 @@ import com.booxin.launcher.core.multiplayer.BooxinAuthSession
 import com.booxin.launcher.core.multiplayer.BooxinFriend
 import com.booxin.launcher.core.multiplayer.ChatConversation
 import com.booxin.launcher.core.multiplayer.FriendRequest
+import com.booxin.launcher.core.multiplayer.LobbyPage
 import com.booxin.launcher.core.multiplayer.LobbyUser
 import com.booxin.launcher.core.multiplayer.OfficialServerCatalog
 import com.booxin.launcher.core.multiplayer.OfficialServerInfo
@@ -34,7 +38,16 @@ import com.booxin.launcher.core.multiplayer.OfficialServerJoinService
 import com.booxin.launcher.core.multiplayer.PublicRoom
 import com.booxin.launcher.core.multiplayer.RewardProfile
 import com.booxin.launcher.core.multiplayer.RewardProfileHelper
+import com.booxin.launcher.core.multiplayer.RoomDependencySnapshot
+import com.booxin.launcher.core.multiplayer.RoomHostDependencyInstaller
+import com.booxin.launcher.core.multiplayer.RoomSessionTracker
+import com.booxin.launcher.core.auth.MicrosoftAuthLogger
+import com.booxin.launcher.core.auth.MicrosoftAuthService
+import com.booxin.launcher.data.model.AccountType
+import com.booxin.launcher.data.model.LauncherAccount
+import com.booxin.launcher.ui.auth.MicrosoftAuthErrorDialog
 import com.booxin.launcher.core.multiplayer.RoomInvite
+import com.booxin.launcher.core.multiplayer.RoomInviteCoordinator
 import com.booxin.launcher.core.multiplayer.RoomMember
 import com.booxin.launcher.core.multiplayer.SearchUser
 import com.booxin.launcher.databinding.FragmentMultiplayerBinding
@@ -52,14 +65,26 @@ class MultiplayerFragment : Fragment() {
 
     private enum class AuthMode { PASSWORD, EMAIL, REGISTER, FORGOT }
 
+    private enum class RoomsLeftMode { BROWSE, PUBLIC_LIST, PUBLIC_DETAIL }
+
     private var _binding: FragmentMultiplayerBinding? = null
     private val binding get() = _binding!!
     private var authMode = AuthMode.PASSWORD
     private var rewardProfile: RewardProfile? = null
     private var cachedOfficialServer: OfficialServerInfo? = null
     private var officialJoinInProgress = false
+    private var roomsLeftMode = RoomsLeftMode.BROWSE
+    private var cachedPublicRooms: List<PublicRoom> = emptyList()
+    private var selectedPublicRoom: PublicRoom? = null
     private val officialJoinService = OfficialServerJoinService()
     private var askedDmNotificationPermission = false
+    private var cachedHostDepsRoomCode: String? = null
+    private var cachedHostDeps: RoomDependencySnapshot? = null
+    private var hostDepsDownloadInProgress = false
+    private var hostDepsJob: Job? = null
+    private var lobbyPage = 1
+    private var lobbyLoading = false
+    private var lastLobbyPage: LobbyPage? = null
 
     private val pickAvatar = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) uploadAvatar(uri)
@@ -82,6 +107,7 @@ class MultiplayerFragment : Fragment() {
             val friend = item.payload as? BooxinFriend ?: return@MultiplayerUserAdapter
             when (item.primaryLabel) {
                 getString(R.string.multiplayer_join_friend_room) -> joinFriendRoom(friend)
+                getString(R.string.multiplayer_invite_friend) -> inviteFriend(friend)
                 else -> openChat(friend.userId, friend.username)
             }
         },
@@ -90,8 +116,13 @@ class MultiplayerFragment : Fragment() {
             when (item.secondaryLabel) {
                 getString(R.string.multiplayer_chat) -> openChat(friend.userId, friend.username)
                 getString(R.string.multiplayer_join_friend_room) -> joinFriendRoom(friend)
+                getString(R.string.multiplayer_invite_friend) -> inviteFriend(friend)
                 else -> confirmRemoveFriend(friend)
             }
+        },
+        onItemClick = { item ->
+            val friend = item.payload as? BooxinFriend ?: return@MultiplayerUserAdapter
+            openUserDetail(friend.userId)
         }
     )
     private val requestsAdapter = MultiplayerUserAdapter(
@@ -102,6 +133,10 @@ class MultiplayerFragment : Fragment() {
         onSecondary = { item ->
             val req = item.payload as? FriendRequest ?: return@MultiplayerUserAdapter
             actOnRequest(req, accept = false)
+        },
+        onItemClick = { item ->
+            val req = item.payload as? FriendRequest ?: return@MultiplayerUserAdapter
+            openUserDetail(req.userId)
         }
     )
     private val invitesAdapter = MultiplayerUserAdapter(
@@ -116,6 +151,10 @@ class MultiplayerFragment : Fragment() {
                 AppContainer.multiplayerAuth.dismissInvite(invite.inviteId)
                 refreshFriends()
             }
+        },
+        onItemClick = { item ->
+            val invite = item.payload as? RoomInvite ?: return@MultiplayerUserAdapter
+            openUserDetail(invite.fromUserId)
         }
     )
     private val lobbyAdapter = MultiplayerUserAdapter(
@@ -136,20 +175,24 @@ class MultiplayerFragment : Fragment() {
             } else {
                 addFriend(user.id, user.username) { refreshLobby() }
             }
+        },
+        onItemClick = { item ->
+            val user = item.payload as? LobbyUser ?: return@MultiplayerUserAdapter
+            openUserDetail(user.id)
         }
     )
     private val searchAdapter = MultiplayerUserAdapter(
         onPrimary = { item ->
             val user = item.payload as? SearchUser ?: return@MultiplayerUserAdapter
             addFriend(user.id, user.username)
+        },
+        onItemClick = { item ->
+            val user = item.payload as? SearchUser ?: return@MultiplayerUserAdapter
+            openUserDetail(user.id)
         }
     )
-    private val roomsAdapter = MultiplayerUserAdapter(
-        onPrimary = { item ->
-            val room = item.payload as? PublicRoom ?: return@MultiplayerUserAdapter
-            binding.inputRoomCode.setText(room.roomCode)
-            joinRoom()
-        }
+    private val publicRoomCardAdapter = PublicRoomCardAdapter(
+        onRoomClick = { room -> showPublicRoomDetail(room) }
     )
     private val roomMembersAdapter = MultiplayerUserAdapter()
     private val blockedAdapter = MultiplayerUserAdapter(
@@ -159,12 +202,20 @@ class MultiplayerFragment : Fragment() {
                 AppContainer.multiplayerAuth.unblockUser(blocked.userId)
                 refreshFriends()
             }
+        },
+        onItemClick = { item ->
+            val blocked = item.payload as? BlockedUser ?: return@MultiplayerUserAdapter
+            openUserDetail(blocked.userId)
         }
     )
     private val conversationsAdapter = MultiplayerUserAdapter(
         onPrimary = { item ->
             val c = item.payload as? ChatConversation ?: return@MultiplayerUserAdapter
             openChat(c.peerUserId, c.peerUsername)
+        },
+        onItemClick = { item ->
+            val c = item.payload as? ChatConversation ?: return@MultiplayerUserAdapter
+            openUserDetail(c.peerUserId)
         }
     )
 
@@ -185,7 +236,6 @@ class MultiplayerFragment : Fragment() {
             binding.recyclerInvites to invitesAdapter,
             binding.recyclerLobby to lobbyAdapter,
             binding.recyclerSearch to searchAdapter,
-            binding.recyclerRooms to roomsAdapter,
             binding.recyclerRoomMembers to roomMembersAdapter,
             binding.recyclerBlocked to blockedAdapter,
             binding.recyclerConversations to conversationsAdapter
@@ -193,6 +243,9 @@ class MultiplayerFragment : Fragment() {
             rv.layoutManager = LinearLayoutManager(requireContext())
             rv.adapter = adapter
         }
+
+        binding.recyclerPublicRoomsGrid.layoutManager = GridLayoutManager(requireContext(), 2)
+        binding.recyclerPublicRoomsGrid.adapter = publicRoomCardAdapter
 
         setupTabs()
         setupFriendsSubTabs()
@@ -212,17 +265,48 @@ class MultiplayerFragment : Fragment() {
             } else false
         }
         binding.buttonRefreshFriends.setOnClickListener { refreshFriends() }
-        binding.buttonRefreshLobby.setOnClickListener { refreshLobby() }
-        binding.buttonRefreshRooms.setOnClickListener { refreshRooms() }
+        binding.buttonRefreshLobby.setOnClickListener { refreshLobby(resetPage = true) }
+        binding.buttonLobbyChat.setOnClickListener { openLobbyChat() }
+        binding.buttonLobbyPrevPage.setOnClickListener {
+            if (lobbyLoading || lobbyPage <= 1) return@setOnClickListener
+            lobbyPage--
+            refreshLobby()
+        }
+        binding.buttonLobbyNextPage.setOnClickListener {
+            if (lobbyLoading || lastLobbyPage?.hasNext != true) return@setOnClickListener
+            lobbyPage++
+            refreshLobby()
+        }
+        binding.buttonRefreshPublicRooms.setOnClickListener { refreshRooms() }
+        binding.buttonOpenPublicRooms.setOnClickListener { openPublicRoomsList() }
+        binding.buttonBackPublicList.setOnClickListener { closePublicRoomsList() }
+        binding.inputPublicRoomSearch.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                applyPublicRoomFilter()
+            }
+            override fun afterTextChanged(s: Editable?) = Unit
+        })
+        binding.inputPublicRoomSearch.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_SEARCH) {
+                applyPublicRoomFilter(); true
+            } else false
+        }
         binding.buttonRefreshMessages.setOnClickListener { refreshMessages() }
         binding.buttonJoinRoom.setOnClickListener { joinRoom() }
-        binding.buttonLeaveRoom.setOnClickListener {
-            viewLifecycleOwner.lifecycleScope.launch {
-                AppContainer.multiplayerAuth.leaveActiveRoom()
-            }
+        binding.buttonLeaveRoom.setOnClickListener { leaveRoomWithCleanup() }
+        binding.buttonDirectBackupLaunch.setOnClickListener { launchDirectBackup() }
+        binding.buttonDownloadHostDeps.setOnClickListener { downloadHostDependencies() }
+        binding.buttonBackPublicRoom.setOnClickListener {
+            selectedPublicRoom = null
+            roomsLeftMode = RoomsLeftMode.PUBLIC_LIST
+            renderRoomsPanel()
+        }
+        binding.buttonJoinPublicRoom.setOnClickListener {
+            val room = selectedPublicRoom ?: return@setOnClickListener
+            joinRoom(room.roomCode)
         }
         binding.buttonJoinOfficialServer.setOnClickListener { joinOfficialServer() }
-        refreshOfficialServerCard()
         binding.buttonCheckIn.setOnClickListener { performCheckIn() }
         binding.buttonPickFrame.setOnClickListener { showFramePicker() }
 
@@ -238,13 +322,12 @@ class MultiplayerFragment : Fragment() {
                         // 在线状态/头像更新不要刷爆 API。
                         if (authKey != lastAuthKey) {
                             lastAuthKey = authKey
+                            refreshPublicData()
                             if (session != null) {
                                 ensureDmNotificationPermission()
-                                refreshFriends()
-                                refreshLobby()
-                                refreshRooms()
-                                refreshMessages()
+                                refreshSocialData()
                                 refreshRewards()
+                                consumePendingRoomJoin()
                             }
                         }
                     }
@@ -259,13 +342,18 @@ class MultiplayerFragment : Fragment() {
                 launch {
                     AppContainer.multiplayerAuth.joinStatus.collect { status ->
                         val b = _binding ?: return@collect
-                        b.textJoinStatus.text = status.orEmpty()
+                        val text = status.orEmpty()
+                        b.textJoinStatus.text = text
+                        b.textJoinStatusInRoom.text = text
+                        b.textJoinStatusDetail.text = text
                     }
                 }
                 launch {
                     AppContainer.multiplayerAuth.directConnectAddress.collect { addr ->
                         val b = _binding ?: return@collect
-                        b.textDirectConnect.isVisible = !addr.isNullOrBlank()
+                        val visible = !addr.isNullOrBlank()
+                        b.textDirectConnect.isVisible = visible
+                        b.buttonDirectBackupLaunch.isVisible = visible
                         b.textDirectConnect.text = if (addr.isNullOrBlank()) {
                             ""
                         } else {
@@ -279,13 +367,148 @@ class MultiplayerFragment : Fragment() {
                         renderRoomMembers(members)
                     }
                 }
+                launch {
+                    AppContainer.multiplayerAuth.activeLobby.collect {
+                        if (_binding == null) return@collect
+                        if (AppContainer.multiplayerAuth.activeLobby.value != null) {
+                            selectedPublicRoom = null
+                            roomsLeftMode = RoomsLeftMode.BROWSE
+                        }
+                        renderRoomsPanel()
+                        if (AppContainer.multiplayerAuth.current() != null) {
+                            refreshFriends()
+                        }
+                        consumePendingRoomJoin()
+                    }
+                }
             }
         }
+        renderRoomsPanel()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        renderRoomsPanel()
+        refreshPublicData()
+        if (AppContainer.multiplayerAuth.current() != null) {
+            refreshSocialData()
+        }
+        consumePendingRoomJoin()
+    }
+
+    /** Public room list does not require login. */
+    private fun refreshPublicData() {
+        refreshRooms()
+        refreshOfficialServerCard()
+    }
+
+    private fun refreshSocialData() {
+        refreshFriends()
+        refreshLobby()
+        refreshMessages()
+    }
+
+    private fun renderRoomsPanel() {
+        val b = _binding ?: return
+        val inRoom = AppContainer.multiplayerAuth.activeLobby.value != null
+        if (inRoom) {
+            roomsLeftMode = RoomsLeftMode.BROWSE
+            selectedPublicRoom = null
+        }
+
+        val showBrowse = !inRoom && roomsLeftMode == RoomsLeftMode.BROWSE
+        val showPublicList = !inRoom && roomsLeftMode == RoomsLeftMode.PUBLIC_LIST
+        val showPublicDetail = !inRoom &&
+            roomsLeftMode == RoomsLeftMode.PUBLIC_DETAIL &&
+            selectedPublicRoom != null
+
+        b.roomsHeader.isVisible = showBrowse
+        b.panelRoomsBrowse.isVisible = showBrowse
+        b.panelRoomsPublicList.isVisible = showPublicList
+        b.panelRoomsPublicDetail.isVisible = showPublicDetail
+        b.panelRoomsInRoom.isVisible = inRoom
+        if (inRoom) {
+            refreshHostDepsUi()
+        } else {
+            clearHostDepsCache()
+            b.buttonDownloadHostDeps.isVisible = false
+            b.textHostDepsInfo.isVisible = false
+        }
+
+        if (showPublicDetail) {
+            val detail = selectedPublicRoom ?: return
+            b.textPublicRoomHost.text = detail.hostName.ifBlank { getString(R.string.multiplayer_tab_rooms) }
+            b.textPublicRoomMotd.text = detail.motd.ifBlank {
+                detail.remark.orEmpty().ifBlank { getString(R.string.multiplayer_public_rooms) }
+            }
+            b.textPublicRoomMeta.text = getString(
+                R.string.multiplayer_public_room_meta,
+                detail.version?.ifBlank { "?" } ?: "?",
+                detail.currentPlayers,
+                detail.maxPlayers
+            )
+            b.textPublicRoomCode.text = getString(R.string.multiplayer_public_room_code, detail.roomCode)
+        }
+
+        if (showPublicList) {
+            applyPublicRoomFilter()
+        }
+    }
+
+    private fun openPublicRoomsList() {
+        if (AppContainer.multiplayerAuth.activeLobby.value != null) return
+        roomsLeftMode = RoomsLeftMode.PUBLIC_LIST
+        renderRoomsPanel()
+        refreshRooms()
+    }
+
+    private fun closePublicRoomsList() {
+        roomsLeftMode = RoomsLeftMode.BROWSE
+        binding.inputPublicRoomSearch.setText("")
+        renderRoomsPanel()
+    }
+
+    private fun applyPublicRoomFilter() {
+        val b = _binding ?: return
+        val query = b.inputPublicRoomSearch.text?.toString()?.trim().orEmpty()
+        val filtered = if (query.isEmpty()) {
+            cachedPublicRooms
+        } else {
+            cachedPublicRooms.filter { room ->
+                listOf(
+                    room.hostName,
+                    room.motd,
+                    room.remark,
+                    room.roomCode,
+                    room.version
+                ).any { field ->
+                    field?.contains(query, ignoreCase = true) == true
+                }
+            }
+        }
+        publicRoomCardAdapter.submit(filtered)
+        b.textPublicRoomCount.text = getString(R.string.multiplayer_room_count, filtered.size)
+        b.textPublicRoomsEmpty.isVisible = filtered.isEmpty()
+        b.recyclerPublicRoomsGrid.isVisible = filtered.isNotEmpty()
+    }
+
+    private fun showPublicRoomDetail(room: PublicRoom) {
+        if (AppContainer.multiplayerAuth.activeLobby.value != null) return
+        selectedPublicRoom = room
+        roomsLeftMode = RoomsLeftMode.PUBLIC_DETAIL
+        renderRoomsPanel()
     }
 
     private fun renderRoomMembers(members: List<RoomMember>) {
         val binding = _binding ?: return
         val inRoom = AppContainer.multiplayerAuth.activeLobby.value != null || members.isNotEmpty()
+        if (!binding.panelRoomsInRoom.isVisible) {
+            binding.textRoomMembersTitle.isVisible = false
+            binding.recyclerRoomMembers.isVisible = false
+            binding.textRoomMembersEmpty.isVisible = false
+            if (!inRoom) roomMembersAdapter.submit(emptyList())
+            return
+        }
         binding.textRoomMembersTitle.isVisible = inRoom
         binding.recyclerRoomMembers.isVisible = inRoom && members.isNotEmpty()
         binding.textRoomMembersEmpty.isVisible = inRoom && members.isEmpty()
@@ -333,6 +556,7 @@ class MultiplayerFragment : Fragment() {
             binding.tabMultiplayer.getTabAt(3)?.select()
             showSocialPage(3)
         } else {
+            binding.tabMultiplayer.getTabAt(0)?.select()
             showSocialPage(0)
         }
     }
@@ -685,7 +909,12 @@ class MultiplayerFragment : Fragment() {
             officialJoinInProgress = false
             end?.buttonJoinOfficialServer?.isEnabled = true
             if (launch.isFailure) {
-                val msg = launch.exceptionOrNull()?.message ?: "unknown"
+                val err = launch.exceptionOrNull()
+                if (err is kotlinx.coroutines.CancellationException) {
+                    updateOfficialProgress(-1, getString(R.string.legacy_gl4es_cancel))
+                    return@launch
+                }
+                val msg = err?.message ?: "unknown"
                 updateOfficialProgress(-1, msg)
                 Toast.makeText(
                     requireContext(),
@@ -710,8 +939,9 @@ class MultiplayerFragment : Fragment() {
         }
     }
 
-    private fun joinRoom() {
-        val code = binding.inputRoomCode.text?.toString().orEmpty().trim()
+    private fun joinRoom(roomCode: String? = null) {
+        val code = roomCode?.trim().orEmpty()
+            .ifBlank { binding.inputRoomCode.text?.toString().orEmpty().trim() }
         if (code.isEmpty()) {
             toast(R.string.multiplayer_need_room_code)
             return
@@ -723,10 +953,16 @@ class MultiplayerFragment : Fragment() {
         }
         viewLifecycleOwner.lifecycleScope.launch {
             binding.buttonJoinRoom.isEnabled = false
+            binding.buttonJoinPublicRoom.isEnabled = false
             val result = AppContainer.multiplayerAuth.joinRoomCode(code)
             val ui = _binding ?: return@launch
             ui.buttonJoinRoom.isEnabled = true
+            ui.buttonJoinPublicRoom.isEnabled = true
             if (result.isSuccess) {
+                selectedPublicRoom = null
+                roomsLeftMode = RoomsLeftMode.BROWSE
+                clearHostDepsCache()
+                renderRoomsPanel()
                 val joined = result.getOrThrow()
                 Toast.makeText(
                     requireContext(),
@@ -743,27 +979,379 @@ class MultiplayerFragment : Fragment() {
         }
     }
 
+    private fun clearHostDepsCache() {
+        cachedHostDepsRoomCode = null
+        cachedHostDeps = null
+        hostDepsJob?.cancel()
+        hostDepsJob = null
+        hostDepsDownloadInProgress = false
+    }
+
+    private fun refreshHostDepsUi() {
+        val b = _binding ?: return
+        val lobby = AppContainer.multiplayerAuth.activeLobby.value
+        if (lobby == null) {
+            b.buttonDownloadHostDeps.isVisible = false
+            b.textHostDepsInfo.isVisible = false
+            return
+        }
+        val roomCode = lobby.roomCode
+        val cached = cachedHostDeps
+        if (cached != null &&
+            roomCode.equals(cachedHostDepsRoomCode, ignoreCase = true)
+        ) {
+            applyHostDepsButton(cached)
+            return
+        }
+        b.buttonDownloadHostDeps.isVisible = false
+        b.textHostDepsInfo.isVisible = false
+        hostDepsJob?.cancel()
+        hostDepsJob = viewLifecycleOwner.lifecycleScope.launch {
+            val snapshot = runCatching {
+                RoomHostDependencyInstaller.resolveSnapshot(roomCode)
+            }.getOrDefault(RoomDependencySnapshot())
+            if (_binding == null) return@launch
+            if (!roomCode.equals(
+                    AppContainer.multiplayerAuth.activeLobby.value?.roomCode,
+                    ignoreCase = true
+                )
+            ) {
+                return@launch
+            }
+            cachedHostDepsRoomCode = roomCode
+            cachedHostDeps = snapshot
+            applyHostDepsButton(snapshot)
+        }
+    }
+
+    private fun applyHostDepsButton(snapshot: RoomDependencySnapshot) {
+        val b = _binding ?: return
+        val hasContent = RoomHostDependencyInstaller.hasDownloadableContent(snapshot)
+        b.buttonDownloadHostDeps.isVisible = hasContent
+        b.buttonDownloadHostDeps.isEnabled = hasContent && !hostDepsDownloadInProgress
+        b.textHostDepsInfo.isVisible = hasContent
+        if (!hasContent) return
+
+        val version = snapshot.gameVersion?.ifBlank { null } ?: "未知版本"
+        val loader = snapshot.loader?.ifBlank { null } ?: "原版"
+        val summary = buildString {
+            append(version)
+            append(" · ")
+            append(loader)
+            if (snapshot.mods.isNotEmpty()) {
+                append(" · ")
+                append(snapshot.mods.size)
+                append(" 个模组")
+            } else if (!snapshot.modpackUrl.isNullOrBlank()) {
+                append(" · 整合包")
+            }
+        }
+        b.textHostDepsInfo.text = getString(R.string.multiplayer_host_deps_summary, summary)
+
+        if (hostDepsDownloadInProgress) {
+            b.buttonDownloadHostDeps.setText(R.string.multiplayer_download_host_deps_busy)
+            return
+        }
+        val exact = RoomHostDependencyInstaller.findExactMatchVersion(snapshot)
+        b.buttonDownloadHostDeps.setText(
+            if (exact != null) R.string.multiplayer_download_host_deps_launch
+            else R.string.multiplayer_download_host_deps
+        )
+    }
+
+    private fun downloadHostDependencies() {
+        val lobby = AppContainer.multiplayerAuth.activeLobby.value
+        if (lobby == null) {
+            toast(R.string.multiplayer_download_host_deps_none)
+            return
+        }
+        if (hostDepsDownloadInProgress) return
+        viewLifecycleOwner.lifecycleScope.launch {
+            val snapshot = cachedHostDeps?.takeIf {
+                lobby.roomCode.equals(cachedHostDepsRoomCode, ignoreCase = true)
+            } ?: RoomHostDependencyInstaller.resolveSnapshot(lobby.roomCode).also {
+                cachedHostDepsRoomCode = lobby.roomCode
+                cachedHostDeps = it
+            }
+            if (!RoomHostDependencyInstaller.hasDownloadableContent(snapshot)) {
+                toast(R.string.multiplayer_download_host_deps_none)
+                applyHostDepsButton(snapshot)
+                return@launch
+            }
+            val exact = RoomHostDependencyInstaller.findExactMatchVersion(snapshot)
+            if (exact != null) {
+                RoomSessionTracker.track(exact.id)
+                launchRoomSessionVersion(exact.id)
+                applyHostDepsButton(snapshot)
+                return@launch
+            }
+
+            val confirmed = withContext(Dispatchers.Main) {
+                suspendCancellableCoroutine { cont ->
+                    MaterialAlertDialogBuilder(requireContext())
+                        .setTitle(R.string.multiplayer_download_host_deps)
+                        .setMessage(
+                            getString(
+                                R.string.multiplayer_download_host_deps_confirm,
+                                snapshot.gameVersion ?: "未知",
+                                snapshot.loader ?: "原版",
+                                snapshot.mods.size
+                            )
+                        )
+                        .setPositiveButton(android.R.string.ok) { _, _ ->
+                            if (cont.isActive) cont.resume(true)
+                        }
+                        .setNegativeButton(android.R.string.cancel) { _, _ ->
+                            if (cont.isActive) cont.resume(false)
+                        }
+                        .setOnCancelListener {
+                            if (cont.isActive) cont.resume(false)
+                        }
+                        .show()
+                }
+            }
+            if (!confirmed) return@launch
+
+            hostDepsDownloadInProgress = true
+            applyHostDepsButton(snapshot)
+            val result = runCatching {
+                RoomHostDependencyInstaller.downloadAndCreate(snapshot) { status ->
+                    viewLifecycleOwner.lifecycleScope.launch(Dispatchers.Main) {
+                        val ui = _binding ?: return@launch
+                        ui.buttonDownloadHostDeps.text = status.take(28)
+                        ui.textHostDepsInfo.text = status
+                        ui.textHostDepsInfo.isVisible = true
+                    }
+                }
+            }
+            hostDepsDownloadInProgress = false
+            if (result.isSuccess) {
+                val ok = result.getOrThrow()
+                RoomSessionTracker.track(ok.versionId)
+                val launchNow = withContext(Dispatchers.Main) {
+                    suspendCancellableCoroutine { cont ->
+                        MaterialAlertDialogBuilder(requireContext())
+                            .setTitle(R.string.multiplayer_download_host_deps_ready_title)
+                            .setMessage(
+                                getString(
+                                    R.string.multiplayer_download_host_deps_ready_message,
+                                    ok.message
+                                )
+                            )
+                            .setPositiveButton(R.string.multiplayer_download_host_deps_launch_now) { _, _ ->
+                                if (cont.isActive) cont.resume(true)
+                            }
+                            .setNegativeButton(R.string.multiplayer_download_host_deps_later) { _, _ ->
+                                if (cont.isActive) cont.resume(false)
+                            }
+                            .setOnCancelListener {
+                                if (cont.isActive) cont.resume(false)
+                            }
+                            .show()
+                    }
+                }
+                if (launchNow) {
+                    launchRoomSessionVersion(ok.versionId)
+                } else {
+                    Toast.makeText(
+                        requireContext(),
+                        getString(R.string.multiplayer_download_host_deps_ok, ok.message),
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            } else {
+                val err = result.exceptionOrNull()
+                if (err !is CancellationException) {
+                    Toast.makeText(
+                        requireContext(),
+                        getString(
+                            R.string.multiplayer_download_host_deps_failed,
+                            err?.message ?: "unknown"
+                        ),
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+            applyHostDepsButton(snapshot)
+        }
+    }
+
+    private fun leaveRoomWithCleanup() {
+        viewLifecycleOwner.lifecycleScope.launch {
+            val tracked = RoomSessionTracker.versionId
+            AppContainer.multiplayerAuth.leaveActiveRoom()
+            clearHostDepsCache()
+            selectedPublicRoom = null
+            roomsLeftMode = RoomsLeftMode.BROWSE
+            renderRoomsPanel()
+            if (!tracked.isNullOrBlank()) {
+                val delete = withContext(Dispatchers.Main) {
+                    suspendCancellableCoroutine { cont ->
+                        MaterialAlertDialogBuilder(requireContext())
+                            .setTitle(R.string.multiplayer_delete_room_version_title)
+                            .setMessage(
+                                getString(R.string.multiplayer_delete_room_version_message, tracked)
+                            )
+                            .setPositiveButton(R.string.multiplayer_delete_room_version_yes) { _, _ ->
+                                if (cont.isActive) cont.resume(true)
+                            }
+                            .setNegativeButton(R.string.multiplayer_delete_room_version_keep) { _, _ ->
+                                if (cont.isActive) cont.resume(false)
+                            }
+                            .setOnCancelListener {
+                                if (cont.isActive) cont.resume(false)
+                            }
+                            .show()
+                    }
+                }
+                if (delete) {
+                    val deleted = withContext(Dispatchers.IO) {
+                        AppContainer.repository.deleteInstalledVersion(tracked)
+                    }
+                    RoomSessionTracker.clear()
+                    if (deleted.isSuccess) {
+                        toast(R.string.multiplayer_delete_room_version_ok)
+                    } else {
+                        toast(R.string.multiplayer_delete_room_version_failed)
+                    }
+                } else {
+                    RoomSessionTracker.clear()
+                }
+            } else {
+                RoomSessionTracker.clear()
+            }
+        }
+    }
+
+    private fun launchRoomSessionVersion(versionId: String, forceDirectConnect: Boolean = false) {
+        viewLifecycleOwner.lifecycleScope.launch {
+            val ctx = context ?: return@launch
+            AppContainer.repository.selectVersion(versionId)
+            RoomSessionTracker.track(versionId)
+            val account = prepareLaunchAccount() ?: return@launch
+            val server = if (forceDirectConnect) {
+                AppContainer.multiplayerAuth.directConnectAddress.value
+            } else {
+                null
+            }
+            Toast.makeText(
+                ctx,
+                if (forceDirectConnect && !server.isNullOrBlank()) {
+                    getString(R.string.multiplayer_download_host_deps_ok, "直连备用启动：$versionId")
+                } else {
+                    getString(
+                        R.string.multiplayer_download_host_deps_ok,
+                        getString(R.string.multiplayer_lan_join_hint)
+                    )
+                },
+                Toast.LENGTH_LONG
+            ).show()
+            val result = AppContainer.gameRuntime.launch(
+                context = ctx,
+                versionId = versionId,
+                account = account,
+                serverAddress = server
+            )
+            if (result.isFailure) {
+                val err = result.exceptionOrNull()
+                if (err is CancellationException) return@launch
+                Toast.makeText(
+                    ctx,
+                    getString(
+                        R.string.multiplayer_launch_room_version_failed,
+                        err?.message ?: "unknown"
+                    ),
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+    }
+
+    /**
+     * Explicit backup path: inject 127.0.0.1 tunnel via --server.
+     * Prefer LAN list; only use when the list does not appear.
+     */
+    private fun launchDirectBackup() {
+        val server = AppContainer.multiplayerAuth.directConnectAddress.value
+        if (server.isNullOrBlank()) {
+            toast(R.string.multiplayer_need_room_code)
+            return
+        }
+        val tracked = RoomSessionTracker.versionId
+        val selected = AppContainer.repository.session.value.selectedVersionId
+        val versionId = tracked?.takeIf { it.isNotBlank() }
+            ?: selected?.takeIf { it.isNotBlank() }
+        if (versionId.isNullOrBlank()) {
+            Toast.makeText(
+                requireContext(),
+                getString(R.string.multiplayer_lan_join_hint),
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+        launchRoomSessionVersion(versionId, forceDirectConnect = true)
+    }
+
+    private suspend fun prepareLaunchAccount(): LauncherAccount? {
+        var account = AppContainer.repository.selectedAccount()
+            ?: LauncherAccount(
+                id = "offline-default",
+                name = "Player",
+                type = AccountType.OFFLINE,
+                selected = true
+            )
+        val joiningRoom = AppContainer.multiplayerAuth.activeLobby.value != null
+        if (joiningRoom && account.type == AccountType.OFFLINE) {
+            Toast.makeText(
+                requireContext(),
+                R.string.multiplayer_offline_join_hint,
+                Toast.LENGTH_LONG
+            ).show()
+        }
+        if (account.type == AccountType.MICROSOFT) {
+            val refreshed = MicrosoftAuthService.ensureSession(
+                account,
+                forceRefresh = joiningRoom
+            )
+            if (refreshed.isFailure) {
+                val err = refreshed.exceptionOrNull()
+                val summary = getString(
+                    R.string.accounts_ms_refresh_failed,
+                    err?.message ?: "请重新登录"
+                )
+                val log = MicrosoftAuthLogger.lastReport
+                    ?: "（无详细日志）\n${err?.message}"
+                MicrosoftAuthErrorDialog.show(requireContext(), summary, log)
+                return null
+            }
+            account = refreshed.getOrThrow()
+            AppContainer.repository.upsertMicrosoftAccount(account)
+        }
+        return account
+    }
+
     private fun refreshRooms() {
         viewLifecycleOwner.lifecycleScope.launch {
-            val result = AppContainer.multiplayerAuth.listPublicRooms()
-            val rooms = result.getOrNull().orEmpty().map { room ->
-                MultiplayerListItem(
-                    id = room.id.ifBlank { room.roomCode },
-                    name = "${room.hostName} · ${room.roomCode}",
-                    meta = buildString {
-                        append(room.motd.ifBlank { room.remark.orEmpty() }.ifBlank { "公开房间" })
-                        append(" · ${room.currentPlayers}/${room.maxPlayers}")
-                        room.version?.let { append(" · $it") }
-                    },
-                    primaryLabel = getString(R.string.multiplayer_join_room),
-                    payload = room
-                )
-            }
             val ui = _binding ?: return@launch
-            roomsAdapter.submit(rooms)
-            ui.textRoomsEmpty.isVisible = rooms.isEmpty()
+            if (ui.panelRoomsPublicList.isVisible) {
+                ui.textPublicRoomsEmpty.isVisible = true
+                ui.textPublicRoomsEmpty.text = getString(R.string.multiplayer_loading)
+            }
+            val result = AppContainer.multiplayerAuth.listPublicRooms()
+            val rooms = result.getOrNull().orEmpty()
+            cachedPublicRooms = rooms
+            val bound = _binding ?: return@launch
             if (result.isFailure) {
-                ui.textStatus.text = result.exceptionOrNull()?.message
+                val msg = result.exceptionOrNull()?.message
+                    ?: getString(R.string.multiplayer_rooms_load_failed)
+                bound.textStatus.text = msg
+                if (bound.panelRoomsPublicList.isVisible) {
+                    bound.textPublicRoomsEmpty.text = msg
+                    bound.textPublicRoomsEmpty.isVisible = true
+                    bound.recyclerPublicRoomsGrid.isVisible = false
+                }
+            } else if (bound.panelRoomsPublicList.isVisible) {
+                applyPublicRoomFilter()
             }
         }
     }
@@ -771,6 +1359,9 @@ class MultiplayerFragment : Fragment() {
     private fun refreshFriends() {
         if (AppContainer.multiplayerAuth.current() == null) return
         viewLifecycleOwner.lifecycleScope.launch {
+            val start = _binding ?: return@launch
+            start.textFriendsEmpty.isVisible = true
+            start.textFriendsEmpty.text = getString(R.string.multiplayer_loading)
             AppContainer.multiplayerAuth.refreshProfile()
             AppContainer.multiplayerAuth.bumpPresence(
                 isInRoom = AppContainer.multiplayerAuth.activeLobby.value != null,
@@ -779,6 +1370,16 @@ class MultiplayerFragment : Fragment() {
             val friendsResult = AppContainer.multiplayerAuth.loadFriends()
             val dash = friendsResult.getOrNull()
             val ui = _binding ?: return@launch
+
+            if (friendsResult.isFailure) {
+                val msg = friendsResult.exceptionOrNull()?.message
+                    ?: getString(R.string.multiplayer_friends_load_failed)
+                ui.textStatus.text = msg
+                ui.textFriendsEmpty.text = msg
+                ui.textFriendsEmpty.isVisible = true
+                friendsAdapter.submit(emptyList())
+                return@launch
+            }
 
             friendsAdapter.submit(
                 dash?.friends.orEmpty().map { f ->
@@ -795,6 +1396,9 @@ class MultiplayerFragment : Fragment() {
                 }
             )
             ui.textFriendsEmpty.isVisible = dash?.friends.isNullOrEmpty()
+            if (dash?.friends.isNullOrEmpty()) {
+                ui.textFriendsEmpty.text = getString(R.string.multiplayer_friends_empty)
+            }
 
             requestsAdapter.submit(
                 dash?.incomingRequests.orEmpty().map { r ->
@@ -973,45 +1577,99 @@ class MultiplayerFragment : Fragment() {
         binding.imageSessionFrame.applyBooxinFrame(frameId)
     }
 
-    private fun refreshLobby() {
+    private fun refreshLobby(resetPage: Boolean = false) {
         if (AppContainer.multiplayerAuth.current() == null) return
+        if (lobbyLoading) return
+        if (resetPage) lobbyPage = 1
         viewLifecycleOwner.lifecycleScope.launch {
-            val lobbyResult = AppContainer.multiplayerAuth.loadLobby()
-            val ui = _binding ?: return@launch
-            lobbyAdapter.submit(
-                lobbyResult.getOrNull().orEmpty().map { u ->
-                    MultiplayerListItem(
-                        id = u.id,
-                        name = u.username,
-                        meta = statusLine(u.isOnline, u.isFriend),
-                        avatarUrl = u.avatarUrl,
-                        frameId = u.selectedFrameId,
-                        primaryLabel = when {
-                            u.isFriend -> null
-                            u.hasPendingOutgoingRequest -> getString(R.string.multiplayer_request_sent)
-                            u.hasPendingIncomingRequest -> getString(R.string.multiplayer_accept)
-                            else -> getString(R.string.multiplayer_add_friend)
-                        },
-                        payload = u
-                    )
+            lobbyLoading = true
+            setLobbyPaginationEnabled(false)
+            try {
+                var lobbyResult = AppContainer.multiplayerAuth.loadLobby(lobbyPage)
+                var page = lobbyResult.getOrNull()
+                if (page != null && page.totalPages > 0 && lobbyPage > page.totalPages) {
+                    lobbyPage = page.totalPages
+                    lobbyResult = AppContainer.multiplayerAuth.loadLobby(lobbyPage)
+                    page = lobbyResult.getOrNull()
                 }
-            )
-            ui.textLobbyEmpty.isVisible =
-                lobbyResult.isSuccess && lobbyResult.getOrNull().isNullOrEmpty()
-            if (lobbyResult.isFailure) {
-                ui.textStatus.text = lobbyResult.exceptionOrNull()?.message
+                val ui = _binding ?: return@launch
+                lastLobbyPage = page
+                val users = page?.users.orEmpty()
+                lobbyAdapter.submit(
+                    users.map { u ->
+                        MultiplayerListItem(
+                            id = u.id,
+                            name = u.username,
+                            meta = statusLine(u.isOnline, u.isFriend),
+                            avatarUrl = u.avatarUrl,
+                            frameId = u.selectedFrameId,
+                            primaryLabel = when {
+                                u.isFriend -> null
+                                u.hasPendingOutgoingRequest -> getString(R.string.multiplayer_request_sent)
+                                u.hasPendingIncomingRequest -> getString(R.string.multiplayer_accept)
+                                else -> getString(R.string.multiplayer_add_friend)
+                            },
+                            payload = u
+                        )
+                    }
+                )
+                ui.textLobbyEmpty.isVisible = lobbyResult.isSuccess && users.isEmpty()
+                if (lobbyResult.isFailure) {
+                    ui.textStatus.text = lobbyResult.exceptionOrNull()?.message
+                    lastLobbyPage = null
+                    updateLobbyPagination(null)
+                } else {
+                    updateLobbyPagination(page)
+                    if (users.isNotEmpty()) {
+                        ui.recyclerLobby.scrollToPosition(0)
+                    }
+                }
+            } finally {
+                lobbyLoading = false
+                updateLobbyPagination(lastLobbyPage)
             }
         }
     }
 
-    /** Friend in a room → prominent one-tap Join (no invite on mobile for now). */
+    private fun updateLobbyPagination(page: LobbyPage?) {
+        val b = _binding ?: return
+        if (page == null || page.totalCount <= 0) {
+            b.lobbyPaginationBar.isVisible = false
+            return
+        }
+        b.lobbyPaginationBar.isVisible = true
+        b.textLobbyPageInfo.text = getString(
+            R.string.multiplayer_lobby_page_info,
+            page.page,
+            page.totalPages.coerceAtLeast(1),
+            page.totalCount
+        )
+        setLobbyPaginationEnabled(!lobbyLoading)
+    }
+
+    private fun setLobbyPaginationEnabled(enabled: Boolean) {
+        val b = _binding ?: return
+        val page = lastLobbyPage
+        b.buttonLobbyPrevPage.isEnabled = enabled && page?.hasPrevious == true
+        b.buttonLobbyNextPage.isEnabled = enabled && page?.hasNext == true
+    }
+
+    /** Friend in a room → Join; else if I'm in a room → Invite; else Chat. */
     private fun friendPrimaryAction(friend: BooxinFriend): String =
-        if (friend.isInRoom) getString(R.string.multiplayer_join_friend_room)
-        else getString(R.string.multiplayer_chat)
+        when {
+            friend.isInRoom -> getString(R.string.multiplayer_join_friend_room)
+            AppContainer.multiplayerAuth.activeLobby.value != null ->
+                getString(R.string.multiplayer_invite_friend)
+            else -> getString(R.string.multiplayer_chat)
+        }
 
     private fun friendSecondaryAction(friend: BooxinFriend): String =
-        if (friend.isInRoom) getString(R.string.multiplayer_chat)
-        else getString(R.string.multiplayer_remove_friend)
+        when {
+            friend.isInRoom -> getString(R.string.multiplayer_chat)
+            AppContainer.multiplayerAuth.activeLobby.value != null ->
+                getString(R.string.multiplayer_chat)
+            else -> getString(R.string.multiplayer_remove_friend)
+        }
 
     private fun joinFriendRoom(friend: BooxinFriend) {
         val code = friend.roomCode?.trim().orEmpty()
@@ -1086,6 +1744,34 @@ class MultiplayerFragment : Fragment() {
             Intent(requireContext(), ChatActivity::class.java)
                 .putExtra(ChatActivity.EXTRA_PEER_ID, peerId)
                 .putExtra(ChatActivity.EXTRA_PEER_NAME, peerName)
+        )
+    }
+
+    private fun openLobbyChat() {
+        if (AppContainer.multiplayerAuth.current() == null) {
+            Toast.makeText(requireContext(), R.string.multiplayer_lobby_chat_need_login, Toast.LENGTH_SHORT)
+                .show()
+            return
+        }
+        startActivity(Intent(requireContext(), LobbyChatActivity::class.java))
+    }
+
+    private fun openUserDetail(userId: String) {
+        if (userId.isBlank()) return
+        if (AppContainer.multiplayerAuth.current() == null) {
+            Toast.makeText(requireContext(), R.string.multiplayer_need_login_first, Toast.LENGTH_SHORT)
+                .show()
+            return
+        }
+        UserDetailDialog.show(
+            context = requireContext(),
+            lifecycleOwner = viewLifecycleOwner,
+            userId = userId,
+            onChat = { peerId, peerName -> openChat(peerId, peerName) },
+            onChanged = {
+                refreshFriends()
+                refreshLobby()
+            }
         )
     }
 
@@ -1274,14 +1960,60 @@ class MultiplayerFragment : Fragment() {
     }
 
     private fun inviteFriend(friend: BooxinFriend) {
+        if (AppContainer.multiplayerAuth.activeLobby.value == null) {
+            toast(R.string.multiplayer_invite_need_host)
+            return
+        }
         viewLifecycleOwner.lifecycleScope.launch {
             val result = AppContainer.multiplayerAuth.sendRoomInvite(friend.userId)
-            Toast.makeText(
-                requireContext(),
-                result.getOrElse { it.message ?: "failed" },
-                Toast.LENGTH_SHORT
-            ).show()
+            if (!isAdded) return@launch
+            if (result.isSuccess) {
+                Toast.makeText(
+                    requireContext(),
+                    result.getOrNull() ?: getString(R.string.multiplayer_invite_sent),
+                    Toast.LENGTH_SHORT
+                ).show()
+            } else {
+                Toast.makeText(
+                    requireContext(),
+                    result.exceptionOrNull()?.message ?: "failed",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
         }
+    }
+
+    /** Consume PC/notification/deep-link one-click join requests. */
+    private fun consumePendingRoomJoin() {
+        val pending = RoomInviteCoordinator.consumePendingJoin() ?: return
+        val b = _binding ?: return
+        if (AppContainer.multiplayerAuth.current() == null) {
+            RoomInviteCoordinator.requestJoin(pending.roomCode, pending.inviteId)
+            toast(R.string.multiplayer_need_login_first)
+            selectAccountTab()
+            return
+        }
+        if (AppContainer.multiplayerAuth.activeLobby.value != null) {
+            toast(R.string.multiplayer_room_invite_busy)
+            pending.inviteId?.let { id ->
+                viewLifecycleOwner.lifecycleScope.launch {
+                    AppContainer.multiplayerAuth.dismissInvite(id)
+                }
+            }
+            return
+        }
+        b.inputRoomCode.setText(pending.roomCode)
+        // Show invites sub-tab so the list refreshes after accept.
+        runCatching {
+            binding.tabMultiplayer.getTabAt(0)?.select()
+            binding.tabFriendsSub.getTabAt(2)?.select()
+        }
+        pending.inviteId?.let { id ->
+            viewLifecycleOwner.lifecycleScope.launch {
+                AppContainer.multiplayerAuth.dismissInvite(id)
+            }
+        }
+        joinRoom()
     }
 
     private fun <T> toastResult(result: Result<T>, okRes: Int) {
@@ -1336,6 +2068,9 @@ class MultiplayerFragment : Fragment() {
     }
 
     override fun onDestroyView() {
+        hostDepsJob?.cancel()
+        hostDepsJob = null
+        clearHostDepsCache()
         super.onDestroyView()
         _binding = null
     }

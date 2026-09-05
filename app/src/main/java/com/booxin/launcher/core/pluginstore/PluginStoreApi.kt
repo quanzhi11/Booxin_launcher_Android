@@ -23,9 +23,16 @@ class PluginStoreApi {
         private val OCTET = "application/octet-stream".toMediaType()
     }
 
-    suspend fun listPlugins(): Result<List<StorePlugin>> = withContext(Dispatchers.IO) {
+    suspend fun listPlugins(
+        platform: String? = PluginStorePlatforms.ANDROID
+    ): Result<List<StorePlugin>> = withContext(Dispatchers.IO) {
         runCatching {
-            val root = JSONObject(executeGet("$DEFAULT_ROOT/api/plugins"))
+            val url = if (platform.isNullOrBlank()) {
+                "$DEFAULT_ROOT/api/plugins"
+            } else {
+                "$DEFAULT_ROOT/api/plugins?platform=${platform.trim()}"
+            }
+            val root = JSONObject(executeGet(url))
             parsePlugins(root.optJSONArray("items"))
         }
     }
@@ -174,14 +181,17 @@ class PluginStoreApi {
         name: String,
         downloadUrl: String,
         description: String,
-        type: String = "other"
+        type: String = "other",
+        platforms: List<String> = PluginStorePlatforms.ALL
     ): Result<PluginApplication> = withContext(Dispatchers.IO) {
         runCatching {
+            val normalized = PluginStorePlatforms.normalize(platforms)
             val body = JSONObject()
                 .put("name", name.trim())
                 .put("downloadUrl", downloadUrl.trim())
                 .put("description", description.trim())
                 .put("type", type.trim().ifBlank { "other" })
+                .put("platforms", JSONArray(normalized))
             val json = executeAuthorized(
                 session,
                 Request.Builder()
@@ -199,17 +209,20 @@ class PluginStoreApi {
         name: String,
         description: String,
         type: String,
-        file: File
+        file: File,
+        platforms: List<String> = PluginStorePlatforms.ALL
     ): Result<PluginApplication> = withContext(Dispatchers.IO) {
         runCatching {
             if (file.length() > MAX_UPLOAD_BYTES) {
                 error("OVERSIZE")
             }
+            val normalized = PluginStorePlatforms.normalize(platforms)
             val multipart = MultipartBody.Builder()
                 .setType(MultipartBody.FORM)
                 .addFormDataPart("name", name.trim())
                 .addFormDataPart("description", description.trim())
                 .addFormDataPart("type", type.trim().ifBlank { "other" })
+                .addFormDataPart("platforms", normalized.joinToString(","))
                 .addFormDataPart(
                     "file",
                     file.name,
@@ -260,12 +273,14 @@ class PluginStoreApi {
             description = o.optString("description"),
             downloadUrl = o.optString("downloadUrl"),
             type = o.optString("type", "other"),
+            version = o.optString("version", "1.0.0").ifBlank { "1.0.0" },
             developerUserId = o.optString("developerUserId"),
             developerUsername = o.optString("developerUsername"),
             publishedAt = o.optString("publishedAt"),
             ratingAvg = o.optDouble("ratingAvg", 0.0),
             ratingCount = o.optInt("ratingCount"),
-            commentCount = o.optInt("commentCount")
+            commentCount = o.optInt("commentCount"),
+            platforms = PluginStorePlatforms.parseJsonArray(o.optJSONArray("platforms"))
         )
 
     private fun parseComments(arr: JSONArray?): List<PluginComment> {
@@ -311,7 +326,8 @@ class PluginStoreApi {
             rejectReason = o.optString("rejectReason"),
             createdAt = o.optString("createdAt"),
             updatedAt = o.optString("updatedAt"),
-            reviewedAt = o.optString("reviewedAt").takeIf { it.isNotBlank() }
+            reviewedAt = o.optString("reviewedAt").takeIf { it.isNotBlank() },
+            platforms = PluginStorePlatforms.parseJsonArray(o.optJSONArray("platforms"))
         )
 
     private fun executeGet(url: String): String =

@@ -14,7 +14,8 @@ object BooxinGluesEnv {
         context: Context,
         kind: GlRendererKind,
         profile: ModRenderProfile?,
-        resolved: BooxinGlResolved? = null
+        resolved: BooxinGlResolved? = null,
+        mcVersionId: String? = null
     ) {
         if (!isBooxinFamily(kind) &&
             kind != GlRendererKind.LTW &&
@@ -25,8 +26,15 @@ object BooxinGluesEnv {
             return
         }
 
+        val resolvedMcId = mcVersionId
+            ?: env["BOOXIN_MC_VERSION"]
+            ?: env["INST_NAME"]
+
         val bgDir = File(context.filesDir, "BooxinGlues").also { it.mkdirs() }
         env["BOOXIN_GLUES_DIR"] = bgDir.absolutePath
+        if (!resolvedMcId.isNullOrBlank()) {
+            env["BOOXIN_MC_VERSION"] = resolvedMcId
+        }
 
         if (kind == GlRendererKind.BOOXIN_GLUES || kind == GlRendererKind.ANGLE) {
             env["BOOXIN_GLUES"] = "1"
@@ -49,6 +57,17 @@ object BooxinGluesEnv {
                     env["allow_higher_compat_version"] = "true"
                     env["allow_glsl_extension_directive_midshader"] = "true"
                     env["force_glsl_extensions_warn"] = "true"
+                    env.putIfAbsent(
+                        "FCL_VERSION_CODE",
+                        com.booxin.launcher.BuildConfig.VERSION_CODE.toString()
+                    )
+                    MobileGluesConfig.writeProfile(
+                        context,
+                        runCatching {
+                            com.booxin.launcher.core.launch.BooxinLaunchTune.resolve(context)
+                        }.getOrNull(),
+                        mcVersionId = resolvedMcId
+                    )
                 }
                 BooxinGlEngine.CLEANROOM -> {
                     env["BOOXIN_GL_CLEANROOM"] = "1"
@@ -84,6 +103,18 @@ object BooxinGluesEnv {
             env["allow_glsl_extension_directive_midshader"] = "true"
             env["force_glsl_extensions_warn"] = "true"
             env["BOOXIN_GL_LICENSE"] = "LGPL-2.1"
+            // MG refuses config.json unless a known launcher version env is set.
+            env.putIfAbsent(
+                "FCL_VERSION_CODE",
+                com.booxin.launcher.BuildConfig.VERSION_CODE.toString()
+            )
+            // Official translator reads config.json from MG_DIR_PATH for its own perf paths.
+            MobileGluesConfig.writeProfile(
+                context,
+                runCatching { com.booxin.launcher.core.launch.BooxinLaunchTune.resolve(context) }
+                    .getOrNull(),
+                mcVersionId = resolvedMcId
+            )
         }
 
         if (kind == GlRendererKind.BOOXIN_GLUES ||

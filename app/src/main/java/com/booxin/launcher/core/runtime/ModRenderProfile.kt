@@ -38,7 +38,7 @@ object ModRenderProfiler {
             id = "iris",
             matchAny = listOf("iris-", "iris_", "oculus-", "irisflywheel"),
             matchLoader = emptyList(),
-            preferred = GlRendererKind.BOOXIN_GLUES,
+            preferred = GlRendererKind.MOBILE_GLUES,
             fallback = listOf(
                 GlRendererKind.VULKAN_ZINK,
                 GlRendererKind.ANGLE,
@@ -52,7 +52,7 @@ object ModRenderProfiler {
             id = "sodium",
             matchAny = listOf("sodium-", "sodium_", "embeddium-", "rubidium-", "indium-"),
             matchLoader = emptyList(),
-            preferred = GlRendererKind.BOOXIN_GLUES,
+            preferred = GlRendererKind.MOBILE_GLUES,
             fallback = listOf(
                 GlRendererKind.VULKAN_ZINK,
                 GlRendererKind.LTW,
@@ -66,7 +66,7 @@ object ModRenderProfiler {
             id = "distanthorizons",
             matchAny = listOf("distanthorizons", "distant-horizons", "distant_horizons"),
             matchLoader = emptyList(),
-            preferred = GlRendererKind.BOOXIN_GLUES,
+            preferred = GlRendererKind.MOBILE_GLUES,
             fallback = listOf(
                 GlRendererKind.VULKAN_ZINK,
                 GlRendererKind.ANGLE,
@@ -82,7 +82,7 @@ object ModRenderProfiler {
             id = "immersiveportals",
             matchAny = listOf("immersiveportals", "immersive_portals", "imm_ptl"),
             matchLoader = emptyList(),
-            preferred = GlRendererKind.BOOXIN_GLUES,
+            preferred = GlRendererKind.MOBILE_GLUES,
             fallback = listOf(
                 GlRendererKind.VULKAN_ZINK,
                 GlRendererKind.ANGLE,
@@ -96,9 +96,9 @@ object ModRenderProfiler {
         ),
         Rule(
             id = "create",
-            matchAny = listOf("create-", "create_"),
+            matchAny = listOf("create-", "create_", "flywheel"),
             matchLoader = emptyList(),
-            preferred = GlRendererKind.BOOXIN_GLUES,
+            preferred = GlRendererKind.MOBILE_GLUES,
             fallback = listOf(
                 GlRendererKind.VULKAN_ZINK,
                 GlRendererKind.ANGLE,
@@ -113,10 +113,43 @@ object ModRenderProfiler {
             features = setOf("custom_render", "compute_emulate", "dsa")
         ),
         Rule(
+            id = "mtr",
+            matchAny = listOf(
+                "mtr", "transit-railway", "transit_railway",
+                "nte", "jsblock", "joban", "aphrodite"
+            ),
+            matchLoader = emptyList(),
+            preferred = GlRendererKind.MOBILE_GLUES,
+            fallback = listOf(
+                GlRendererKind.VULKAN_ZINK,
+                GlRendererKind.ANGLE,
+                GlRendererKind.MOBILE_GLUES
+            ),
+            env = mapOf(
+                "BOOXIN_GLUES_PROFILE" to "heavy_custom",
+                "BOOXIN_GLUES_DSA_EMULATE" to "1",
+                "BOOXIN_GLUES_COMPUTE_EMULATE" to "1"
+            ),
+            features = setOf("custom_render", "multidraw", "dsa", "compute_emulate")
+        ),
+        Rule(
+            id = "fabric_loader",
+            matchAny = emptyList(),
+            matchLoader = listOf("fabric", "quilt"),
+            preferred = GlRendererKind.MOBILE_GLUES,
+            fallback = listOf(
+                GlRendererKind.VULKAN_ZINK,
+                GlRendererKind.ANGLE,
+                GlRendererKind.MOBILE_GLUES
+            ),
+            env = mapOf("BOOXIN_GLUES_PROFILE" to "sodium"),
+            features = emptySet()
+        ),
+        Rule(
             id = "journeymap",
             matchAny = listOf("journeymap", "xaero", "voxelmap"),
             matchLoader = emptyList(),
-            preferred = GlRendererKind.BOOXIN_GLUES,
+            preferred = GlRendererKind.MOBILE_GLUES,
             fallback = listOf(GlRendererKind.GL4ES, GlRendererKind.MOBILE_GLUES),
             env = mapOf("BOOXIN_GLUES_PROFILE" to "heavy_custom"),
             features = setOf("custom_render")
@@ -124,8 +157,8 @@ object ModRenderProfiler {
         Rule(
             id = "neoforge",
             matchAny = emptyList(),
-            matchLoader = listOf("neoforge"),
-            preferred = GlRendererKind.BOOXIN_GLUES,
+            matchLoader = listOf("neoforge", "forge"),
+            preferred = GlRendererKind.MOBILE_GLUES,
             fallback = listOf(GlRendererKind.GL4ES, GlRendererKind.MOBILE_GLUES),
             env = mapOf("BOOXIN_GLUES_PROFILE" to "neoforge"),
             features = emptySet()
@@ -157,7 +190,7 @@ object ModRenderProfiler {
         if (hits.isEmpty()) {
             return ModRenderProfile(
                 profileId = "vanilla",
-                preferred = GlRendererKind.BOOXIN_GLUES,
+                preferred = GlRendererKind.MOBILE_GLUES,
                 fallback = listOf(
                     GlRendererKind.VULKAN_ZINK,
                     GlRendererKind.GL4ES,
@@ -174,7 +207,8 @@ object ModRenderProfiler {
             compareByDescending<Pair<Rule, List<String>>> { (rule, _) ->
                 when {
                     "shaders" in rule.features -> 5
-                    rule.id == "distanthorizons" || rule.id == "immersiveportals" -> 4
+                    rule.id == "distanthorizons" || rule.id == "immersiveportals" ||
+                        rule.id == "mtr" -> 4
                     "custom_render" in rule.features -> 3
                     "multidraw" in rule.features -> 2
                     rule.matchLoader.isNotEmpty() -> 1

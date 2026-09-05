@@ -27,7 +27,7 @@
 | MobileGlues（可选） | `libmobileglues*.so` | 黄 | **LGPL-2.1**，仅手动 `MOBILE_GLUES`；全文 `assets/licenses/MOBILEGLUES_LGPL-2.1.txt` |
 | OpenJDK / HotSpot（嵌入式 JRE） | 用户数据目录 Java home | 黄 | GPL-2 + Classpath Exception |
 | Booxin Bridge（自研） | `libbooxin_bridge.so` | 绿 | Booxin 自有；替代原 exec/input/EGL 桥 |
-| ~~libpojavexec / libfcl~~ | 已移出 APK（`tools/_quarantine_gpl/`） | 红 | **不再打包** |
+| ~~历史第三方桥接库~~ | 已移出 APK（`tools/_quarantine_gpl/`） | 红 | **不再打包** |
 | EasyTier | `libeasytier_*.so` | 黄 | 联机组件；按上游许可 |
 | Terracotta | `libterracotta.so` | 黄 | 按上游许可 |
 | Minecraft 客户端 / 模组 | 用户下载 | — | **非本启动器版权**；不可宣称自有 |

@@ -7,6 +7,8 @@ import android.widget.FrameLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
+import com.booxin.launcher.R
+import com.booxin.launcher.core.uiplugin.UiPluginManager
 
 /**
  * 虚拟按键 / 摇杆编辑。
@@ -18,6 +20,7 @@ class ControlLayoutController(
     private val floatingBall: TextView,
     private val gestureQuick: TextView,
     private val editBar: View,
+    private val followToggleView: TextView? = null,
     private val onEditModeChanged: (Boolean) -> Unit = {}
 ) {
     private val buttons = mutableListOf<ControlButtonView>()
@@ -26,6 +29,7 @@ class ControlLayoutController(
     private var joystickSpec = ControlLayoutData.JoystickSpec()
     private var floatingBallSpec = ControlLayoutData.FloatingBallSpec()
     private var gestureQuickSpec = ControlLayoutData.GestureQuickSpec()
+    private var buttonStyle: ControlButtonStyle? = null
 
     var editMode: Boolean = false
         private set
@@ -38,6 +42,7 @@ class ControlLayoutController(
             clearButtonSelection()
             joystickSelected = true
             joystick.editSelected = true
+            refreshFollowToggleLabel()
         }
         joystick.onMoved = { spec ->
             joystickSpec = spec
@@ -64,7 +69,8 @@ class ControlLayoutController(
         editBar.visibility = View.VISIBLE
         host.visibility = View.VISIBLE
         onEditModeChanged(true)
-        Toast.makeText(context, "拖动轮盘/按键改位置；点选后可缩放或删除", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, "拖动改位置；点选轮盘/按键后可跟手、缩放或删除", Toast.LENGTH_SHORT).show()
+        refreshFollowToggleLabel()
     }
 
     fun exitEditMode(save: Boolean) {
@@ -103,14 +109,62 @@ class ControlLayoutController(
         }
         val target = selectedButton
         if (target == null) {
-            Toast.makeText(context, "请先点选一个按键", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, context.getString(R.string.control_edit_need_select), Toast.LENGTH_SHORT).show()
             return
         }
         target.releaseHold()
         host.removeView(target)
         buttons.remove(target)
         selectedButton = null
+        refreshFollowToggleLabel()
         persist()
+    }
+
+    /** Toggle follow on the selected button, or on the movement joystick. */
+    fun toggleFollowSelected() {
+        if (!editMode) return
+        if (joystickSelected) {
+            val enable = !joystickSpec.follow
+            joystickSpec = joystickSpec.copy(follow = enable)
+            joystick.applySpec(joystickSpec)
+            refreshFollowToggleLabel()
+            persist()
+            Toast.makeText(
+                context,
+                context.getString(
+                    if (enable) R.string.control_edit_follow_enabled
+                    else R.string.control_edit_follow_disabled
+                ),
+                Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
+        val target = selectedButton
+        if (target == null) {
+            Toast.makeText(context, context.getString(R.string.control_edit_need_select), Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (!target.spec.canToggleFollow()) {
+            Toast.makeText(
+                context,
+                context.getString(R.string.control_edit_follow_unsupported),
+                Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
+        val enable = !target.spec.isFollowKind()
+        target.applySpec(target.spec.withFollow(enable))
+        if (host.width > 0) target.layoutInParent(host.width, host.height)
+        refreshFollowToggleLabel()
+        persist()
+        Toast.makeText(
+            context,
+            context.getString(
+                if (enable) R.string.control_edit_follow_enabled
+                else R.string.control_edit_follow_disabled
+            ),
+            Toast.LENGTH_SHORT
+        ).show()
     }
 
     fun resizeSelected(deltaDp: Int) {
@@ -119,6 +173,7 @@ class ControlLayoutController(
             val next = (joystickSpec.sizeDp + deltaDp).coerceIn(120, 220)
             joystickSpec = joystickSpec.copy(sizeDp = next)
             joystick.applySpec(joystickSpec)
+            persist()
             return
         }
         val target = selectedButton
@@ -126,10 +181,14 @@ class ControlLayoutController(
             Toast.makeText(context, "请先点选轮盘或按键", Toast.LENGTH_SHORT).show()
             return
         }
-        val next = (target.spec.sizeDp + deltaDp).coerceIn(36, 96)
+        val next = (target.spec.sizeDp + deltaDp).coerceIn(
+            ControlLayoutStore.SIZE_DP_MIN,
+            ControlLayoutStore.SIZE_DP_MAX
+        )
         target.applySpec(target.spec.copy(sizeDp = next))
         val parent = host
         if (parent.width > 0) target.layoutInParent(parent.width, parent.height)
+        persist()
     }
 
     fun resetToDefault() {
@@ -181,12 +240,56 @@ class ControlLayoutController(
         joystick.releaseKeys()
     }
 
-    private fun loadAndInflate() {
+    /** Active panel id (`main` or an extraLayouts id). */
+    fun currentLayoutId(): String = ControlLayoutStore.activeLayoutId(context)
+
+    /** Main + plugin extraLayouts (may be only main when no plugin). */
+    fun availableLayouts() = ControlLayoutStore.listControlLayouts()
+
+    /**
+     * Switch FCL-style control panel. Saves current edits first when in edit mode.
+     * @return true if switched (or already on that panel).
+     */
+    fun switchLayout(layoutId: String): Boolean {
+        val layouts = availableLayouts()
+        if (layouts.isEmpty()) return false
+        val target = layouts.firstOrNull { it.id.equals(layoutId.trim(), ignoreCase = true) }
+            ?: return false
+        val current = currentLayoutId()
+        if (target.id.equals(current, ignoreCase = true)) return true
+        persist()
+        val keepChrome = !target.id.equals(UiPluginManager.MAIN_LAYOUT_ID, ignoreCase = true)
+        val prevJoy = joystickSpec
+        val prevBall = floatingBallSpec
+        val prevGesture = gestureQuickSpec
+        ControlLayoutStore.setActiveLayoutId(context, target.id)
+        loadAndInflate(
+            preserveChrome = keepChrome,
+            chromeJoystick = prevJoy,
+            chromeBall = prevBall,
+            chromeGesture = prevGesture
+        )
+        if (editMode) {
+            buttons.forEach { it.editMode = true }
+            joystick.editMode = true
+        }
+        return true
+    }
+
+    private fun loadAndInflate(
+        preserveChrome: Boolean = false,
+        chromeJoystick: ControlLayoutData.JoystickSpec? = null,
+        chromeBall: ControlLayoutData.FloatingBallSpec? = null,
+        chromeGesture: ControlLayoutData.GestureQuickSpec? = null
+    ) {
         clearViews()
         val data = ControlLayoutStore.load(context)
-        joystickSpec = data.joystick
-        floatingBallSpec = data.floatingBall
-        gestureQuickSpec = data.gestureQuick
+        joystickSpec = if (preserveChrome && chromeJoystick != null) chromeJoystick else data.joystick
+        floatingBallSpec =
+            if (preserveChrome && chromeBall != null) chromeBall else data.floatingBall
+        gestureQuickSpec =
+            if (preserveChrome && chromeGesture != null) chromeGesture else data.gestureQuick
+        buttonStyle = data.buttonStyle
         joystick.applySpec(joystickSpec)
         applyFloatingBall()
         applyGestureQuick()
@@ -228,6 +331,7 @@ class ControlLayoutController(
             selectedButton?.editSelected = false
             selectedButton = v
             v.editSelected = true
+            refreshFollowToggleLabel()
         }
         view.onMoved = { v, x, y ->
             v.spec = v.spec.copy(x = x, y = y)
@@ -243,6 +347,7 @@ class ControlLayoutController(
                 selectedButton?.editSelected = false
                 selectedButton = view
                 view.editSelected = true
+                refreshFollowToggleLabel()
             }
         }
     }
@@ -265,6 +370,24 @@ class ControlLayoutController(
         clearButtonSelection()
         joystickSelected = false
         joystick.editSelected = false
+        refreshFollowToggleLabel()
+    }
+
+    private fun refreshFollowToggleLabel() {
+        val chip = followToggleView ?: return
+        val followOn = when {
+            joystickSelected -> joystickSpec.follow
+            else -> selectedButton?.spec?.isFollowKind() == true
+        }
+        chip.text = context.getString(
+            if (followOn) R.string.control_edit_follow_on else R.string.control_edit_follow
+        )
+        chip.alpha = when {
+            joystickSelected -> 1f
+            selectedButton == null -> 0.45f
+            selectedButton!!.spec.canToggleFollow() -> 1f
+            else -> 0.45f
+        }
     }
 
     private fun relayoutAll() {
@@ -287,7 +410,8 @@ class ControlLayoutController(
                 buttons = buttons.map { it.spec },
                 joystick = joystickSpec,
                 floatingBall = floatingBallSpec,
-                gestureQuick = gestureQuickSpec
+                gestureQuick = gestureQuickSpec,
+                buttonStyle = buttonStyle
             )
         )
     }

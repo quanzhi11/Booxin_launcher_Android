@@ -8,20 +8,26 @@ object RuntimeEnv {
     const val NATIVEDIR = "BOOXIN_NATIVEDIR"
     const val RENDERER = "BOOXIN_RENDERER"
     const val EGL = "BOOXIN_EGL"
+    /** Native CreateJavaVM heartbeats append here (ColorOS often blocks logcat). */
+    const val LAUNCH_LOG = "BOOXIN_LAUNCH_LOG"
 
     const val LEGACY_POJAV_NATIVEDIR = "POJAV_NATIVEDIR"
-    /** Legacy native-dir env alias required by some renderer plugins. */
+    /** Legacy native-dir env alias required by some third-party renderer plugins. */
     const val LEGACY_NATIVEDIR_ALT = "FCL_NATIVEDIR"
     const val LEGACY_POJAV_RENDERER = "POJAV_RENDERER"
     const val LEGACY_POJAVEXEC_EGL = "POJAVEXEC_EGL"
 
     fun rendererToken(kind: GlRendererKind): String {
+        // Built-in package token wins (sideloaded plugin.json may omit/wrong token).
+        RendererPackages.forKind(kind)?.rendererToken?.let { return it }
         com.booxin.launcher.core.plugin.PluginManager.findByKind(kind)
             ?.takeIf { it.enabled }
-            ?.let { return it.rendererToken }
-        RendererPackages.forKind(kind)?.let { return it.rendererToken }
+            ?.rendererToken
+            ?.takeIf { it.isNotBlank() }
+            ?.let { return it }
         return when (kind) {
-            GlRendererKind.GL4ES -> "opengles2"
+            GlRendererKind.GL4ES -> "opengles3"
+            GlRendererKind.REL -> "opengles3_rel"
             GlRendererKind.MOBILE_GLUES,
             GlRendererKind.BOOXIN_GLUES -> "opengles3"
             else -> "opengles3"
@@ -50,7 +56,10 @@ object RuntimeEnv {
             return pkg.eglLib
         }
         return when (kind) {
+            // Bridge BOOXIN_EGL → MG so CreateContext wrap can find the .so;
+            // LIBGL_EGL stays system libEGL (set in LaunchCommandBuilder).
             GlRendererKind.MOBILE_GLUES -> "libmobileglues.so"
+            GlRendererKind.REL -> "librel.so"
             GlRendererKind.ANGLE -> {
                 val dir = RendererInstaller.pluginNativeDir(kind)
                 val file = dir?.let { File(it, "libEGL_angle.so") }
@@ -72,14 +81,34 @@ object RuntimeEnv {
             ?.takeIf { it.enabled }
             ?.let { return it.libGlEs }
         RendererPackages.forKind(kind)?.let { return it.libGlEs }
-        return if (kind == GlRendererKind.GL4ES) "2" else "3"
+        return "3"
     }
 
-    fun pluginExtraEnv(kind: GlRendererKind): Map<String, String> =
+    fun pluginExtraEnv(kind: GlRendererKind): Map<String, String> {
+        val merged = linkedMapOf<String, String>()
+        // Built-in defaults first; installed plugin.json may omit critical keys.
+        RendererPackages.forKind(kind)?.extraEnv?.let { merged.putAll(it) }
         com.booxin.launcher.core.plugin.PluginManager.findByKind(kind)
             ?.takeIf { it.enabled }
             ?.extraEnv
-            ?: RendererPackages.forKind(kind)?.extraEnv.orEmpty()
+            ?.let { merged.putAll(it) }
+        if (kind == GlRendererKind.REL) {
+            if (com.booxin.launcher.core.LauncherPrefs.fsr1Enabled()) {
+                merged["REL_FSR_ENABLE"] = "1"
+                merged.putIfAbsent("REL_FSR_SCALE", "0.77")
+            } else {
+                merged["REL_FSR_ENABLE"] = "0"
+            }
+        }
+        if (kind == GlRendererKind.GL4ES || kind == GlRendererKind.BOOXIN_GLUES) {
+            // holy gl4es：ES3 + FBO 纹理附件，减轻 status=0 / Mojang 后黑屏
+            merged["LIBGL_ES"] = "3"
+            merged.putIfAbsent("LIBGL_FBOFORCETEX", "1")
+            merged.putIfAbsent("LIBGL_NORMALIZE", "1")
+            merged.putIfAbsent("LIBGL_NOINTOVLHACK", "1")
+        }
+        return merged
+    }
 
     fun withNativeAliases(
         base: MutableMap<String, String>,
@@ -94,18 +123,46 @@ object RuntimeEnv {
         base[EGL] = egl
         base[LEGACY_POJAV_NATIVEDIR] = stagedNatives
         base[LEGACY_NATIVEDIR_ALT] = stagedNatives
-        base[LEGACY_POJAV_RENDERER] = token
-        base[LEGACY_POJAVEXEC_EGL] = egl
+        // Do NOT export POJAV_RENDERER to Java System.getenv — Create/Sodium use it
+        // and hardcode the brand "PojavLauncher". Patched LWJGL (booxinRendererToken)
+        // reads BOOXIN_RENDERER instead; jre_launcher setenvs POJAV_RENDERER for C only
+        // after freezing HotSpot ProcessEnvironment without that key.
+        // POJAVEXEC_EGL: REL keeps system host; MG uses libmobileglues (FCL-compat).
+        base[LEGACY_POJAVEXEC_EGL] = when (renderer) {
+            GlRendererKind.REL -> "libEGL.so"
+            else -> egl
+        }
         return base
     }
 
     fun glLibraryFile(stagedNatives: File, kind: GlRendererKind): File {
+        // REL: prefer staged APK librel.so; optional sideloaded plugin override.
+        if (kind == GlRendererKind.REL) {
+            val rel = File(stagedNatives, "librel.so")
+            if (rel.isFile) return rel
+            RendererInstaller.glLibrary(kind)?.let { return it }
+            val disguised = File(stagedNatives, "libgl4es_114.so")
+            if (disguised.isFile) return disguised
+        }
+        if (kind == GlRendererKind.MCRENDER) {
+            val mc = File(stagedNatives, "libmcrender.so")
+            if (mc.isFile) return mc
+            RendererInstaller.glLibrary(kind)?.let { return it }
+        }
+        // Disguised GLES wrappers must load the staged libgl4es_114.so copy
+        // (same inode path LWJGL + bridge expect after applyRenderer).
+        val pkg = RendererPackages.forKind(kind)
+        if (pkg?.disguiseAsGl4es == true) {
+            val staged = File(stagedNatives, "libgl4es_114.so")
+            if (staged.isFile) return staged
+        }
         RendererInstaller.glLibrary(kind)?.let { return it }
         return when (kind) {
             GlRendererKind.GL4ES,
             GlRendererKind.BOOXIN_GLUES -> File(stagedNatives, "libgl4es_114.so")
             GlRendererKind.MOBILE_GLUES -> File(stagedNatives, "libmobileglues.so")
-            GlRendererKind.KRYPTON, GlRendererKind.LTW -> File(stagedNatives, "libgl4es_114.so")
+            GlRendererKind.KRYPTON, GlRendererKind.LTW, GlRendererKind.REL ->
+                File(stagedNatives, "libgl4es_114.so")
             else -> File(stagedNatives, "libgl4es_114.so")
         }
     }

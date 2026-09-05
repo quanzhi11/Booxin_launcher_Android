@@ -240,6 +240,16 @@
                     tools:text="开发者 xxx" />
 
                 <TextView
+                    android:id="@+id/textDetailPlatforms"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:gravity="center_horizontal"
+                    android:textColor="@color/md_theme_light_outline"
+                    android:textSize="11sp"
+                    tools:text="Android · 桌面" />
+
+                <TextView
                     android:id="@+id/textDetailTypeVertical"
                     android:layout_width="wrap_content"
                     android:layout_height="0dp"
@@ -351,7 +361,7 @@
                         </LinearLayout>
                     </androidx.core.widget.NestedScrollView>
 
-                    <!-- Comments page -->
+                    <!-- Comments page: list first; composer opens on demand -->
                     <LinearLayout
                         android:id="@+id/panelDetailComments"
                         android:layout_width="match_parent"
@@ -359,48 +369,104 @@
                         android:orientation="vertical"
                         android:visibility="gone">
 
-                        <androidx.recyclerview.widget.RecyclerView
-                            android:id="@+id/recyclerComments"
-                            android:layout_width="match_parent"
-                            android:layout_height="0dp"
-                            android:layout_weight="1"
-                            android:scrollbars="vertical" />
-
-                        <TextView
-                            android:id="@+id/textCommentsEmpty"
-                            android:layout_width="match_parent"
-                            android:layout_height="0dp"
-                            android:layout_weight="1"
-                            android:gravity="center"
-                            android:text="@string/plugin_store_comments_empty"
-                            android:textColor="@color/md_theme_light_outline"
-                            android:textSize="12sp"
-                            android:visibility="gone" />
-
-                        <com.google.android.material.textfield.TextInputLayout
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/buttonWriteComment"
+                            style="@style/Widget.Booxin.SecondaryButton"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
-                            android:layout_marginTop="8dp"
-                            android:hint="@string/plugin_store_comment_hint">
+                            android:insetTop="0dp"
+                            android:insetBottom="0dp"
+                            android:minHeight="40dp"
+                            android:text="@string/plugin_store_comment_write"
+                            android:textSize="12sp" />
 
-                            <com.google.android.material.textfield.TextInputEditText
-                                android:id="@+id/inputComment"
+                        <LinearLayout
+                            android:id="@+id/panelCommentComposer"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:gravity="top"
+                            android:orientation="vertical"
+                            android:visibility="gone">
+
+                            <com.google.android.material.textfield.TextInputLayout
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
-                                android:gravity="top"
-                                android:inputType="textMultiLine"
-                                android:maxLength="500"
-                                android:maxLines="3"
-                                android:minLines="1" />
-                        </com.google.android.material.textfield.TextInputLayout>
+                                android:hint="@string/plugin_store_comment_hint">
 
-                        <com.google.android.material.button.MaterialButton
-                            android:id="@+id/buttonSubmitComment"
-                            style="@style/Widget.Booxin.PrimaryButton"
+                                <com.google.android.material.textfield.TextInputEditText
+                                    android:id="@+id/inputComment"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content"
+                                    android:gravity="top|start"
+                                    android:imeOptions="actionDone"
+                                    android:inputType="textMultiLine|textCapSentences"
+                                    android:maxLength="500"
+                                    android:maxLines="4"
+                                    android:minLines="2"
+                                    android:scrollbars="vertical" />
+                            </com.google.android.material.textfield.TextInputLayout>
+
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="8dp"
+                                android:gravity="end"
+                                android:orientation="horizontal">
+
+                                <com.google.android.material.button.MaterialButton
+                                    android:id="@+id/buttonCancelComment"
+                                    style="@style/Widget.Booxin.SecondaryButton"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:layout_marginEnd="8dp"
+                                    android:insetTop="0dp"
+                                    android:insetBottom="0dp"
+                                    android:minHeight="40dp"
+                                    android:minWidth="0dp"
+                                    android:paddingLeft="14dp"
+                                    android:paddingRight="14dp"
+                                    android:text="@string/plugin_store_comment_cancel"
+                                    android:textSize="12sp" />
+
+                                <com.google.android.material.button.MaterialButton
+                                    android:id="@+id/buttonSubmitComment"
+                                    style="@style/Widget.Booxin.PrimaryButton"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:insetTop="0dp"
+                                    android:insetBottom="0dp"
+                                    android:minHeight="40dp"
+                                    android:minWidth="0dp"
+                                    android:paddingLeft="14dp"
+                                    android:paddingRight="14dp"
+                                    android:text="@string/plugin_store_comment_submit"
+                                    android:textSize="12sp" />
+                            </LinearLayout>
+                        </LinearLayout>
+
+                        <FrameLayout
                             android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="6dp"
-                            android:text="@string/plugin_store_comment_submit" />
+                            android:layout_height="0dp"
+                            android:layout_marginTop="8dp"
+                            android:layout_weight="1">
+
+                            <androidx.recyclerview.widget.RecyclerView
+                                android:id="@+id/recyclerComments"
+                                android:layout_width="match_parent"
+                                android:layout_height="match_parent"
+                                android:clipToPadding="false"
+                                android:scrollbars="vertical" />
+
+                            <TextView
+                                android:id="@+id/textCommentsEmpty"
+                                android:layout_width="match_parent"
+                                android:layout_height="match_parent"
+                                android:gravity="center"
+                                android:text="@string/plugin_store_comments_empty"
+                                android:textColor="@color/md_theme_light_outline"
+                                android:textSize="12sp"
+                                android:visibility="gone" />
+                        </FrameLayout>
                     </LinearLayout>
                 </FrameLayout>
 

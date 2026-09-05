@@ -34,16 +34,67 @@ object JvmEnvironment {
             com.booxin.launcher.core.runtime.RuntimeEnv.LEGACY_NATIVEDIR_ALT to stagedNatives,
             "_JAVA_VERSION_SET" to "true"
         )
+        GameLaunchLogBus.latestLogFile()?.absolutePath?.let { path ->
+            env[com.booxin.launcher.core.runtime.RuntimeEnv.LAUNCH_LOG] = path
+        }
+        if (OemLaunchProfile.isOplusFamily()) {
+            // ColorOS can stall in GLFW.<clinit> before main; load GLFW later at glfwInit.
+            // Does not change the selected GLES translator (REL stays REL).
+            env["BOOXIN_SKIP_GLFW_PREINIT"] = "1"
+            // Ignored SIGSEGV becomes a silent hang after Invoking main on ColorOS.
+            env["BOOXIN_KEEP_SIGSEGV"] = "1"
+        }
         env.putAll(extraEnv)
 
         env.forEach { (key, value) ->
             Os.setenv(key, value, true)
         }
+        // Keep POJAV_RENDERER out of the Java-visible env (Create brands it "PojavLauncher"),
+        // except legacy LWJGL2 which needs it in System.getenv (lwjglx NPE otherwise).
+        val keepPojavRenderer = extraEnv.containsKey(
+            com.booxin.launcher.core.runtime.RuntimeEnv.LEGACY_POJAV_RENDERER
+        ) || extraEnv["BOOXIN_SKIP_GLFW_PREINIT"] == "1"
+        if (!keepPojavRenderer) {
+            runCatching { Os.unsetenv(com.booxin.launcher.core.runtime.RuntimeEnv.LEGACY_POJAV_RENDERER) }
+        }
 
         loadGraphicsLibrary(stagedNatives)
+        // JRE ships a stub libawt_xawt without Component.initIDs; replace with APK stub
+        // so legacy Frame() clients (b1.8.1) can link (also System.load after CreateJavaVM).
+        installAwtXawtStub(javaHome, stagedNatives)
         preloadLibraries(javaHome, jvmLibDir, stagedNatives)
         if (systemNative != stagedNatives) {
             preloadLibraries(javaHome, jvmLibDir, systemNative)
+        }
+    }
+
+    /**
+     * Android OpenJDK's bundled libawt_xawt.so has no Java_java_awt_Component_initIDs.
+     * Our APK stub does — overwrite the JRE copy when the staged/APK stub is present.
+     */
+    private fun installAwtXawtStub(javaHome: File, stagedNatives: String) {
+        val stub = sequenceOf(
+            File(stagedNatives, "libawt_xawt.so"),
+            File(stagedNatives, "../libawt_xawt.so")
+        ).map { it.normalize() }.firstOrNull { it.isFile && it.length() > 0L }
+            ?: return
+        val targets = javaHome.walkTopDown().maxDepth(6)
+            .filter { it.isFile && it.name == "libawt_xawt.so" }
+            .toList()
+        for (dest in targets) {
+            if (dest.absolutePath == stub.absolutePath) continue
+            if (dest.length() == stub.length() && dest.lastModified() >= stub.lastModified()) continue
+            runCatching {
+                stub.copyTo(dest, overwrite = true)
+                dest.setReadable(true, false)
+                dest.setExecutable(true, false)
+                android.util.Log.i(
+                    "BooxinJvm",
+                    "replaced JRE libawt_xawt with Component.initIDs stub → ${dest.absolutePath}"
+                )
+            }.onFailure {
+                android.util.Log.w("BooxinJvm", "awt_xawt stub install failed: ${it.message}")
+            }
         }
     }
 
@@ -104,6 +155,8 @@ object JvmEnvironment {
             "libnet.so",
             "libnio.so",
             "libzip.so",
+            // javaagent needs instrument → tinyiconv; load tinyiconv first.
+            "libtinyiconv.so",
             "libinstrument.so",
             "libmanagement.so",
             "libawt.so",
@@ -113,6 +166,10 @@ object JvmEnvironment {
         ).forEach { name ->
             findLibrary(javaHome, name)?.let { candidates += it.absolutePath }
         }
+        // Do NOT preload stub libawt_xawt / libpojavexec_awt here:
+        // - stub headless on top of JRE headless crashes CreateJavaVM
+        // - pojavexec_awt needs libfcl.so (FCL-only)
+        // Legacy LaunchWrapper loads awt_xawt via System.load after HotSpot starts.
         // Exec bridge is loaded via ExecBridgeLoader (single staged copy).
         // 不要预加载 LWJGL，Forge 1.21+ 自己加载。
         listOf("libc++_shared.so").forEach { name ->

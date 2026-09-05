@@ -86,6 +86,28 @@
                     android:inputType="textMultiLine"
                     android:minLines="3" />
             </com.google.android.material.textfield.TextInputLayout>
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:text="@string/plugin_store_field_platforms"
+                android:textColor="@color/md_theme_light_outline"
+                android:textSize="12sp" />
+
+            <CheckBox
+                android:id="@+id/checkPlatformAndroid"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:checked="true"
+                android:text="@string/plugin_store_platform_android" />
+
+            <CheckBox
+                android:id="@+id/checkPlatformDesktop"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:checked="true"
+                android:text="@string/plugin_store_platform_desktop" />
         </LinearLayout>
     </ScrollView>
 

@@ -64,6 +64,9 @@ object RendererInstaller {
             if (!kind.requiresPlugin) {
                 return@runCatching File(LauncherPaths.runtimeDir, "natives")
             }
+            if (kind == GlRendererKind.REL) {
+                refreshRelFromSideloadIfPresent()
+            }
             PluginManager.findByKind(kind)?.let { p ->
                 if (p.installed && !p.enabled) {
                     error("插件已禁用: ${p.name}（请在设置 → 插件管理中启用）")
@@ -85,6 +88,47 @@ object RendererInstaller {
             } else {
                 install(pkg)
             }
+        }
+    }
+
+    /**
+     * Re-extract REL from a sideloaded APK (adb push) so device natives match
+     * a known-good build. Checked paths:
+     * - app external files: RELv1.0.0.apk
+     * - Download/RELv1.0.0.apk
+     * - game-root cache/renderers/rel.apk
+     */
+    fun refreshRelFromSideloadIfPresent(): Boolean {
+        val ctx = runCatching { BooxinApp.getAppContext() }.getOrNull()
+        val candidates = buildList {
+            ctx?.getExternalFilesDir(null)?.let { add(File(it, "RELv1.0.0.apk")) }
+            add(File("/sdcard/Download/RELv1.0.0.apk"))
+            if (LauncherPaths.isInitialized) {
+                add(File(LauncherPaths.rootDir, "cache/renderers/rel.apk"))
+            }
+        }
+        val apk = candidates.firstOrNull { it.isFile && it.length() > 1_000_000L } ?: return false
+        return runCatching {
+            kotlinx.coroutines.runBlocking {
+                PluginInstaller.installFromApkFile(
+                    apk,
+                    preferredId = "rel",
+                    preferredName = "REL"
+                )
+            }
+            val consumed = File(apk.parentFile, "${apk.name}.installed")
+            if (!apk.renameTo(consumed)) {
+                apk.copyTo(consumed, overwrite = true)
+                apk.delete()
+            }
+            android.util.Log.i(
+                "RendererInstaller",
+                "REFRESHed REL from sideload ${consumed.absolutePath} size=${consumed.length()}"
+            )
+            true
+        }.getOrElse { t ->
+            android.util.Log.w("RendererInstaller", "REL sideload refresh failed: ${t.message}")
+            false
         }
     }
 
@@ -179,6 +223,10 @@ object RendererInstaller {
         return when (pkg.kind) {
             com.booxin.launcher.core.launch.GlRendererKind.LTW ->
                 fileName.contains("ltw", ignoreCase = true)
+            com.booxin.launcher.core.launch.GlRendererKind.REL ->
+                fileName.contains("rel", ignoreCase = true)
+            com.booxin.launcher.core.launch.GlRendererKind.MCRENDER ->
+                fileName.contains("mcrender", ignoreCase = true)
             com.booxin.launcher.core.launch.GlRendererKind.KRYPTON ->
                 fileName.contains("ng_gl4es", ignoreCase = true)
             com.booxin.launcher.core.launch.GlRendererKind.VULKAN_ZINK,

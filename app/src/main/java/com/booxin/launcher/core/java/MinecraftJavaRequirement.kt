@@ -105,4 +105,43 @@ object MinecraftJavaRequirement {
         if (parsed.first >= 27) return true
         return parsed.first == 26 && parsed.second >= 3
     }
+
+    /** Java 8 JRE cannot load our default LWJGL jar (class file 61+). */
+    fun needsJava8Lwjgl(javaMajor: Int): Boolean = javaMajor < 9
+
+    /**
+     * Pre-1.13 / LaunchWrapper-era clients use LWJGL2 Display, not GLFW preinit.
+     * OptiFine 1.17+ launchwrapper-of still uses GLFW on Java 17+.
+     */
+    fun usesLegacyLwjglWindowing(mcVersionId: String, mainClass: String): Boolean {
+        if ("launchwrapper" in mainClass.lowercase()) {
+            val parsed = parseVersion(mcVersionId) ?: return true
+            if (isAtLeast(parsed, 1, 17, 0)) return false
+            return true
+        }
+        val parsed = parseVersion(mcVersionId) ?: return false
+        return parsed.first == 1 && parsed.second < 13
+    }
+
+    /**
+     * Ancient / pre-1.13 clients need holy GL4ES; MobileGlues / REL often fail to start.
+     * Covers Beta/Alpha/Classic ids (b1.8.1, a1.2.6, c0.30, inf-*, rd-*).
+     */
+    fun needsGl4esRenderer(mcVersionId: String): Boolean {
+        val parsed = parseVersion(mcVersionId)
+        if (parsed != null) {
+            if (parsed.first >= 26) return false
+            if (parsed.first == 1) return parsed.second < 13
+            // Classic 0.x
+            if (parsed.first == 0) return true
+        }
+        val lower = mcVersionId.lowercase()
+        return lower.startsWith("inf-") ||
+            lower.startsWith("rd-") ||
+            lower.startsWith("b1.") ||
+            lower.startsWith("a1.") ||
+            lower.startsWith("a0.") ||
+            lower.startsWith("c0.") ||
+            lower.startsWith("c1.")
+    }
 }

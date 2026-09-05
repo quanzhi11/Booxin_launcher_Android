@@ -22,6 +22,7 @@
         android:padding="10dp">
 
         <LinearLayout
+            android:id="@+id/roomsHeader"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:gravity="center_vertical"
@@ -47,6 +48,18 @@
                 android:textColor="@color/md_theme_light_outline"
                 android:textSize="11sp" />
         </LinearLayout>
+
+        <FrameLayout
+            android:id="@+id/roomsPanelHost"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1">
+
+        <LinearLayout
+            android:id="@+id/panelRoomsBrowse"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:orientation="vertical">
 
         <LinearLayout
             android:id="@+id/cardOfficialServer"
@@ -124,6 +137,7 @@
         </LinearLayout>
 
         <LinearLayout
+            android:id="@+id/rowRoomJoin"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="6dp"
@@ -157,104 +171,351 @@
                 android:paddingHorizontal="12dp"
                 android:text="@string/multiplayer_join_room"
                 android:textSize="12sp" />
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/buttonLeaveRoom"
-                style="@style/Widget.Booxin.SecondaryButton"
-                android:layout_width="wrap_content"
-                android:layout_height="36dp"
-                android:layout_marginStart="4dp"
-                android:insetTop="0dp"
-                android:insetBottom="0dp"
-                android:minWidth="0dp"
-                android:paddingHorizontal="10dp"
-                android:text="@string/multiplayer_leave_room"
-                android:textSize="12sp" />
         </LinearLayout>
+
+        <TextView
+            android:id="@+id/textJoinDepsHint"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:lineSpacingExtra="2dp"
+            android:text="@string/multiplayer_join_deps_hint"
+            android:textColor="@color/md_theme_light_outline"
+            android:textSize="11sp" />
 
         <TextView
             android:id="@+id/textJoinStatus"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:ellipsize="end"
-            android:maxLines="1"
+            android:maxLines="2"
             android:textColor="@color/md_theme_light_outline"
             android:textSize="11sp" />
 
-        <TextView
-            android:id="@+id/textDirectConnect"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:textColor="@color/booxin_navy"
-            android:textSize="11sp"
-            android:textStyle="bold"
-            android:visibility="gone" />
-
-        <TextView
-            android:id="@+id/textRoomMembersTitle"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="2dp"
-            android:text="@string/multiplayer_room_members"
-            android:textColor="@color/booxin_navy"
-            android:textSize="11sp"
-            android:textStyle="bold"
-            android:visibility="gone" />
-
-        <androidx.recyclerview.widget.RecyclerView
-            android:id="@+id/recyclerRoomMembers"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:visibility="gone" />
-
-        <TextView
-            android:id="@+id/textRoomMembersEmpty"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="@string/multiplayer_room_members_empty"
-            android:textColor="@color/md_theme_light_outline"
-            android:textSize="11sp"
-            android:visibility="gone" />
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
-            android:gravity="center_vertical"
-            android:orientation="horizontal">
-
-            <TextView
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="@string/multiplayer_public_rooms"
-                android:textColor="@color/booxin_navy"
-                android:textSize="12sp"
-                android:textStyle="bold" />
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/buttonRefreshRooms"
-                style="@style/Widget.Material3.Button.TextButton"
-                android:layout_width="wrap_content"
-                android:layout_height="28dp"
-                android:text="@string/multiplayer_refresh"
-                android:textSize="11sp" />
-        </LinearLayout>
-
-        <androidx.recyclerview.widget.RecyclerView
-            android:id="@+id/recyclerRooms"
+        <View
             android:layout_width="match_parent"
             android:layout_height="0dp"
             android:layout_weight="1" />
 
-        <TextView
-            android:id="@+id/textRoomsEmpty"
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/buttonOpenPublicRooms"
+            style="@style/Widget.Booxin.SecondaryButton"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="@string/multiplayer_rooms_empty"
-            android:textColor="@color/md_theme_light_outline"
-            android:textSize="12sp"
-            android:visibility="gone" />
+            android:layout_height="40dp"
+            android:layout_marginTop="8dp"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            android:text="@string/multiplayer_public_rooms"
+            android:textSize="13sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/panelRoomsPublicList"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/buttonBackPublicList"
+                    style="@style/Widget.Material3.Button.TextButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="32dp"
+                    android:minWidth="0dp"
+                    android:paddingHorizontal="0dp"
+                    android:text="@string/multiplayer_back"
+                    android:textSize="12sp" />
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="4dp"
+                    android:layout_weight="1"
+                    android:text="@string/multiplayer_public_rooms"
+                    android:textColor="@color/booxin_navy"
+                    android:textSize="14sp"
+                    android:textStyle="bold" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/buttonRefreshPublicRooms"
+                    style="@style/Widget.Material3.Button.TextButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="28dp"
+                    android:minWidth="0dp"
+                    android:text="@string/multiplayer_refresh"
+                    android:textSize="11sp" />
+            </LinearLayout>
+
+            <com.google.android.material.textfield.TextInputLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:hint="@string/multiplayer_room_search_hint">
+
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/inputPublicRoomSearch"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:imeOptions="actionSearch"
+                    android:inputType="text"
+                    android:maxLines="1"
+                    android:textSize="13sp" />
+            </com.google.android.material.textfield.TextInputLayout>
+
+            <TextView
+                android:id="@+id/textPublicRoomCount"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:textColor="@color/md_theme_light_outline"
+                android:textSize="11sp"
+                tools:text="3 个房间" />
+
+            <androidx.recyclerview.widget.RecyclerView
+                android:id="@+id/recyclerPublicRoomsGrid"
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_marginTop="4dp"
+                android:layout_weight="1"
+                android:clipToPadding="false"
+                android:paddingBottom="4dp" />
+
+            <TextView
+                android:id="@+id/textPublicRoomsEmpty"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center"
+                android:paddingVertical="16dp"
+                android:text="@string/multiplayer_rooms_empty"
+                android:textColor="@color/md_theme_light_outline"
+                android:textSize="12sp"
+                android:visibility="gone" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/panelRoomsInRoom"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:gravity="center"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/buttonLeaveRoom"
+                style="@style/Widget.Booxin.SecondaryButton"
+                android:layout_width="match_parent"
+                android:layout_height="44dp"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:text="@string/multiplayer_leave_room"
+                android:textSize="14sp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/buttonDownloadHostDeps"
+                style="@style/Widget.Booxin.PrimaryButton"
+                android:layout_width="match_parent"
+                android:layout_height="44dp"
+                android:layout_marginTop="8dp"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:text="@string/multiplayer_download_host_deps"
+                android:textSize="14sp"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/textHostDepsInfo"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:gravity="center"
+                android:textColor="@color/md_theme_light_outline"
+                android:textSize="11sp"
+                android:visibility="gone"
+                tools:text="1.20.1 · fabric · 12 个模组" />
+
+            <TextView
+                android:id="@+id/textInRoomTitle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:gravity="center"
+                android:textColor="@color/booxin_navy"
+                android:textSize="15sp"
+                android:textStyle="bold"
+                android:visibility="gone"
+                tools:text="当前房间" />
+
+            <TextView
+                android:id="@+id/textInRoomCode"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:gravity="center"
+                android:textColor="@color/md_theme_light_outline"
+                android:textSize="11sp"
+                android:visibility="gone"
+                tools:text="CSFGG-RK5W3-..." />
+
+            <TextView
+                android:id="@+id/textJoinStatusInRoom"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:gravity="center"
+                android:textColor="@color/md_theme_light_outline"
+                android:textSize="11sp"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/textDirectConnect"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:gravity="center"
+                android:textColor="@color/booxin_navy"
+                android:textSize="11sp"
+                android:textStyle="bold"
+                android:visibility="gone" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/buttonDirectBackupLaunch"
+                style="@style/Widget.Material3.Button.TextButton"
+                android:layout_width="wrap_content"
+                android:layout_height="32dp"
+                android:layout_gravity="center_horizontal"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:minWidth="0dp"
+                android:text="@string/multiplayer_direct_backup_launch"
+                android:textSize="11sp"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/textRoomMembersTitle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:text="@string/multiplayer_room_members"
+                android:textColor="@color/booxin_navy"
+                android:textSize="11sp"
+                android:textStyle="bold"
+                android:visibility="gone" />
+
+            <androidx.recyclerview.widget.RecyclerView
+                android:id="@+id/recyclerRoomMembers"
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/textRoomMembersEmpty"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center"
+                android:text="@string/multiplayer_room_members_empty"
+                android:textColor="@color/md_theme_light_outline"
+                android:textSize="11sp"
+                android:visibility="gone" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/panelRoomsPublicDetail"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/buttonBackPublicRoom"
+                style="@style/Widget.Material3.Button.TextButton"
+                android:layout_width="wrap_content"
+                android:layout_height="32dp"
+                android:minWidth="0dp"
+                android:paddingHorizontal="0dp"
+                android:text="@string/multiplayer_back"
+                android:textSize="12sp" />
+
+            <androidx.core.widget.NestedScrollView
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1"
+                android:fillViewport="true">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:paddingTop="4dp"
+                    android:paddingBottom="8dp">
+
+                    <TextView
+                        android:id="@+id/textPublicRoomHost"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:textColor="@color/booxin_navy"
+                        android:textSize="18sp"
+                        android:textStyle="bold"
+                        tools:text="BooxinAI" />
+
+                    <TextView
+                        android:id="@+id/textPublicRoomMotd"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:textColor="@color/booxin_navy"
+                        android:textSize="14sp"
+                        tools:text="欢迎加入" />
+
+                    <TextView
+                        android:id="@+id/textPublicRoomMeta"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:lineSpacingExtra="2dp"
+                        android:textColor="@color/md_theme_light_outline"
+                        android:textSize="12sp"
+                        tools:text="1.20.1 · 1/8 人" />
+
+                    <TextView
+                        android:id="@+id/textPublicRoomCode"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:textColor="@color/md_theme_light_outline"
+                        android:textIsSelectable="true"
+                        android:textSize="11sp"
+                        tools:text="CSFGG-RK5W3-V5XCB-PFWRQ-0HKNN" />
+
+                    <TextView
+                        android:id="@+id/textJoinStatusDetail"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:ellipsize="end"
+                        android:maxLines="2"
+                        android:textColor="@color/md_theme_light_outline"
+                        android:textSize="11sp" />
+                </LinearLayout>
+            </androidx.core.widget.NestedScrollView>
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/buttonJoinPublicRoom"
+                style="@style/Widget.Booxin.PrimaryButton"
+                android:layout_width="match_parent"
+                android:layout_height="40dp"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:text="@string/multiplayer_join_room"
+                android:textSize="13sp" />
+        </LinearLayout>
+        </FrameLayout>
     </LinearLayout>
 
     <!-- Right: social rail -->
@@ -459,6 +720,19 @@
                         android:minWidth="0dp"
                         android:text="@string/multiplayer_refresh"
                         android:textSize="11sp" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/buttonLobbyChat"
+                        style="@style/Widget.Booxin.SecondaryButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="32dp"
+                        android:layout_marginStart="2dp"
+                        android:insetTop="0dp"
+                        android:insetBottom="0dp"
+                        android:minWidth="0dp"
+                        android:paddingHorizontal="10dp"
+                        android:text="@string/multiplayer_lobby_chat"
+                        android:textSize="11sp" />
                 </LinearLayout>
 
                 <androidx.recyclerview.widget.RecyclerView
@@ -473,6 +747,48 @@
                     android:layout_height="0dp"
                     android:layout_marginTop="2dp"
                     android:layout_weight="1" />
+
+                <LinearLayout
+                    android:id="@+id/lobbyPaginationBar"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal"
+                    android:visibility="gone">
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/buttonLobbyPrevPage"
+                        style="@style/Widget.Material3.Button.OutlinedButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="32dp"
+                        android:enabled="false"
+                        android:insetTop="0dp"
+                        android:insetBottom="0dp"
+                        android:minWidth="0dp"
+                        android:text="@string/multiplayer_lobby_prev_page"
+                        android:textSize="11sp" />
+
+                    <TextView
+                        android:id="@+id/textLobbyPageInfo"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:gravity="center"
+                        android:textColor="@color/md_theme_light_outline"
+                        android:textSize="11sp" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/buttonLobbyNextPage"
+                        style="@style/Widget.Material3.Button.OutlinedButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="32dp"
+                        android:insetTop="0dp"
+                        android:insetBottom="0dp"
+                        android:minWidth="0dp"
+                        android:text="@string/multiplayer_lobby_next_page"
+                        android:textSize="11sp" />
+                </LinearLayout>
 
                 <TextView
                     android:id="@+id/textLobbyEmpty"

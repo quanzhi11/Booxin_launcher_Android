@@ -13,7 +13,7 @@ import java.io.File
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
- * FCL-inspired plugin hub: init/refresh discovery, install, enable/disable, uninstall.
+ * Plugin hub: init/refresh discovery, install, enable/disable, uninstall.
  */
 object PluginManager {
     private const val TAG = "PluginManager"

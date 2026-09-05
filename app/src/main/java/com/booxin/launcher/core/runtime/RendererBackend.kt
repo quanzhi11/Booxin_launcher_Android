@@ -16,47 +16,71 @@ object RendererBackend {
      * @param mcVersionId resolved Minecraft version for age-based defaults
      */
     fun kindForLaunch(instanceVersionId: String, mcVersionId: String): GlRendererKind {
+        // ADB/QA: write e.g. "REL" to external files/force_renderer.txt (optional).
+        forceRendererSidecar()?.let { return it }
         val preferred = LauncherPrefs.rendererKind()
+        val legacyNeedsGl4es =
+            com.booxin.launcher.core.java.MinecraftJavaRequirement.needsGl4esRenderer(mcVersionId)
         var auto = GlRendererProfile.forVersion(mcVersionId)
         val profile = ModRenderProfiler.probe(instanceVersionId)
 
-        // Android 9 (Pie) compatibility:
-        // GL4ES/opengles2 can fail at buffer mapping on some drivers,
-        // causing "Can't map buffer, opengl error 0" then black-screen crash.
+        // Android 9 (Pie): avoid holy GL4ES buffer-map crashes → MobileGlues,
+        // except ancient clients that only start on GL4ES.
         if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P &&
-            auto == GlRendererKind.GL4ES
+            auto == GlRendererKind.GL4ES &&
+            !legacyNeedsGl4es
         ) {
-            auto = GlRendererKind.BOOXIN_GLUES
+            auto = GlRendererKind.MOBILE_GLUES
         }
 
-        // Heavy GL mods on modern MC: prefer BooxinGlues even if version default is GL4ES.
-        if (profile.isHeavyGl && auto == GlRendererKind.GL4ES) {
-            auto = profile.preferred
-        } else if (profile.profileId != "vanilla" &&
-            auto != GlRendererKind.GL4ES
-        ) {
-            auto = profile.preferred
+        // Heavy / non-vanilla packs: keep profile preferred — but never demote
+        // ancient clients off GL4ES (MobileGlues usually cannot boot them).
+        if (!legacyNeedsGl4es) {
+            if (profile.isHeavyGl && auto == GlRendererKind.GL4ES) {
+                auto = profile.preferred
+            } else if (profile.profileId != "vanilla" &&
+                auto != GlRendererKind.GL4ES
+            ) {
+                auto = profile.preferred
+            }
+        } else {
+            auto = GlRendererKind.GL4ES
         }
 
-        // vivo/iQOO: user GL4ES on modern MC often hits
-        // "Can't map buffer, opengl error 0" (holy gl4es / Adreno).
-        // Must use MobileGlues — BOOXIN_GLUES Path A still stages gl4es_114 for vanilla.
-        if (OemLaunchProfile.shouldUpgradeGl4esToMobileGlues() &&
-            preferred == GlRendererKind.GL4ES &&
-            auto != GlRendererKind.GL4ES
-        ) {
+        // Explicit user pick — except OEM cannot run holy GL4ES / Path A
+        // (ancient still keeps user pick; OEM remap would brick Beta/Alpha).
+        if (preferred != null) {
+            if (!legacyNeedsGl4es && OemLaunchProfile.shouldForceMobileGlues(preferred)) {
+                android.util.Log.i(
+                    "RendererBackend",
+                    "OEM: user ${preferred.displayName} → MobileGlues " +
+                        "(${OemLaunchProfile.describe()})"
+                )
+                return GlRendererKind.MOBILE_GLUES
+            }
             android.util.Log.i(
                 "RendererBackend",
-                "vivo: override GL4ES → MobileGlues for $mcVersionId (${OemLaunchProfile.describe()})"
+                "user renderer=${preferred.displayName} for $mcVersionId " +
+                    "(${OemLaunchProfile.describe()})"
+            )
+            return preferred
+        }
+
+        // Auto-only: vivo/iQOO / Huawei/Honor / ColorOS holy GL4ES often black-screens
+        // on modern MC — do not remap ancient (must stay on GL4ES).
+        if (!legacyNeedsGl4es && OemLaunchProfile.shouldForceMobileGlues(auto)) {
+            android.util.Log.i(
+                "RendererBackend",
+                "OEM auto: ${auto.displayName} → MobileGlues for $mcVersionId " +
+                    "(${OemLaunchProfile.describe()})"
             )
             return GlRendererKind.MOBILE_GLUES
         }
 
-        if (preferred != null) return preferred
         android.util.Log.i(
             "RendererBackend",
             "auto renderer=${auto.displayName} profile=${profile.profileId} " +
-                "mods=${profile.matchedMods.take(6)}"
+                "mods=${profile.matchedMods.take(6)} legacyGl4es=$legacyNeedsGl4es"
         )
         return auto
     }
@@ -67,4 +91,16 @@ object RendererBackend {
 
     fun lastProfile(instanceVersionId: String): ModRenderProfile =
         ModRenderProfiler.probe(instanceVersionId)
+
+    private fun forceRendererSidecar(): GlRendererKind? {
+        val ctx = runCatching { com.booxin.launcher.BooxinApp.getAppContext() }.getOrNull()
+            ?: return null
+        val file = java.io.File(ctx.getExternalFilesDir(null), "force_renderer.txt")
+        if (!file.isFile) return null
+        val name = runCatching { file.readText().trim() }.getOrNull().orEmpty()
+        if (name.isBlank()) return null
+        return runCatching { GlRendererKind.valueOf(name) }.getOrNull()?.also {
+            android.util.Log.i("RendererBackend", "force_renderer.txt → ${it.displayName}")
+        }
+    }
 }

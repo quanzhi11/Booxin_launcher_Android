@@ -43,7 +43,11 @@ class InGameLobbyController(
         minecraftPort: Int,
         playerNameHint: String,
         isPublic: Boolean = true,
-        roomName: String? = null
+        roomName: String? = null,
+        roomRemark: String? = null,
+        modpackUrl: String? = null,
+        versionId: String? = null,
+        dependencyInfo: RoomHostDependencyInfo? = null
     ): Result<RoomHostResult> {
         val session = loadSession()
             ?: return Result.failure(IllegalStateException("请先在联机页登录账号"))
@@ -57,12 +61,33 @@ class InGameLobbyController(
                 onMembersChanged = { _members.value = it }
             )
             hostCoordinator = coordinator
+            val displayName = roomName?.trim()?.ifBlank { null } ?: "${playerName}的房间"
+
+            val deps = dependencyInfo ?: run {
+                val scanId = versionId?.trim().orEmpty()
+                if (scanId.isEmpty()) {
+                    RoomHostDependencyInfo()
+                } else {
+                    _status.value = "正在识别房主依赖…"
+                    RoomHostDependencyService().scanInstance(
+                        versionId = scanId,
+                        onProgress = { _status.value = it }
+                    )
+                }
+            }
+
             val result = coordinator.create(
                 minecraftPort = minecraftPort,
                 playerName = playerName,
                 hostId = session.user.id,
                 isPublic = isPublic,
-                roomName = roomName
+                roomName = displayName,
+                roomRemark = roomRemark,
+                gameVersion = deps.gameVersion.ifBlank { null },
+                modpackUrl = modpackUrl,
+                modpackGameVersion = deps.gameVersion.ifBlank { null },
+                modpackLoader = deps.loader,
+                roomMods = deps.mods.filter { it.hasDownloadSource }
             )
             _lobby.value = result.lobby
             _isHost.value = true
@@ -95,8 +120,12 @@ class InGameLobbyController(
             _isHost.value = false
             _directConnect.value = result.directConnectAddress
             _members.value = result.members
-            _status.value =
-                "已加入 · 直连 ${result.directConnectAddress} · ${result.members.size} 人"
+            _status.value = RoomJoinCoordinator.JOIN_SUCCESS_STATUS
+            DiagEventLog.i(
+                TAG,
+                "joinRoom ok addr=${result.directConnectAddress} " +
+                    "lanBroadcast=${result.lanBroadcastStarted} players=${result.members.size}"
+            )
             result
         }.onFailure { err ->
             DiagEventLog.e(TAG, "joinRoom failed", err)
@@ -108,11 +137,12 @@ class InGameLobbyController(
     suspend fun leave() {
         val lobby = _lobby.value
         val session = loadSession()
+        val wasHost = _isHost.value
         if (lobby != null && session != null) {
             runCatching { roomApi.leaveRoom(session, lobby.roomCode) }
         }
-        if (_isHost.value) {
-            hostCoordinator?.leave()
+        if (wasHost) {
+            hostCoordinator?.leaveQuietly()
         } else {
             joinCoordinator?.leave()
         }
@@ -131,9 +161,20 @@ class InGameLobbyController(
         }
     }
 
-    private fun leaveInternal() {
+    suspend fun listPublicRooms() = roomApi.listPublicRooms()
+
+    /**
+     * Tear down local networking. Hosts also DELETE the directory entry
+     * (same as PC LeaveLobby / Dispose) so public list does not keep zombies.
+     */
+    private suspend fun leaveInternal() {
+        val wasHost = _isHost.value
         try {
-            hostCoordinator?.stopLocal()
+            if (wasHost) {
+                hostCoordinator?.leaveQuietly()
+            } else {
+                hostCoordinator?.stopLocal(clearLease = true)
+            }
         } catch (_: Throwable) {
         }
         try {

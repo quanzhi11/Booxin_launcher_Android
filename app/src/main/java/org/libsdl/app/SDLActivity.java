@@ -1550,6 +1550,11 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
         sBooxinExternalSurface = surface;
     }
 
+    /** Clear external Surface on pause / TextureView destroy (keep SDL loaded). */
+    public static void booxinDetachSurface() {
+        sBooxinExternalSurface = null;
+    }
+
     public static Surface getNativeSurface() {
         if (sBooxinExternalSurface != null) {
             return sBooxinExternalSurface;

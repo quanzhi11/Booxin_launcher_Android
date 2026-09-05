@@ -50,10 +50,12 @@ object JavaRuntimeCatalog {
     }
 
     private fun splitPackage(major: Int, abi: JavaAbi): JavaRuntimePackage {
-        val fileName = "jre$major-pojav.zip"
+        // Upstream multiarch mirror still uses this artifact name in the URL path.
+        val remoteArtifact = "jre$major-pojav.zip"
+        val fileName = "jre$major-android.zip"
         val urls = buildList {
             COZE_PRIMARY[major]?.let { add(it) }
-            add(applyMirror("$MOJO_ROLLING_BASE/$fileName"))
+            add(applyMirror("$MOJO_ROLLING_BASE/$remoteArtifact"))
             fallbackWholePackageUrls(major, abi).forEach { add(applyMirror(it)) }
         }.distinct()
         return JavaRuntimePackage(
@@ -73,6 +75,7 @@ object JavaRuntimeCatalog {
         if (abi != JavaAbi.ARM64) return emptyList()
         return when (major) {
             21 -> listOf("$AAAAPAI_BASE/jre21-arm64-20260223-release.tar.xz")
+            // Historical mirror path; local display never shows this host name.
             25 -> listOf("$JAVA_WHOLE_FALLBACK_BASE/jre25-arm64-20251205-release.tar.xz")
             else -> emptyList()
         }

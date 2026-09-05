@@ -21,7 +21,7 @@ enum {
 static pthread_mutex_t g_queue_mu = PTHREAD_MUTEX_INITIALIZER;
 
 static void push_event(int type, int i1, int i2, int i3, int i4) {
-    booxin_environ_t *e = pojav_environ;
+    booxin_environ_t *e = booxin_environ;
     if (!e || !e->isUseStackQueueCall) return;
     pthread_mutex_lock(&g_queue_mu);
     /* Drop oldest when full — never overwrite unread slots (lost/spurious clicks). */
@@ -42,17 +42,17 @@ static void push_event(int type, int i1, int i2, int i3, int i4) {
 }
 
 void critical_set_stackqueue(jboolean use) {
-    if (pojav_environ) pojav_environ->isUseStackQueueCall = use == JNI_TRUE;
+    if (booxin_environ) booxin_environ->isUseStackQueueCall = use == JNI_TRUE;
 }
 
 void noncritical_set_stackqueue(jboolean use) { critical_set_stackqueue(use); }
 
 void critical_send_cursor_pos(jfloat x, jfloat y) {
-    if (!pojav_environ) return;
+    if (!booxin_environ) return;
     /* Cursor goes through pump; don't queue every move. */
-    pojav_environ->cursorX = x;
-    pojav_environ->cursorY = y;
-    pojav_environ->shouldUpdateMouse = true;
+    booxin_environ->cursorX = x;
+    booxin_environ->cursorY = y;
+    booxin_environ->shouldUpdateMouse = true;
 }
 
 void noncritical_send_cursor_pos(JNIEnv *env, jclass cls, jfloat x, jfloat y) {
@@ -61,8 +61,8 @@ void noncritical_send_cursor_pos(JNIEnv *env, jclass cls, jfloat x, jfloat y) {
 }
 
 void critical_send_mouse_button(jint button, jint action, jint mods) {
-    if (pojav_environ && pojav_environ->mouseDownBuffer && button >= 0 && button < 8) {
-        pojav_environ->mouseDownBuffer[button] = (jbyte)(action == 1 ? 1 : 0);
+    if (booxin_environ && booxin_environ->mouseDownBuffer && button >= 0 && button < 8) {
+        booxin_environ->mouseDownBuffer[button] = (jbyte)(action == 1 ? 1 : 0);
     }
     push_event(EVENT_TYPE_MOUSE_BUTTON, button, action, mods, 0);
 }
@@ -73,8 +73,8 @@ void noncritical_send_mouse_button(JNIEnv *env, jclass cls, jint button, jint ac
 }
 
 void critical_send_key(jint key, jint scancode, jint action, jint mods) {
-    if (pojav_environ && pojav_environ->keyDownBuffer && key >= 0 && key < 317) {
-        pojav_environ->keyDownBuffer[key] = (jbyte)(action == 1 || action == 2 ? 1 : 0);
+    if (booxin_environ && booxin_environ->keyDownBuffer && key >= 0 && key < 317) {
+        booxin_environ->keyDownBuffer[key] = (jbyte)(action == 1 || action == 2 ? 1 : 0);
     }
     push_event(EVENT_TYPE_KEY, key, scancode, action, mods);
 }
@@ -114,9 +114,9 @@ void noncritical_send_scroll(JNIEnv *env, jclass cls, jdouble xoffset, jdouble y
 }
 
 void critical_send_screen_size(jint width, jint height) {
-    if (pojav_environ) {
-        pojav_environ->savedWidth = width;
-        pojav_environ->savedHeight = height;
+    if (booxin_environ) {
+        booxin_environ->savedWidth = width;
+        booxin_environ->savedHeight = height;
     }
     push_event(EVENT_TYPE_WINDOW_SIZE, width, height, width, height);
 }
@@ -134,19 +134,19 @@ typedef void (*char_fn)(void *window, unsigned int codepoint);
 typedef void (*char_mods_fn)(void *window, unsigned int codepoint, int mods);
 typedef void (*size_fn)(void *window, int w, int h);
 
-void pojavStartPumping(void) {
-    booxin_environ_t *e = pojav_environ;
+void booxinStartPumping(void) {
+    booxin_environ_t *e = booxin_environ;
     if (!e) return;
     if (e->cursorX != e->cLastX || e->cursorY != e->cLastY) {
         e->shouldUpdateMouse = true;
     }
 }
 
-void pojavStopPumping(void) {
+void booxinStopPumping(void) {
 }
 
-void pojavPumpEvents(void *window) {
-    booxin_environ_t *e = pojav_environ;
+void booxinPumpEvents(void *window) {
+    booxin_environ_t *e = booxin_environ;
     if (!e) return;
     void *win = window ? window : (void *)(intptr_t)e->showingWindow;
     /* Callbacks expect the GLFW/createContext handle, not ANativeWindow. */
@@ -206,12 +206,12 @@ void pojavPumpEvents(void *window) {
     pthread_mutex_unlock(&g_queue_mu);
 }
 
-void pojavSetInjectorCallback(void *cb) { (void)cb; }
+void booxinSetInjectorCallback(void *cb) { (void)cb; }
 
 static _Atomic int g_cached_hit_type = 0;
 static _Atomic int g_cached_held_kind = 0;
 
-void pojavSetHitResultType(int type) {
+void booxinSetHitResultType(int type) {
     atomic_store(&g_cached_hit_type, type);
 }
 

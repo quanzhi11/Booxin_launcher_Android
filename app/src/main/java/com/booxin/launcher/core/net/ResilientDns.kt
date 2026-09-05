@@ -65,8 +65,11 @@ class ResilientDns(
     }
 
     private fun pinned(hostname: String): List<InetAddress>? {
-        val ip = PINNED[hostname.trim().lowercase()] ?: return null
-        return listOf(InetAddress.getByName(ip))
+        val key = hostname.trim().lowercase()
+        val single = PINNED[key]
+        if (single != null) return listOf(InetAddress.getByName(single))
+        val many = PINNED_MANY[key] ?: return null
+        return many.map { InetAddress.getByName(it) }
     }
 
     companion object {
@@ -76,6 +79,19 @@ class ResilientDns(
         private val PINNED = mapOf(
             "boonix.art" to BOONIX_IPV4,
             "www.boonix.art" to BOONIX_IPV4
+        )
+
+        /**
+         * MCIM (mod.mcimirror.top) often fails system/DoH lookup on CN cellular.
+         * Keep a short IPv4 pin list so API / tertiary file mirror still works.
+         */
+        private val PINNED_MANY = mapOf(
+            "mod.mcimirror.top" to listOf(
+                "112.13.210.66",
+                "111.4.225.64",
+                "36.150.72.68",
+                "112.28.174.246"
+            )
         )
     }
 }

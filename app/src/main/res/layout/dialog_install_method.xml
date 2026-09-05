@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:fillViewport="true"
+    android:overScrollMode="ifContentScrolls">
+
+    <LinearLayout
+        android:id="@+id/layoutInstallMethods"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:paddingHorizontal="8dp"
+        android:paddingTop="4dp"
+        android:paddingBottom="8dp">
+
+        <TextView
+            android:id="@+id/textInstallMethodHint"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingHorizontal="16dp"
+            android:paddingBottom="8dp"
+            android:text="@string/download_install_method_message"
+            android:textColor="@color/glass_text_secondary"
+            android:textSize="14sp" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/buttonMethodVanilla"
+            style="@style/Widget.Booxin.SecondaryButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginHorizontal="8dp"
+            android:layout_marginTop="4dp"
+            android:gravity="start|center_vertical"
+            android:text="@string/download_loader_vanilla_desc"
+            android:textColor="@color/glass_text"
+            app:iconGravity="textStart" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/buttonMethodForge"
+            style="@style/Widget.Booxin.SecondaryButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginHorizontal="8dp"
+            android:layout_marginTop="4dp"
+            android:gravity="start|center_vertical"
+            android:text="@string/download_loader_forge_desc"
+            android:textColor="@color/glass_text" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/buttonMethodNeoForge"
+            style="@style/Widget.Booxin.SecondaryButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginHorizontal="8dp"
+            android:layout_marginTop="4dp"
+            android:gravity="start|center_vertical"
+            android:text="@string/download_loader_neoforge_desc"
+            android:textColor="@color/glass_text" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/buttonMethodFabric"
+            style="@style/Widget.Booxin.SecondaryButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginHorizontal="8dp"
+            android:layout_marginTop="4dp"
+            android:gravity="start|center_vertical"
+            android:text="@string/download_loader_fabric_desc"
+            android:textColor="@color/glass_text" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/buttonMethodQuilt"
+            style="@style/Widget.Booxin.SecondaryButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginHorizontal="8dp"
+            android:layout_marginTop="4dp"
+            android:gravity="start|center_vertical"
+            android:text="@string/download_loader_quilt_desc"
+            android:textColor="@color/glass_text" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/buttonMethodOptiFine"
+            style="@style/Widget.Booxin.SecondaryButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginHorizontal="8dp"
+            android:layout_marginTop="4dp"
+            android:gravity="start|center_vertical"
+            android:text="@string/download_loader_optifine_desc"
+            android:textColor="@color/glass_text" />
+    </LinearLayout>
+</ScrollView>

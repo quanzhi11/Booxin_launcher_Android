@@ -35,8 +35,19 @@ data class LauncherAccount(
     /** Minecraft --userType: msa / legacy */
     val userType: String = if (type == AccountType.MICROSOFT) "msa" else "legacy",
     val hasMinecraft: Boolean = type != AccountType.MICROSOFT,
-    /** Absolute path to imported offline skin PNG, if any. */
-    val skinPath: String? = null
+    /** Absolute path to imported / fetched offline skin PNG, if any. */
+    val skinPath: String? = null,
+    /**
+     * Offline skin strategy (PC-aligned): random / steve / alex / player / custom.
+     * Empty or blank → inferred from [skinPath] (legacy custom import).
+     */
+    val skinMode: String? = null,
+    /** classic / slim — used by custom & player modes. */
+    val skinModel: String = "classic",
+    /** Mojang player name when [skinMode] is player. */
+    val skinPlayerName: String? = null,
+    /** Mojang UUID (no dashes) when [skinMode] is player. */
+    val skinPlayerUuid: String? = null
 )
 
 data class LauncherSession(

@@ -19,12 +19,31 @@ object GameSurfaceBridge {
     @Volatile
     private var surface: Surface? = null
 
+    /** GLFW / options.txt framebuffer size (may be smaller than the TextureView). */
     @Volatile
     var width: Int = 0
         private set
 
     @Volatile
     var height: Int = 0
+        private set
+
+    /** TextureView pixel size (touch / layout). Kept even when render buffer is scaled. */
+    @Volatile
+    var viewWidth: Int = 0
+        private set
+
+    @Volatile
+    var viewHeight: Int = 0
+        private set
+
+    /**
+     * When true, [width]/[height] are the locked game buffer size (REL VRAM guard /
+     * launch-tune scale). TextureView must keep [setDefaultBufferSize] on this size
+     * so EGL matches GLFW — otherwise REL draws only in the bottom-left corner.
+     */
+    @Volatile
+    var renderSizeLocked: Boolean = false
         private set
 
     private val lock = Any()
@@ -38,6 +57,13 @@ object GameSurfaceBridge {
     @Volatile
     var onSurfaceRestoredWhileRunning: (() -> Unit)? = null
 
+    /**
+     * Applied on the UI thread: [SurfaceTexture.setDefaultBufferSize] + any EGL rebind.
+     * Args are the locked game buffer width/height.
+     */
+    @Volatile
+    var onRenderBufferSizeChanged: ((Int, Int) -> Unit)? = null
+
     @Volatile
     var surfacePaused: Boolean = false
         private set
@@ -49,6 +75,41 @@ object GameSurfaceBridge {
 
     private fun isGameRunning(): Boolean =
         LaunchSession.hotspotEntered || LaunchSession.current() == LaunchPhase.Running
+
+    fun noteViewSize(w: Int, h: Int) {
+        if (w <= 0 || h <= 0) return
+        viewWidth = w
+        viewHeight = h
+    }
+
+    fun bufferWidthOr(fallback: Int): Int =
+        if (renderSizeLocked && width > 1) width else fallback
+
+    fun bufferHeightOr(fallback: Int): Int =
+        if (renderSizeLocked && height > 1) height else fallback
+
+    fun clearRenderSizeLock() {
+        renderSizeLocked = false
+    }
+
+    /**
+     * Lock GLFW + SurfaceTexture buffer to [w]x[h] (may be below view pixels).
+     * Must run before EGL window surface creation for the size to take effect.
+     */
+    fun applyRenderSize(w: Int, h: Int) {
+        if (w <= 0 || h <= 0) return
+        val firstSize = width <= 1 || height <= 1
+        width = w
+        height = h
+        renderSizeLocked = true
+        BooxinBridge.setWindowSize(w, h)
+        runCatching { BooxinBridge.sendUpdateWindowSize(w, h) }
+        Log.i(TAG, "applyRenderSize ${w}x${h} view=${viewWidth}x${viewHeight}")
+        onRenderBufferSizeChanged?.invoke(w, h)
+        if (firstSize && isGameRunning() && surfacePaused) {
+            onSurfaceRestoredWhileRunning?.invoke()
+        }
+    }
 
     fun onSurfaceCreated(surface: Surface) {
         val running = isGameRunning()
@@ -72,6 +133,12 @@ object GameSurfaceBridge {
 
     fun onSurfaceSizeChanged(w: Int, h: Int) {
         if (w <= 0 || h <= 0) return
+        // After launch locks a scaled buffer, ignore view-pixel size pushes that
+        // would desync GLFW from the SurfaceTexture buffer (REL corner-render bug).
+        if (renderSizeLocked && (w != width || h != height)) {
+            Log.i(TAG, "ignore view size ${w}x${h}; locked render ${width}x${height}")
+            return
+        }
         val firstSize = width <= 1 || height <= 1
         width = w
         height = h

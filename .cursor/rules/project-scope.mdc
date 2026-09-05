@@ -1,0 +1,22 @@
+---
+description: This repo is Booxin phone launcher — not FCL
+alwaysApply: true
+---
+
+# Project identity
+
+This workspace is **Booxin 手机启动器** (`com.booxin.launcher`) at  
+`D:\all code in D\booxin launcher phone\`.
+
+It is **not** FoldCraftLauncher / `BooxinLauncher-Android`. FCL is reference-only.
+
+## Packaging
+
+- Default APK build: `:app:assembleRelease` → `app/build/outputs/apk/release/app-release.apk`
+- Do **not** run `:FCL:assembleRelease` unless the user explicitly asks for the FCL fork.
+
+## Porting from FCL
+
+When copying fixes from FCL (e.g. ForgeBootstrap), implement them under  
+`app/src/main/java/com/booxin/launcher/...` in **this** repo.  
+See `PROJECT_SCOPE.md`.

@@ -91,7 +91,9 @@ class AiBackendClient(
     suspend fun getQuotaSnapshot(userKey: String): AiQuotaSnapshot? = withContext(Dispatchers.IO) {
         runCatching {
             tryResolveBaseUrl()
-            val url = "$resolvedBaseUrl/api/ai/quota/snapshot?userKey=${java.net.URLEncoder.encode(userKey, "UTF-8")}"
+            val enc = java.net.URLEncoder.encode(userKey, "UTF-8")
+            val ch = java.net.URLEncoder.encode(AiBackendSettings.CHANNEL, "UTF-8")
+            val url = "$resolvedBaseUrl/api/ai/quota/snapshot?userKey=$enc&channel=$ch"
             val req = authGet(url)
             HttpClients.cascadeAttempt.newCall(req).execute().use { resp ->
                 if (!resp.isSuccessful) return@runCatching null
@@ -114,6 +116,7 @@ class AiBackendClient(
             tryResolveBaseUrl()
             val payload = JSONObject()
                 .put("userKey", userKey)
+                .put("channel", AiBackendSettings.CHANNEL)
                 .put("quotaType", when (quotaType) {
                     AiQuotaType.CHAT -> "Chat"
                     AiQuotaType.AGENT -> "Agent"
@@ -165,6 +168,7 @@ class AiBackendClient(
                 .put("userKey", userKey)
                 .put("plan", plan)
                 .put("payType", payType)
+                .put("channel", AiBackendSettings.CHANNEL)
             val req = authPost("$resolvedBaseUrl/api/ai/subscription/create", payload.toString())
             HttpClients.shared.newCall(req).execute().use { resp ->
                 val json = JSONObject(resp.body?.string().orEmpty())
@@ -188,11 +192,46 @@ class AiBackendClient(
         }
     }
 
+    suspend fun getSubscriptionStatus(
+        outTradeNo: String,
+        userKey: String
+    ): AiSubscriptionStatusResult = withContext(Dispatchers.IO) {
+        runCatching {
+            tryResolveBaseUrl()
+            val encTrade = java.net.URLEncoder.encode(outTradeNo, "UTF-8")
+            val encUser = java.net.URLEncoder.encode(userKey, "UTF-8")
+            val encCh = java.net.URLEncoder.encode(AiBackendSettings.CHANNEL, "UTF-8")
+            val url =
+                "$resolvedBaseUrl/api/ai/subscription/status?outTradeNo=$encTrade&userKey=$encUser&channel=$encCh"
+            val req = authGet(url)
+            HttpClients.cascadeAttempt.newCall(req).execute().use { resp ->
+                val json = JSONObject(resp.body?.string().orEmpty())
+                if (!resp.isSuccessful) {
+                    return@runCatching AiSubscriptionStatusResult(
+                        message = json.optString("message").ifBlank { "查询失败 HTTP ${resp.code}" }
+                    )
+                }
+                AiSubscriptionStatusResult(
+                    paid = json.optBoolean("paid"),
+                    upgraded = json.optBoolean("upgraded"),
+                    status = json.optString("status"),
+                    message = json.optString("message"),
+                    snapshot = json.optJSONObject("snapshot")?.let { parseSnapshot(it) }
+                )
+            }
+        }.getOrElse {
+            AiSubscriptionStatusResult(message = it.message ?: "无法查询支付状态")
+        }
+    }
+
     private suspend fun postPlayPass(url: String, userKey: String): AiPlayPassResult =
         withContext(Dispatchers.IO) {
             runCatching {
                 tryResolveBaseUrl()
-                val req = authPost(url, JSONObject().put("userKey", userKey).toString())
+                val payload = JSONObject()
+                    .put("userKey", userKey)
+                    .put("channel", AiBackendSettings.CHANNEL)
+                val req = authPost(url, payload.toString())
                 HttpClients.shared.newCall(req).execute().use { resp ->
                     val json = JSONObject(resp.body?.string().orEmpty())
                     AiPlayPassResult(

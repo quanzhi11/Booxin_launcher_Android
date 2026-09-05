@@ -117,4 +117,16 @@
         android:id="@+id/nav_plugins"
         android:name="com.booxin.launcher.ui.plugin.PluginsFragment"
         android:label="@string/plugins_title" />
+
+    <fragment
+        android:id="@+id/nav_plugin_page"
+        android:name="com.booxin.launcher.ui.pluginpage.PluginPageFragment"
+        android:label="@string/plugin_page_title">
+        <argument
+            android:name="pluginId"
+            app:argType="string" />
+        <argument
+            android:name="pageId"
+            app:argType="string" />
+    </fragment>
 </navigation>

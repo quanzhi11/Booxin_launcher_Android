@@ -6,12 +6,15 @@ data class StorePlugin(
     val description: String,
     val downloadUrl: String,
     val type: String,
+    val version: String = "1.0.0",
     val developerUserId: String,
     val developerUsername: String,
     val publishedAt: String,
     val ratingAvg: Double = 0.0,
     val ratingCount: Int = 0,
-    val commentCount: Int = 0
+    val commentCount: Int = 0,
+    /** Normalized: android / desktop. Empty or missing from API → both. */
+    val platforms: List<String> = PluginStorePlatforms.ALL
 )
 
 data class PluginComment(
@@ -71,5 +74,7 @@ data class PluginApplication(
     val rejectReason: String,
     val createdAt: String,
     val updatedAt: String,
-    val reviewedAt: String?
+    val reviewedAt: String?,
+    /** Normalized: android / desktop. Empty or missing from API → both. */
+    val platforms: List<String> = PluginStorePlatforms.ALL
 )

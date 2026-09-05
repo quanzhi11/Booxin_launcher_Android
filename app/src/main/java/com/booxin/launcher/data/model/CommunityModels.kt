@@ -10,7 +10,7 @@ enum class CommunityContentType(
     MODPACK("modpack", "")
 }
 
-/** Real-time progress while installing a Modrinth `.mrpack`. */
+/** Real-time progress while installing community content / modpacks. */
 data class ModpackInstallProgress(
     val stage: String,
     val current: Int = 0,
@@ -111,13 +111,17 @@ data class ModrinthProjectVersion(
     val gameVersions: List<String>,
     val loaders: List<String>,
     val files: List<ModrinthVersionFile>,
-    val dependencies: List<ModrinthDependency> = emptyList()
+    val dependencies: List<ModrinthDependency> = emptyList(),
+    val projectId: String? = null
 ) {
     val primaryFile: ModrinthVersionFile?
         get() = files.firstOrNull { it.primary } ?: files.firstOrNull()
 
     val requiredDependencies: List<ModrinthDependency>
-        get() = dependencies.filter { it.type == ModrinthDependencyType.REQUIRED && !it.projectId.isNullOrBlank() }
+        get() = dependencies.filter { dep ->
+            dep.type == ModrinthDependencyType.REQUIRED &&
+                (!dep.projectId.isNullOrBlank() || !dep.versionId.isNullOrBlank())
+        }
 }
 
 data class ModrinthResolvedDependency(

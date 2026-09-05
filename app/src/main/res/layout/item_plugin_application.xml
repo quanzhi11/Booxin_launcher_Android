@@ -27,6 +27,15 @@
         tools:text="pending" />
 
     <TextView
+        android:id="@+id/textAppPlatforms"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:textColor="@color/md_theme_light_outline"
+        android:textSize="12sp"
+        tools:text="Android · 桌面" />
+
+    <TextView
         android:id="@+id/textAppReason"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"

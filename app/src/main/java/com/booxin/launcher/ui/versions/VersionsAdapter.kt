@@ -43,27 +43,39 @@ class VersionsAdapter(
             val context = binding.root.context
             binding.textVersionName.text = item.id
             val typeLabel = when (item.type) {
-                VersionType.RELEASE -> context.getString(R.string.download_filter_release)
-                VersionType.SNAPSHOT -> context.getString(R.string.download_filter_snapshot)
+                VersionType.RELEASE -> context.getString(R.string.download_type_release)
+                VersionType.SNAPSHOT -> context.getString(R.string.download_type_snapshot)
                 VersionType.OLD_BETA, VersionType.OLD_ALPHA ->
-                    context.getString(R.string.download_filter_old)
+                    context.getString(R.string.download_type_old)
             }
             val selected = selectedIdProvider() == item.id
+            val timeHint = item.releaseTime
+                ?.takeIf { it.isNotBlank() }
+                ?.let { " · ${it.take(10)}" }
+                .orEmpty()
             binding.textVersionMeta.text = when {
                 installedMode && selected ->
-                    "$typeLabel · ${context.getString(R.string.versions_selected)}"
+                    "$typeLabel$timeHint · ${context.getString(R.string.versions_selected)}"
                 installedMode ->
-                    "$typeLabel · ${context.getString(R.string.versions_tap_select)}"
+                    "$typeLabel$timeHint · ${context.getString(R.string.versions_tap_select)}"
                 item.installed ->
-                    "$typeLabel · ${context.getString(R.string.download_already_installed)}"
+                    "$typeLabel$timeHint · ${context.getString(R.string.download_already_installed)}"
                 else ->
-                    "$typeLabel · ${context.getString(R.string.download_tap_install)}"
+                    "$typeLabel$timeHint · ${context.getString(R.string.download_tap_install)}"
             }
-            binding.textVersionBadge.text = item.type.name.lowercase()
+            // Chinese badge, not English enum names.
+            binding.textVersionBadge.text = typeLabel
             binding.root.setOnClickListener { onClick(item) }
-            binding.buttonManageVersion.visibility = if (installedMode) View.VISIBLE else View.GONE
-            binding.buttonManageVersion.setOnClickListener {
-                onManage?.invoke(item)
+            if (installedMode) {
+                binding.buttonManageVersion.visibility = View.VISIBLE
+                binding.buttonManageVersion.text = context.getString(R.string.version_manage_entry)
+                binding.buttonManageVersion.setOnClickListener {
+                    onManage?.invoke(item)
+                }
+            } else {
+                binding.buttonManageVersion.visibility = View.VISIBLE
+                binding.buttonManageVersion.text = context.getString(R.string.download_action_install)
+                binding.buttonManageVersion.setOnClickListener { onClick(item) }
             }
             binding.root.setOnLongClickListener {
                 if (installedMode && onDelete != null) {

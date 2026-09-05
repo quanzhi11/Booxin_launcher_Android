@@ -41,6 +41,7 @@ import com.booxin.launcher.core.diag.DiagnosticLogExporter
 import com.booxin.launcher.core.download.DownloadProviders
 import com.booxin.launcher.core.download.DownloadSource
 import com.booxin.launcher.core.java.JavaInstallState
+import com.booxin.launcher.core.launch.BooxinLaunchTune
 import com.booxin.launcher.core.launch.GlRendererKind
 import com.booxin.launcher.core.launch.RealtimeLaunchLog
 import com.booxin.launcher.core.runtime.RendererInstaller
@@ -49,6 +50,7 @@ import com.booxin.launcher.databinding.FragmentSettingsBinding
 import com.booxin.launcher.ui.GlassBackground
 import com.booxin.launcher.ui.update.LauncherUpdateUi
 import com.google.android.material.button.MaterialButton
+import com.google.android.material.button.MaterialButtonToggleGroup
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.slider.Slider
 import kotlinx.coroutines.Dispatchers
@@ -64,6 +66,7 @@ class SettingsFragment : Fragment() {
     private var gameDirListDialog: androidx.appcompat.app.AlertDialog? = null
     private var refreshGameDirListUi: (() -> Unit)? = null
     private var pendingAfterStoragePermission: (() -> Unit)? = null
+    private var suppressingLaunchTuneToggle = false
 
     private val requestLegacyStoragePermission =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
@@ -139,6 +142,7 @@ class SettingsFragment : Fragment() {
         setupGlCompatToggle()
         refreshRenderer()
         refreshGlCompat()
+        setupLaunchTune()
         setupMemorySlider()
         setupGameOptions()
         setupAiSettings()
@@ -807,10 +811,11 @@ class SettingsFragment : Fragment() {
                 RendererInstaller.isInstalled(kind) -> getString(R.string.settings_renderer_installed)
                 else -> getString(R.string.settings_renderer_missing)
             }
-            val name = if (kind == GlRendererKind.MOBILE_GLUES) {
-                "${kind.displayName} · LGPL 兼容（高级）"
-            } else {
-                kind.displayName
+            val name = when (kind) {
+                GlRendererKind.MOBILE_GLUES -> "${kind.displayName} · LGPL 兼容（高级）"
+                GlRendererKind.MCRENDER -> "${kind.displayName} · 新 GLES 翻译器（内置）"
+                GlRendererKind.REL -> "${kind.displayName} · OpenREL（部分骁龙进世界可能崩溃，慎用）"
+                else -> kind.displayName
             }
             kind to "$name（$status）"
         }
@@ -863,9 +868,66 @@ class SettingsFragment : Fragment() {
         }
     }
 
+    private fun setupLaunchTune() {
+        val b = _binding ?: return
+        fun selectButton(mode: BooxinLaunchTune.Mode) {
+            val id = when (mode) {
+                BooxinLaunchTune.Mode.AUTO -> R.id.buttonTuneAuto
+                BooxinLaunchTune.Mode.SMOOTH -> R.id.buttonTuneSmooth
+                BooxinLaunchTune.Mode.BALANCED -> R.id.buttonTuneBalanced
+                BooxinLaunchTune.Mode.QUALITY -> R.id.buttonTuneQuality
+                BooxinLaunchTune.Mode.CUSTOM -> R.id.buttonTuneCustom
+            }
+            suppressingLaunchTuneToggle = true
+            b.toggleLaunchTune.check(id)
+            suppressingLaunchTuneToggle = false
+        }
+
+        fun refreshSummary() {
+            val resolved = BooxinLaunchTune.resolve(requireContext())
+            b.textLaunchTune.text = getString(
+                R.string.settings_launch_tune_summary,
+                resolved.summaryZh
+            )
+        }
+
+        selectButton(LauncherPrefs.launchTuneMode())
+        refreshSummary()
+
+        b.toggleLaunchTune.addOnButtonCheckedListener { _: MaterialButtonToggleGroup, checkedId, isChecked ->
+            if (!isChecked || suppressingLaunchTuneToggle) return@addOnButtonCheckedListener
+            val mode = when (checkedId) {
+                R.id.buttonTuneAuto -> BooxinLaunchTune.Mode.AUTO
+                R.id.buttonTuneSmooth -> BooxinLaunchTune.Mode.SMOOTH
+                R.id.buttonTuneBalanced -> BooxinLaunchTune.Mode.BALANCED
+                R.id.buttonTuneQuality -> BooxinLaunchTune.Mode.QUALITY
+                R.id.buttonTuneCustom -> BooxinLaunchTune.Mode.CUSTOM
+                else -> return@addOnButtonCheckedListener
+            }
+            BooxinLaunchTune.applyPresetToPrefs(requireContext(), mode)
+            if (mode != BooxinLaunchTune.Mode.CUSTOM && mode != BooxinLaunchTune.Mode.AUTO) {
+                setupMemorySlider()
+                setupGameOptions()
+            } else if (mode == BooxinLaunchTune.Mode.AUTO) {
+                val preview = BooxinLaunchTune.resolve(requireContext())
+                b.sliderMemory.value = preview.maxMemoryMb.toFloat()
+                    .coerceIn(b.sliderMemory.valueFrom, b.sliderMemory.valueTo)
+                updateMemoryLabel(preview.maxMemoryMb)
+                b.sliderRenderDistance.value = preview.renderDistance.toFloat()
+                b.textRenderDistance.text =
+                    getString(R.string.settings_render_distance, preview.renderDistance)
+                b.switchVsync.isChecked = preview.enableVsync
+                b.switchFancyGraphics.isChecked = preview.fancyGraphics
+            }
+            refreshSummary()
+        }
+    }
+
     private fun setupMemorySlider() {
         val b = _binding ?: return
-        val maxAllowed = LauncherPrefs.recommendedMaxMb().toFloat()
+        val maxAllowed = BooxinLaunchTune.recommendedHeapMb(requireContext()).toFloat()
+            .coerceAtLeast(LauncherPrefs.recommendedMaxMb().toFloat())
+            .coerceAtMost(LauncherPrefs.MEMORY_MAX_MB.toFloat())
         b.sliderMemory.valueFrom = LauncherPrefs.MEMORY_MIN_MB.toFloat()
         b.sliderMemory.valueTo = maxAllowed
         b.sliderMemory.stepSize = LauncherPrefs.MEMORY_STEP_MB.toFloat()
@@ -875,10 +937,15 @@ class SettingsFragment : Fragment() {
         )
         b.sliderMemory.value = current.toFloat()
         updateMemoryLabel(current)
+        b.sliderMemory.clearOnChangeListeners()
         b.sliderMemory.addOnChangeListener { _: Slider, value: Float, fromUser: Boolean ->
             val mb = LauncherPrefs.clampMemory(value.toInt())
             updateMemoryLabel(mb)
-            if (fromUser) LauncherPrefs.setMaxMemoryMb(mb)
+            if (fromUser) {
+                LauncherPrefs.setMaxMemoryMb(mb)
+                LauncherPrefs.markLaunchTuneCustomIfPreset()
+                syncLaunchTuneToggle()
+            }
         }
     }
 
@@ -887,30 +954,64 @@ class SettingsFragment : Fragment() {
         b.textMemory.text = getString(R.string.settings_memory_value, mb)
     }
 
+    private fun syncLaunchTuneToggle() {
+        val b = _binding ?: return
+        val mode = LauncherPrefs.launchTuneMode()
+        val id = when (mode) {
+            BooxinLaunchTune.Mode.AUTO -> R.id.buttonTuneAuto
+            BooxinLaunchTune.Mode.SMOOTH -> R.id.buttonTuneSmooth
+            BooxinLaunchTune.Mode.BALANCED -> R.id.buttonTuneBalanced
+            BooxinLaunchTune.Mode.QUALITY -> R.id.buttonTuneQuality
+            BooxinLaunchTune.Mode.CUSTOM -> R.id.buttonTuneCustom
+        }
+        if (b.toggleLaunchTune.checkedButtonId != id) {
+            suppressingLaunchTuneToggle = true
+            b.toggleLaunchTune.check(id)
+            suppressingLaunchTuneToggle = false
+        }
+        val resolved = BooxinLaunchTune.resolve(requireContext())
+        b.textLaunchTune.text = getString(
+            R.string.settings_launch_tune_summary,
+            resolved.summaryZh
+        )
+    }
+
     private fun setupGameOptions() {
         val b = _binding ?: return
         val rd = LauncherPrefs.renderDistance()
         b.sliderRenderDistance.value = rd.toFloat()
         b.textRenderDistance.text = getString(R.string.settings_render_distance, rd)
+        b.sliderRenderDistance.clearOnChangeListeners()
         b.sliderRenderDistance.addOnChangeListener { _: Slider, value: Float, fromUser: Boolean ->
             val chunks = value.toInt()
             b.textRenderDistance.text = getString(R.string.settings_render_distance, chunks)
-            if (fromUser) LauncherPrefs.setRenderDistance(chunks)
+            if (fromUser) {
+                LauncherPrefs.setRenderDistance(chunks)
+                LauncherPrefs.markLaunchTuneCustomIfPreset()
+                syncLaunchTuneToggle()
+            }
         }
 
+        b.switchVsync.setOnCheckedChangeListener(null)
         b.switchVsync.isChecked = LauncherPrefs.enableVsync()
         b.switchVsync.setOnCheckedChangeListener { _, checked ->
             LauncherPrefs.setEnableVsync(checked)
+            LauncherPrefs.markLaunchTuneCustomIfPreset()
+            syncLaunchTuneToggle()
         }
 
+        b.switchFancyGraphics.setOnCheckedChangeListener(null)
         b.switchFancyGraphics.isChecked = LauncherPrefs.fancyGraphics()
         b.switchFancyGraphics.setOnCheckedChangeListener { _, checked ->
             LauncherPrefs.setFancyGraphics(checked)
+            LauncherPrefs.markLaunchTuneCustomIfPreset()
+            syncLaunchTuneToggle()
         }
 
         val volume = LauncherPrefs.masterVolumePercent()
         b.sliderMasterVolume.value = volume.toFloat()
         b.textMasterVolume.text = getString(R.string.settings_master_volume, volume)
+        b.sliderMasterVolume.clearOnChangeListeners()
         b.sliderMasterVolume.addOnChangeListener { _: Slider, value: Float, fromUser: Boolean ->
             val percent = value.toInt()
             b.textMasterVolume.text = getString(R.string.settings_master_volume, percent)

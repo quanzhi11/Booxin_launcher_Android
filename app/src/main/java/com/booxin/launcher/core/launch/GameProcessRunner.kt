@@ -106,17 +106,40 @@ class GameProcessRunner(
                 while (isActive) {
                     delay(10_000L)
                     val sec = tickSec.addAndGet(10)
+                    if (!jvmCreated.get() || !gameProgress.get()) {
+                        runCatching {
+                            val file = GameLaunchLogBus.latestLogFile() ?: return@runCatching
+                            if (!file.isFile) return@runCatching
+                            val tail = file.readText().takeLast(8000)
+                            if (!jvmCreated.get() && (
+                                    tail.contains("JVM created", ignoreCase = true) ||
+                                        tail.contains("Invoking main", ignoreCase = true) ||
+                                        tail.contains("main class loaded", ignoreCase = true)
+                                    )
+                            ) {
+                                jvmCreated.set(true)
+                            }
+                            if (!gameProgress.get() && (
+                                    tail.contains("Invoking main", ignoreCase = true) ||
+                                        tail.contains("[jvm]", ignoreCase = true)
+                                    )
+                            ) {
+                                gameProgress.set(true)
+                                jvmCreated.set(true)
+                            }
+                        }
+                    }
                     // launch() blocks until the game exits — do not keep saying "创建虚拟机".
                     when {
                         gameProgress.get() ->
-                            emit("游戏仍在加载/运行中…已等待 ${sec}s（主菜单出现后遮罩会自动关闭）")
+                            emitBlocking("游戏仍在加载/运行中…已等待 ${sec}s（主菜单出现后遮罩会自动关闭）")
                         jvmCreated.get() ->
-                            emit("游戏仍在加载/运行中…已等待 ${sec}s（JVM 已创建，等待主菜单）")
+                            emitBlocking("游戏仍在加载/运行中…已等待 ${sec}s（JVM 已创建，等待主菜单）")
                         sec >= 90 ->
                             // Avoid forever "创建虚拟机" spam that resets UI keep-alive semantics.
-                            emit("游戏仍在加载/运行中…已等待 ${sec}s（若已见主菜单可点「强制进入游戏」）")
+                            emitBlocking("游戏仍在加载/运行中…已等待 ${sec}s（若已见主菜单可点「强制进入游戏」）")
                         else ->
-                            emit("JVM 仍在启动中…已等待 ${sec}s（创建虚拟机 / 加载主类）")
+                            emitBlocking("JVM 仍在启动中…已等待 ${sec}s（创建虚拟机 / 加载主类）")
                     }
                 }
             }

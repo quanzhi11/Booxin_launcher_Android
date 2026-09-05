@@ -4,7 +4,7 @@ import org.lwjgl.system.FunctionProvider;
 import org.lwjgl.system.SharedLibrary;
 
 /**
- * FCL/Pojav RendererInit: call gl4es internals only when LWJGL actually loads
+ * Booxin RendererInit: call gl4es internals only when LWJGL actually loads
  * {@code libgl4es_114.so}. MobileGlues is loaded via {@code libmobileglues.so},
  * so it must not hit {@link #nativeInitGl4esInternals}.
  */
@@ -19,7 +19,7 @@ public class RendererInit {
         }
         if (!isValidString(name)) {
             System.out.println(
-                "PojavRendererInit: Failed to find Pojav renderer name! " +
+                "BooxinRendererInit: Failed to find Booxin renderer name! " +
                     "Renderer-specific initialization may not work properly"
             );
             return;

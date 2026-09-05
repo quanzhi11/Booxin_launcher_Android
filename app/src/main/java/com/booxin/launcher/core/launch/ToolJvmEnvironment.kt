@@ -10,7 +10,12 @@ import java.io.File
 /** Forge 安装处理器环境（仅 JRE）。 */
 object ToolJvmEnvironment {
 
-    fun apply(context: Context, java: InstalledJavaRuntime, tmpDir: File) {
+    fun apply(
+        context: Context,
+        java: InstalledJavaRuntime,
+        tmpDir: File,
+        logFile: File? = null
+    ) {
         val javaPath = java.homeDir.absolutePath
         val ldPath = buildLibraryPath(context, java.homeDir)
         val nativeDir = context.applicationInfo.nativeLibraryDir
@@ -23,6 +28,13 @@ object ToolJvmEnvironment {
         Os.setenv(RuntimeEnv.LEGACY_NATIVEDIR_ALT, nativeDir, true)
         Os.setenv(RuntimeEnv.LEGACY_POJAV_NATIVEDIR, nativeDir, true)
         Os.setenv("_JAVA_VERSION_SET", "true", true)
+        if (logFile != null) {
+            runCatching {
+                logFile.parentFile?.mkdirs()
+                if (!logFile.exists()) logFile.writeText("")
+            }
+            Os.setenv(RuntimeEnv.LAUNCH_LOG, logFile.absolutePath, true)
+        }
         setupJavaRuntime(java.homeDir)
     }
 

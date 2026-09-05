@@ -17,6 +17,7 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.graphics.SurfaceTexture
 import android.view.Surface
+import android.view.SurfaceHolder
 import android.view.TextureView
 import android.view.View
 import android.view.WindowManager
@@ -32,6 +33,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.booxin.launcher.R
 import com.booxin.launcher.core.uiplugin.UiPluginFonts
+import com.booxin.launcher.core.uiplugin.UiPluginManager
 import com.booxin.launcher.core.uiplugin.UiPluginTheme
 import com.booxin.launcher.core.download.game.VersionJsonMerger
 import com.booxin.launcher.core.java.MinecraftJavaRequirement
@@ -41,6 +43,8 @@ import com.booxin.launcher.core.launch.GameLaunchService
 import com.booxin.launcher.core.launch.GameSurfaceBridge
 import com.booxin.launcher.core.launch.LaunchPhase
 import com.booxin.launcher.core.launch.LaunchSession
+import com.booxin.launcher.core.launch.NativeJvmLauncher
+import com.booxin.launcher.core.launch.OemLaunchProfile
 import com.booxin.launcher.core.runtime.GameRuntimeBackends
 import com.booxin.launcher.databinding.ActivityLaunchBinding
 import com.booxin.launcher.ui.launch.input.ControlLayoutController
@@ -60,7 +64,17 @@ class LaunchActivity : AppCompatActivity() {
     private lateinit var controlLayout: ControlLayoutController
     private lateinit var gyroscope: GameGyroscope
     private val multiplayerPanel by lazy {
-        InGameMultiplayerPanel(this) { pendingUsername }
+        InGameMultiplayerPanel(
+            this,
+            playerNameProvider = { pendingUsername },
+            versionIdProvider = { pendingVersionId }
+        )
+    }
+    private val communityPanel by lazy {
+        InGameCommunityPanel(
+            this,
+            versionIdProvider = { pendingVersionId }
+        )
     }
     private val logBuffer = StringBuilder()
     private var logReceiver: BroadcastReceiver? = null
@@ -70,9 +84,13 @@ class LaunchActivity : AppCompatActivity() {
     private var pendingAccessToken: String? = null
     private var pendingUserType: String? = null
     private var pendingServerAddress: String? = null
+    private var pendingOfflineSkinPath: String? = null
     private var canRetryLaunch = false
     private var surfaceWidth = 0
     private var surfaceHeight = 0
+    /** Locked game buffer size (may be below TextureView); 0 = use view pixels. */
+    private var gameBufferWidth = 0
+    private var gameBufferHeight = 0
     private var controlsVisible = true
     private var inputReady = false
     private var overlayHidden = false
@@ -145,6 +163,7 @@ class LaunchActivity : AppCompatActivity() {
     private var forceEnterWatchingFrames = false
     private var forceEnterBaselineFrames = 0L
     private var forceRebindAttempts = 0
+    private var forceJvmWaitAttempts = 0
     private var forceFrameNotified = false
     private val forceRenderWatchdog = object : Runnable {
         override fun run() {
@@ -153,13 +172,31 @@ class LaunchActivity : AppCompatActivity() {
                 onForceEnterFramesDetected()
                 return
             }
+            // JVM still creating — rebind cannot produce frames; wait longer.
+            if (!isJvmLikelyReady()) {
+                forceJvmWaitAttempts++
+                val maxWait = if (OemLaunchProfile.needsPatientForceRebind()) 8 else 5
+                if (forceJvmWaitAttempts <= maxWait) {
+                    Toast.makeText(this@LaunchActivity, R.string.launch_force_wait_jvm, Toast.LENGTH_SHORT)
+                        .show()
+                    Log.i(
+                        TAG,
+                        "forceRenderWatchdog waiting JVM attempt=$forceJvmWaitAttempts " +
+                            "frames=$textureFrameCount percent=$loadingPercent"
+                    )
+                    mainHandler.postDelayed(this, 3_000L)
+                    return
+                }
+            }
             forceRebindAttempts++
-            if (forceRebindAttempts <= 3) {
+            val maxRebinds = if (OemLaunchProfile.needsPatientForceRebind()) 5 else 3
+            if (forceRebindAttempts <= maxRebinds) {
                 Toast.makeText(this@LaunchActivity, R.string.launch_force_rebind, Toast.LENGTH_SHORT)
                     .show()
                 Log.i(TAG, "forceRenderWatchdog rebind attempt=$forceRebindAttempts frames=$textureFrameCount")
                 performForceRenderRebind("watchdog-$forceRebindAttempts")
-                mainHandler.postDelayed(this, 2_000L)
+                val delay = if (OemLaunchProfile.needsPatientForceRebind()) 3_000L else 2_000L
+                mainHandler.postDelayed(this, delay)
             } else {
                 forceEnterWatchingFrames = false
                 Toast.makeText(this@LaunchActivity, R.string.launch_force_no_frames, Toast.LENGTH_LONG)
@@ -168,6 +205,13 @@ class LaunchActivity : AppCompatActivity() {
             }
         }
     }
+
+    /** True once HotSpot is up or loading UI has passed CreateJavaVM stage. */
+    private fun isJvmLikelyReady(): Boolean =
+        LaunchSession.hotspotEntered ||
+            LaunchSession.current() == LaunchPhase.Running ||
+            gameProgressSeen ||
+            loadingPercent >= 68
 
     private val isModLoaderLaunch: Boolean by lazy {
         val id = pendingVersionId.lowercase(Locale.US)
@@ -220,14 +264,172 @@ class LaunchActivity : AppCompatActivity() {
         "Backend library" to 97,
     )
 
+    private fun isGameSessionActive(): Boolean =
+        LaunchSession.hotspotEntered || LaunchSession.current() == LaunchPhase.Running
+
+    /**
+     * Activity may be recreated while :game JVM keeps running (home / LMK).
+     * Peel the loading overlay and restore buffer hints so resume rebind works.
+     */
+    private fun restoreInGameUiIfNeeded() {
+        if (!isGameSessionActive()) return
+        overlayHidden = true
+        loadingPercent = 100
+        gameProgressSeen = true
+        softHideScheduled = true
+        if (GameSurfaceBridge.width > 1) gameBufferWidth = GameSurfaceBridge.width
+        if (GameSurfaceBridge.height > 1) gameBufferHeight = GameSurfaceBridge.height
+        if (!::binding.isInitialized) return
+        binding.panelOverlay.visibility = View.GONE
+        binding.panelOverlay.alpha = 0f
+        binding.panelOverlay.isClickable = false
+        binding.panelOverlay.isFocusable = false
+        binding.panelControls.visibility = View.VISIBLE
+        binding.touchPad.visibility = View.VISIBLE
+        if (!inputReady) {
+            mainHandler.post { enableGameInputForced() }
+        } else {
+            BooxinBridge.enableAndroidInput()
+        }
+        Log.i(TAG, "restoreInGameUi session=${LaunchSession.current()} paused=${GameSurfaceBridge.surfacePaused}")
+    }
+
+    private fun detachGameSurfaceForBackground() {
+        if (!isGameSessionActive()) return
+        // Soft detach: park EGL on pbuffer, keep SDL window alive.
+        // Never call SDL onNativeSurfaceDestroyed here — that quits MC.
+        if (isSdlLaunch) {
+            runCatching { BooxinSdlBootstrap.notifySurfaceLost() }
+        }
+        if (GameSurfaceBridge.hasSurface() || !GameSurfaceBridge.surfacePaused) {
+            GameSurfaceBridge.onSurfaceDestroyed()
+        }
+    }
+
+    /** After resume: if TextureView stays blank, keep rebinding for a short window. */
+    private var resumeRebindAttempts = 0
+    private var resumeFrameBaseline = 0L
+    private val resumeRebindWatchdog = object : Runnable {
+        override fun run() {
+            if (isFinishing || !isGameSessionActive()) return
+            if (!GameSurfaceBridge.surfacePaused && textureFrameCount > resumeFrameBaseline + 2L) {
+                Log.i(TAG, "resumeRebindWatchdog: frames ok")
+                return
+            }
+            if (resumeRebindAttempts >= 6) {
+                Log.w(TAG, "resumeRebindWatchdog: still no frames after $resumeRebindAttempts rebinds")
+                return
+            }
+            resumeRebindAttempts++
+            Log.i(TAG, "resumeRebindWatchdog rebind attempt=$resumeRebindAttempts")
+            performForceRenderRebind("resume-watchdog-$resumeRebindAttempts")
+            mainHandler.postDelayed(this, 1_500L)
+        }
+    }
+
+    private fun scheduleResumeRebindWatchdog() {
+        resumeFrameBaseline = textureFrameCount
+        resumeRebindAttempts = 0
+        mainHandler.removeCallbacks(resumeRebindWatchdog)
+        mainHandler.postDelayed(resumeRebindWatchdog, 1_200L)
+    }
+
     private val notifPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) {
         maybeStartGameService()
     }
 
-    /** Held Surface for the current TextureView SurfaceTexture. */
+    /** Held Surface for the current TextureView SurfaceTexture (LWJGL path only). */
     private var textureSurface: Surface? = null
+
+    /**
+     * SDL/MG often presents successfully while TextureView.onSurfaceTextureUpdated
+     * never fires. Poll the native swap counter and treat it as frame progress.
+     */
+    private val sdlPresentPoll = object : Runnable {
+        override fun run() {
+            if (isFinishing) return
+            if (!isSdlLaunch) return
+            syncSdlPresentFrames()
+            if (!overlayHidden || forceEnterWatchingFrames) {
+                mainHandler.postDelayed(this, 250L)
+            }
+        }
+    }
+
+    private fun syncSdlPresentFrames() {
+        if (!isSdlLaunch) return
+        val n = runCatching { NativeJvmLauncher.getSdlPresentCount() }.getOrDefault(0L)
+        if (n <= textureFrameCount) return
+        textureFrameCount = n
+        if (forceEnterWatchingFrames &&
+            !forceFrameNotified &&
+            textureFrameCount > forceEnterBaselineFrames
+        ) {
+            onForceEnterFramesDetected()
+        }
+        if (!overlayHidden) {
+            onGameSurfaceFrame()
+        }
+    }
+
+    private fun startSdlPresentPoll() {
+        if (!isSdlLaunch) return
+        mainHandler.removeCallbacks(sdlPresentPoll)
+        mainHandler.post(sdlPresentPoll)
+    }
+
+    /**
+     * SurfaceView for 26.3+ SDL — TextureView BufferQueue often stays frames=0 under MG.
+     */
+    private val sdlSurfaceCallback = object : SurfaceHolder.Callback {
+        override fun surfaceCreated(holder: SurfaceHolder) {
+            val fr = holder.surfaceFrame
+            bindSdlHolderSurface(
+                holder.surface,
+                fr.width().coerceAtLeast(1),
+                fr.height().coerceAtLeast(1),
+                "created"
+            )
+        }
+
+        override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+            surfaceWidth = width
+            surfaceHeight = height
+            GameSurfaceBridge.noteViewSize(width, height)
+            val bufW = GameSurfaceBridge.bufferWidthOr(
+                if (gameBufferWidth > 1) gameBufferWidth else width
+            )
+            val bufH = GameSurfaceBridge.bufferHeightOr(
+                if (gameBufferHeight > 1) gameBufferHeight else height
+            )
+            if (bufW > 0 && bufH > 0) {
+                holder.setFixedSize(bufW, bufH)
+            }
+            if (!GameSurfaceBridge.renderSizeLocked) {
+                GameSurfaceBridge.onSurfaceSizeChanged(width, height)
+            }
+            appendLog(
+                if (bufW != width || bufH != height) {
+                    "SDL Surface 尺寸: ${width}x${height}（缓冲 ${bufW}x${bufH}）"
+                } else {
+                    "SDL Surface 尺寸: ${width}x${height}"
+                }
+            )
+            if (LaunchSession.hotspotEntered && GameSurfaceBridge.surfacePaused) {
+                bindSdlHolderSurface(holder.surface, width, height, "sizeChanged-rebind")
+            } else {
+                maybeStartGameService()
+            }
+        }
+
+        override fun surfaceDestroyed(holder: SurfaceHolder) {
+            appendLog("SDL Surface 已销毁（保持游戏进程）")
+            runCatching { BooxinSdlBootstrap.notifySurfaceLost() }
+            GameSurfaceBridge.onSurfaceDestroyed()
+        }
+    }
 
     /**
      * TextureView: when available while the game is running, rebind the bridge window.
@@ -241,11 +443,23 @@ class LaunchActivity : AppCompatActivity() {
         override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) {
             surfaceWidth = width
             surfaceHeight = height
-            if (width > 0 && height > 0) {
-                surface.setDefaultBufferSize(width, height)
+            GameSurfaceBridge.noteViewSize(width, height)
+            val bufW = GameSurfaceBridge.bufferWidthOr(width)
+            val bufH = GameSurfaceBridge.bufferHeightOr(height)
+            if (bufW > 0 && bufH > 0) {
+                surface.setDefaultBufferSize(bufW, bufH)
             }
-            GameSurfaceBridge.onSurfaceSizeChanged(width, height)
-            appendLog("Texture 尺寸: ${width}x${height}")
+            // Do not push view pixels into GLFW after render size is locked (REL).
+            if (!GameSurfaceBridge.renderSizeLocked) {
+                GameSurfaceBridge.onSurfaceSizeChanged(width, height)
+            }
+            appendLog(
+                if (bufW != width || bufH != height) {
+                    "Texture 尺寸: ${width}x${height}（缓冲 ${bufW}x${bufH}）"
+                } else {
+                    "Texture 尺寸: ${width}x${height}"
+                }
+            )
             // Push window size; if still paused, rebind with new dims.
             if (LaunchSession.hotspotEntered && GameSurfaceBridge.surfacePaused) {
                 bindTextureSurface(surface, width, height, "sizeChanged-rebind")
@@ -257,6 +471,9 @@ class LaunchActivity : AppCompatActivity() {
         override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean {
             // Keep JVM alive across texture destroy (background / screen off).
             appendLog("Texture Surface 已销毁（保持游戏进程）")
+            if (isSdlLaunch) {
+                runCatching { BooxinSdlBootstrap.notifySurfaceLost() }
+            }
             GameSurfaceBridge.onSurfaceDestroyed()
             runCatching { textureSurface?.release() }
             textureSurface = null
@@ -290,7 +507,13 @@ class LaunchActivity : AppCompatActivity() {
         if (loadingPercent < 55 && !LaunchSession.hotspotEntered) return
         if (firstPaintFrameAtMs == 0L) {
             firstPaintFrameAtMs = SystemClock.uptimeMillis()
-            appendLog("检测到游戏画面开始绘制（Texture 出帧）")
+            appendLog(
+                if (isSdlLaunch) {
+                    "检测到游戏画面开始绘制（SDL present=$textureFrameCount）"
+                } else {
+                    "检测到游戏画面开始绘制（Texture 出帧）"
+                }
+            )
             updateLoadingUi(
                 loadingPercent.coerceAtLeast(90),
                 "检测到游戏画面，即将关闭遮罩…"
@@ -322,32 +545,139 @@ class LaunchActivity : AppCompatActivity() {
         height: Int,
         reason: String
     ) {
-        if (width > 0 && height > 0) {
-            surfaceTexture.setDefaultBufferSize(width, height)
+        GameSurfaceBridge.noteViewSize(width, height)
+        val bufW = GameSurfaceBridge.bufferWidthOr(
+            if (gameBufferWidth > 1) gameBufferWidth else width
+        )
+        val bufH = GameSurfaceBridge.bufferHeightOr(
+            if (gameBufferHeight > 1) gameBufferHeight else height
+        )
+        if (bufW > 0 && bufH > 0) {
+            surfaceTexture.setDefaultBufferSize(bufW, bufH)
         }
         surfaceWidth = width
         surfaceHeight = height
-        runCatching { textureSurface?.release() }
-        val surf = Surface(surfaceTexture)
-        textureSurface = surf
-        GameSurfaceBridge.onSurfaceCreated(surf)
-        if (width > 0 && height > 0) {
-            GameSurfaceBridge.onSurfaceSizeChanged(width, height)
+        // Only tear down EGL when the producer was already paused/lost.
+        // Destroying a live window from the UI thread races the Render thread
+        // and kills :game (user sees MainActivity).
+        val mustReplace =
+            GameSurfaceBridge.surfacePaused ||
+                !GameSurfaceBridge.hasSurface() ||
+                textureSurface == null ||
+                textureSurface?.isValid != true
+        if (isGameSessionActive() && mustReplace &&
+            (textureSurface != null || GameSurfaceBridge.hasSurface())
+        ) {
+            if (isSdlLaunch) {
+                runCatching { BooxinSdlBootstrap.notifySurfaceLost() }
+            }
+            runCatching { NativeJvmLauncher.clearBridgeWindow() }
+        }
+        if (mustReplace || textureSurface == null) {
+            runCatching { textureSurface?.release() }
+            val surf = Surface(surfaceTexture)
+            textureSurface = surf
+            GameSurfaceBridge.onSurfaceCreated(surf)
+        } else {
+            // Same live producer — re-push without destroy/create churn.
+            textureSurface?.let { GameSurfaceBridge.onSurfaceCreated(it) }
+                ?: run {
+                    val surf = Surface(surfaceTexture)
+                    textureSurface = surf
+                    GameSurfaceBridge.onSurfaceCreated(surf)
+                }
+        }
+        if (bufW > 0 && bufH > 0) {
+            if (!GameSurfaceBridge.renderSizeLocked) {
+                GameSurfaceBridge.onSurfaceSizeChanged(bufW, bufH)
+            }
             // Nudge framebuffer size so MC rebuilds after resume / rebind.
             if (LaunchSession.hotspotEntered || reason == "onResume" || reason.contains("rebind")) {
                 runCatching {
-                    BooxinBridge.sendUpdateWindowSize(width, height)
-                    if (width > 2 && height > 2) {
+                    BooxinBridge.sendUpdateWindowSize(bufW, bufH)
+                    if (bufW > 2 && bufH > 2) {
                         mainHandler.postDelayed({
-                            BooxinBridge.sendUpdateWindowSize(width - 1, height)
-                            BooxinBridge.sendUpdateWindowSize(width, height)
+                            BooxinBridge.sendUpdateWindowSize(bufW - 1, bufH)
+                            BooxinBridge.sendUpdateWindowSize(bufW, bufH)
                         }, 50L)
                     }
                 }
             }
         }
-        appendLog("Texture Surface 就绪（$reason） ${width}x${height}")
+        appendLog(
+            if (bufW != width || bufH != height) {
+                "Texture Surface 就绪（$reason） 视图 ${width}x${height} 缓冲 ${bufW}x${bufH}"
+            } else {
+                "Texture Surface 就绪（$reason） ${width}x${height}"
+            }
+        )
+        if (isSdlLaunch) startSdlPresentPoll()
         maybeStartGameService()
+    }
+
+    /** Bind SurfaceView producer for SDL (unused on this OEM; kept for layout id). */
+    private fun bindSdlHolderSurface(
+        surface: Surface,
+        width: Int,
+        height: Int,
+        reason: String
+    ) {
+        GameSurfaceBridge.noteViewSize(width, height)
+        val bufW = GameSurfaceBridge.bufferWidthOr(
+            if (gameBufferWidth > 1) gameBufferWidth else width
+        )
+        val bufH = GameSurfaceBridge.bufferHeightOr(
+            if (gameBufferHeight > 1) gameBufferHeight else height
+        )
+        if (bufW > 0 && bufH > 0) {
+            binding.surfaceGameSdl.holder.setFixedSize(bufW, bufH)
+        }
+        surfaceWidth = width
+        surfaceHeight = height
+        val mustReplace =
+            GameSurfaceBridge.surfacePaused || !GameSurfaceBridge.hasSurface()
+        if (isGameSessionActive() && mustReplace && GameSurfaceBridge.hasSurface()) {
+            runCatching { BooxinSdlBootstrap.notifySurfaceLost() }
+            runCatching { NativeJvmLauncher.clearBridgeWindow() }
+        }
+        GameSurfaceBridge.onSurfaceCreated(surface)
+        if (bufW > 0 && bufH > 0) {
+            if (!GameSurfaceBridge.renderSizeLocked) {
+                GameSurfaceBridge.onSurfaceSizeChanged(bufW, bufH)
+            }
+            if (LaunchSession.hotspotEntered || reason == "onResume" || reason.contains("rebind")) {
+                runCatching {
+                    BooxinBridge.sendUpdateWindowSize(bufW, bufH)
+                    if (bufW > 2 && bufH > 2) {
+                        mainHandler.postDelayed({
+                            BooxinBridge.sendUpdateWindowSize(bufW - 1, bufH)
+                            BooxinBridge.sendUpdateWindowSize(bufW, bufH)
+                        }, 50L)
+                    }
+                }
+            }
+        }
+        appendLog(
+            if (bufW != width || bufH != height) {
+                "SDL Surface 就绪（$reason） 视图 ${width}x${height} 缓冲 ${bufW}x${bufH}"
+            } else {
+                "SDL Surface 就绪（$reason） ${width}x${height}"
+            }
+        )
+        startSdlPresentPoll()
+        maybeStartGameService()
+    }
+
+    /** Match SurfaceTexture producer size to GLFW (REL / resolution scale). */
+    private fun applyGameBufferSize(w: Int, h: Int) {
+        if (w <= 1 || h <= 1) return
+        gameBufferWidth = w
+        gameBufferHeight = h
+        val st = binding.surfaceGame.surfaceTexture
+        if (st != null) {
+            st.setDefaultBufferSize(w, h)
+        }
+        appendLog("游戏渲染缓冲已设为 ${w}x${h}")
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -386,6 +716,8 @@ class LaunchActivity : AppCompatActivity() {
         pendingUserType = intent.getStringExtra(EXTRA_USER_TYPE)
         pendingServerAddress = intent.getStringExtra(EXTRA_SERVER_ADDRESS)
             ?.takeIf { it.isNotBlank() }
+        pendingOfflineSkinPath = intent.getStringExtra(EXTRA_OFFLINE_SKIN_PATH)
+            ?.takeIf { it.isNotBlank() }
         if (pendingVersionId.isBlank()) {
             appendLog("缺少版本 ID")
             updateLoadingUi(0, "缺少版本 ID")
@@ -394,7 +726,7 @@ class LaunchActivity : AppCompatActivity() {
 
         binding.textLaunchMeta.text = getString(R.string.launch_meta, pendingVersionId, pendingUsername)
         if (!pendingServerAddress.isNullOrBlank()) {
-            appendLog("联机直连: $pendingServerAddress")
+            appendLog("联机直连备用: $pendingServerAddress（优先请用多人游戏→局域网列表）")
         }
         updateLoadingUi(0, getString(R.string.launch_loading_status_init))
         binding.buttonClose.setOnClickListener { returnToLauncher() }
@@ -447,8 +779,31 @@ class LaunchActivity : AppCompatActivity() {
             resources.displayMetrics.widthPixels,
             resources.displayMetrics.heightPixels
         )
+        if (!isGameSessionActive()) {
+            GameSurfaceBridge.clearRenderSizeLock()
+            gameBufferWidth = 0
+            gameBufferHeight = 0
+        } else {
+            if (GameSurfaceBridge.width > 1) gameBufferWidth = GameSurfaceBridge.width
+            if (GameSurfaceBridge.height > 1) gameBufferHeight = GameSurfaceBridge.height
+        }
+        GameSurfaceBridge.onRenderBufferSizeChanged = { w, h ->
+            if (Looper.myLooper() == Looper.getMainLooper()) {
+                applyGameBufferSize(w, h)
+            } else {
+                mainHandler.post { applyGameBufferSize(w, h) }
+            }
+        }
+        // Keep TextureView for SDL too: SurfaceView caused :game exit(1) during
+        // JNI_CreateJavaVM on this OEM. Present-count + egl ANW substitute handle frames=0.
+        binding.surfaceGameSdl.visibility = View.GONE
+        binding.surfaceGame.visibility = View.VISIBLE
         binding.surfaceGame.isOpaque = true
         binding.surfaceGame.surfaceTextureListener = textureListener
+        if (isSdlLaunch) {
+            appendLog("SDL 模式：TextureView + present 计数（SurfaceView 在本机闪退，已禁用）")
+            // Do not poll until HotSpot exists — JNI during CreateJavaVM is unsafe here.
+        }
         // Already available (e.g. after config change) — bind immediately.
         if (binding.surfaceGame.isAvailable) {
             val st = binding.surfaceGame.surfaceTexture
@@ -471,7 +826,11 @@ class LaunchActivity : AppCompatActivity() {
                 }
             },
             onFinished = {
-                runOnUiThread { returnToLauncher() }
+                // JVM truly exited — leave game UI. Guard against duplicate calls.
+                runOnUiThread {
+                    Log.w(TAG, "launch finished → returnToLauncher")
+                    returnToLauncher()
+                }
             },
             onFailed = { reason ->
                 runOnUiThread {
@@ -498,36 +857,43 @@ class LaunchActivity : AppCompatActivity() {
             appendLog("请求通知权限（前台服务需要）…")
             notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         } else {
-            maybeStartGameService()
+            if (!isGameSessionActive()) {
+                maybeStartGameService()
+            }
         }
+        restoreInGameUiIfNeeded()
     }
 
     override fun onResume() {
         super.onResume()
-        maybeStartGameService()
+        restoreInGameUiIfNeeded()
+        if (!isGameSessionActive()) {
+            maybeStartGameService()
+        }
         // Mark window focused/visible again.
         runCatching {
             CallbackBridge.nativeSetWindowAttrib(GLFW_FOCUSED, 1)
             CallbackBridge.nativeSetWindowAttrib(GLFW_HOVERED, 1)
             CallbackBridge.nativeSetWindowAttrib(GLFW_VISIBLE, 1)
         }
-        // On resume: re-push size; if texture already up while paused, rebind like
-        // onSurfaceTextureAvailable while running.
+        // Rebind ONLY when TextureView actually tore down the producer.
+        // A live Surface + setupBridgeWindow on resume re-enters ART JNI_OnLoad
+        // and used to clobber HotSpot → SIGSEGV → bounce to MainActivity.
         binding.surfaceGame.post {
             if (isFinishing) return@post
-            val st = binding.surfaceGame.surfaceTexture
-            if (st != null && binding.surfaceGame.isAvailable &&
-                (LaunchSession.hotspotEntered || GameSurfaceBridge.surfacePaused)
-            ) {
-                bindTextureSurface(
-                    st,
-                    binding.surfaceGame.width.coerceAtLeast(1),
-                    binding.surfaceGame.height.coerceAtLeast(1),
-                    "onResume"
-                )
-                runCatching { GameRuntimeBackends.current().enableInput() }
-                scheduleInputArmRetries()
+            if (!isGameSessionActive() || !binding.surfaceGame.isAvailable) return@post
+            if (GameSurfaceBridge.surfacePaused || !GameSurfaceBridge.hasSurface()) {
+                Log.i(TAG, "onResume: surface lost — full rebind")
+                performForceRenderRebind("onResume")
+                scheduleResumeRebindWatchdog()
+            } else {
+                Log.i(TAG, "onResume: surface still live — skip setupBridgeWindow")
+                // Do not rebind / maybePrepare / sendUpdateWindowSize aggressively.
+                // Focus attrs above are enough; GL keeps presenting.
             }
+            runCatching { GameRuntimeBackends.current().enableInput() }
+            scheduleInputArmRetries()
+            if (isSdlLaunch) startSdlPresentPoll()
         }
         if (::gyroscope.isInitialized && LaunchControlPrefs.isGyroEnabled(this)) {
             gyroscope.enable()
@@ -536,13 +902,17 @@ class LaunchActivity : AppCompatActivity() {
 
     override fun onPause() {
         if (::gyroscope.isInitialized) gyroscope.disable()
-        // Only flip GLFW focus attrs — do not kill JVM.
+        // Only flip GLFW focus attrs — do not kill JVM / do not tear EGL here.
+        // TextureView.onSurfaceTextureDestroyed handles real producer loss.
+        // Proactive detach on pause was racing the Render thread and killing :game,
+        // which then bounced the user back to MainActivity.
         runCatching {
             CallbackBridge.nativeSetWindowAttrib(GLFW_FOCUSED, 0)
             CallbackBridge.nativeSetWindowAttrib(GLFW_HOVERED, 0)
         }
-        if (LaunchSession.hotspotEntered || LaunchSession.current() == LaunchPhase.Running) {
-            appendLog("进入后台：保持游戏进程（TextureView）")
+        mainHandler.removeCallbacks(resumeRebindWatchdog)
+        if (isGameSessionActive()) {
+            Log.i(TAG, "进入后台：保持游戏进程（等 TextureView destroy 再 detach）")
         }
         super.onPause()
     }
@@ -568,15 +938,15 @@ class LaunchActivity : AppCompatActivity() {
             floatingBall = binding.btnFloatingBall,
             gestureQuick = binding.btnGestureQuick,
             editBar = binding.panelEditBar,
-            onEditModeChanged = { editing ->
-                binding.touchPad.isEnabled = !editing
-                refreshMoveVisibility()
-            }
-        )
+            followToggleView = binding.btnEditFollow
+        ) { editing ->
+            binding.touchPad.isEnabled = !editing
+            refreshMoveVisibility()
+        }
 
-        // Screen touch = mouse: GUI click-to-point; in-world BUILD gestures.
+        // Screen touch = mouse: GUI click-to-point; in-world 综合模式 gestures.
         binding.touchPad.mouseMoveMode = MouseMoveMode.CLICK
-        binding.touchPad.gestureMode = GestureMode.BUILD
+        binding.touchPad.gestureMode = GestureMode.COMBINED
         binding.touchPad.lookSensitivity = 1.2f
         binding.touchPad.guiSensitivity = 1.0f
         // left/top gravity so translationX/Y map from (0,0)
@@ -601,6 +971,7 @@ class LaunchActivity : AppCompatActivity() {
 
         binding.btnEditAdd.setOnClickListener { controlLayout.addButton() }
         binding.btnEditDelete.setOnClickListener { controlLayout.deleteSelected() }
+        binding.btnEditFollow.setOnClickListener { controlLayout.toggleFollowSelected() }
         binding.btnEditShrink.setOnClickListener { controlLayout.resizeSelected(-8) }
         binding.btnEditGrow.setOnClickListener { controlLayout.resizeSelected(8) }
         binding.btnEditReset.setOnClickListener { controlLayout.resetToDefault() }
@@ -665,9 +1036,10 @@ class LaunchActivity : AppCompatActivity() {
             gameProgressSeen = true
             updateLoadingUi(100, line.trim().take(80))
             if (isSdlLaunch && textureFrameCount < 6L) {
-                // SDL/MobileGlues often logs GL ready while still black — wait for paints.
-                appendLog("SDL：已检测到客户端就绪日志，等待 Texture 出帧再关遮罩…")
+                // SDL/MobileGlues often logs GL ready while still black — wait for presents.
+                appendLog("SDL：已检测到客户端就绪日志，等待画面呈现再关遮罩…")
                 scheduleSoftHideAfterRender(8_000L)
+                startSdlPresentPoll()
                 return
             }
             hideOverlayIfNeeded(force = true, allowWithoutBridge = true)
@@ -807,49 +1179,68 @@ class LaunchActivity : AppCompatActivity() {
     }
 
     /**
-     * vivo 等：遮罩揭了仍可能全黑 —— 游戏可能从未向 TextureView 出帧。
+     * vivo / 荣耀等：遮罩揭了仍可能全黑 —— 游戏可能从未向 TextureView 出帧。
      * 强制进入 = 揭遮罩 + resume 级 setupBridgeWindow 重绑 + 首帧 watchdog。
+     * JVM 未创建时不立即重绑（无效且易误报「未检测到渲染帧」）。
      */
     private fun forceEnterGameScreen() {
         appendLog("用户强制进入游戏画面（揭遮罩并重绑渲染窗口）")
-        Log.i(TAG, "forceEnterGameScreen percent=$loadingPercent frames=$textureFrameCount")
+        Log.i(
+            TAG,
+            "forceEnterGameScreen percent=$loadingPercent frames=$textureFrameCount " +
+                "jvmReady=${isJvmLikelyReady()} oem=${OemLaunchProfile.describe()}"
+        )
         gameProgressSeen = true
         updateLoadingUi(100, "强制进入游戏")
         hideOverlayIfNeeded(force = true, allowWithoutBridge = true)
 
         forceEnterBaselineFrames = textureFrameCount
         forceRebindAttempts = 0
+        forceJvmWaitAttempts = 0
         forceFrameNotified = false
         forceEnterWatchingFrames = true
         mainHandler.removeCallbacks(forceRenderWatchdog)
+        if (isSdlLaunch) startSdlPresentPoll()
 
-        performForceRenderRebind("forceEnter")
-        // 强制显示触控层，不等待桥 dump 完全就绪。
-        mainHandler.postDelayed({ enableGameInputForced() }, 350L)
-        // 2s 内无新帧 → 再重绑；最多 3 次。
-        mainHandler.postDelayed(forceRenderWatchdog, 2_000L)
+        if (isJvmLikelyReady()) {
+            performForceRenderRebind("forceEnter")
+            mainHandler.postDelayed({ enableGameInputForced() }, 350L)
+            val firstDelay = if (OemLaunchProfile.needsPatientForceRebind()) 3_000L else 2_000L
+            mainHandler.postDelayed(forceRenderWatchdog, firstDelay)
+        } else {
+            appendLog("JVM 可能尚未创建，延后重绑并继续等待出帧…")
+            Toast.makeText(this, R.string.launch_force_wait_jvm, Toast.LENGTH_SHORT).show()
+            mainHandler.postDelayed({ enableGameInputForced() }, 350L)
+            // Wait for CreateJavaVM / main class before the first rebind attempt.
+            mainHandler.postDelayed(forceRenderWatchdog, 5_000L)
+        }
     }
 
     /** Same path as onResume: rebind Surface → setupBridgeWindow → EGL stale → size nudge. */
     private fun performForceRenderRebind(reason: String) {
         val st = binding.surfaceGame.surfaceTexture
-        val w = binding.surfaceGame.width.coerceAtLeast(surfaceWidth).coerceAtLeast(1)
-        val h = binding.surfaceGame.height.coerceAtLeast(surfaceHeight).coerceAtLeast(1)
+        val viewW = binding.surfaceGame.width.coerceAtLeast(surfaceWidth).coerceAtLeast(1)
+        val viewH = binding.surfaceGame.height.coerceAtLeast(surfaceHeight).coerceAtLeast(1)
+        val w = GameSurfaceBridge.bufferWidthOr(
+            if (gameBufferWidth > 1) gameBufferWidth else viewW
+        )
+        val h = GameSurfaceBridge.bufferHeightOr(
+            if (gameBufferHeight > 1) gameBufferHeight else viewH
+        )
         if (st != null && binding.surfaceGame.isAvailable) {
-            bindTextureSurface(st, w, h, "force-rebind-$reason")
+            bindTextureSurface(st, viewW, viewH, "force-rebind-$reason")
         }
         val rebound = runCatching { GameSurfaceBridge.rebindIfPossible() }.getOrDefault(false)
-        // 26.3+ SDL presents via SDLActivity external surface — pojav rebind alone is not enough.
-        if (isSdlLaunch) {
+        if (isSdlLaunch && reason.contains("resume", ignoreCase = true)) {
             val surf = GameSurfaceBridge.currentSurface()
             if (surf != null) {
                 runCatching {
-                    BooxinSdlBootstrap.maybePrepare(this, pendingVersionId, surf, w, h)
-                }.onFailure {
-                    Log.w(TAG, "SDL rebind prepare failed: ${it.message}")
-                    appendLog("SDL 重绑失败: ${it.message}")
+                    BooxinSdlBootstrap.reattachSurface(applicationContext, surf)
+                }.onFailure { err ->
+                    Log.w(TAG, "SDL surface pointer refresh failed: ${err.message}")
                 }
             }
+            startSdlPresentPoll()
         }
         runCatching { GameRuntimeBackends.current().enableInput() }
         runCatching {
@@ -915,6 +1306,7 @@ class LaunchActivity : AppCompatActivity() {
         Log.i(TAG, "hideOverlay percent=$loadingPercent frames=$textureFrameCount")
         updateLoadingUi(100, "进入游戏")
         hideOverlay()
+        if (isSdlLaunch) startSdlPresentPoll()
     }
 
     private fun scheduleOverlayFallbackHide() {
@@ -929,7 +1321,7 @@ class LaunchActivity : AppCompatActivity() {
         overlayHideTimeout = Runnable {
             if (isSdlLaunch && textureFrameCount < 3L) {
                 appendLog(
-                    "SDL：超时仍无 Texture 出帧（可能 EGL→MobileGlues 重定向失败）。" +
+                    "SDL：超时仍无画面呈现（SurfaceView/present=0）。" +
                         "请点「强制进入」或返回重试；勿当已进游戏。"
                 )
                 updateLoadingUi(95, "画面未出帧 — 可强制进入/重试")
@@ -965,6 +1357,18 @@ class LaunchActivity : AppCompatActivity() {
         overlaySoftHide?.let { mainHandler.removeCallbacks(it) }
         overlaySoftHide = Runnable {
             if (overlayHidden) return@Runnable
+            if (isSdlLaunch && textureFrameCount < 3L) {
+                syncSdlPresentFrames()
+                if (textureFrameCount < 3L) {
+                    appendLog("SDL：仍无画面呈现，保持加载遮罩（不强制重绑，避免抢走 SDL EGL）")
+                    updateLoadingUi(92, "等待画面出帧…")
+                    // Do NOT performForceRenderRebind here: setupBridgeWindow/egl attach
+                    // and maybePrepare fight SDL's window surface → frames stay 0.
+                    scheduleSoftHideAfterRender(8_000L)
+                    startSdlPresentPoll()
+                    return@Runnable
+                }
+            }
             appendLog("检测到游戏画面信号，尝试关闭遮罩…")
             updateLoadingUi(100, "进入游戏")
             hideOverlayIfNeeded(force = true, allowWithoutBridge = false)
@@ -977,7 +1381,7 @@ class LaunchActivity : AppCompatActivity() {
             overlaySoftHide = Runnable {
                 if (overlayHidden) return@Runnable
                 if (isSdlLaunch && textureFrameCount < 3L) {
-                    appendLog("SDL：仍无 Texture 出帧，保持加载遮罩（避免假进游戏黑屏）")
+                    appendLog("SDL：仍无画面呈现，保持加载遮罩（避免假进游戏黑屏）")
                     updateLoadingUi(92, "等待画面出帧…")
                     return@Runnable
                 }
@@ -1075,7 +1479,7 @@ class LaunchActivity : AppCompatActivity() {
 
     private fun refreshGestureQuickButton() {
         binding.btnGestureQuick.text = when (binding.touchPad.gestureMode) {
-            GestureMode.BUILD -> getString(R.string.control_gesture_quick_build)
+            GestureMode.COMBINED -> getString(R.string.control_gesture_quick_combined)
             GestureMode.FIGHT -> getString(R.string.control_gesture_quick_fight)
         }
     }
@@ -1085,7 +1489,7 @@ class LaunchActivity : AppCompatActivity() {
         refreshGestureQuickButton()
         if (!toast) return
         val msg = when (mode) {
-            GestureMode.BUILD -> R.string.control_toast_gesture_build
+            GestureMode.COMBINED -> R.string.control_toast_gesture_combined
             GestureMode.FIGHT -> R.string.control_toast_gesture_fight
         }
         Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
@@ -1093,8 +1497,8 @@ class LaunchActivity : AppCompatActivity() {
 
     private fun toggleGestureMode() {
         val next = when (binding.touchPad.gestureMode) {
-            GestureMode.BUILD -> GestureMode.FIGHT
-            GestureMode.FIGHT -> GestureMode.BUILD
+            GestureMode.COMBINED -> GestureMode.FIGHT
+            GestureMode.FIGHT -> GestureMode.COMBINED
         }
         setGestureMode(next)
     }
@@ -1158,34 +1562,75 @@ class LaunchActivity : AppCompatActivity() {
         } else {
             getString(R.string.control_menu_show)
         }
-        val items = arrayOf(
-            getString(R.string.control_menu_gyro),
-            getString(R.string.control_menu_multiplayer),
-            getString(R.string.control_menu_edit),
-            hideLabel,
-            getString(R.string.control_menu_exit)
-        )
+        val layouts = controlLayout.availableLayouts()
+        val hasPanels = layouts.size > 1
+        val items = buildList {
+            add(getString(R.string.control_menu_gyro))
+            add(getString(R.string.control_menu_multiplayer))
+            add(getString(R.string.control_menu_community))
+            if (hasPanels) add(getString(R.string.control_menu_panels))
+            add(getString(R.string.control_menu_edit))
+            add(hideLabel)
+            add(getString(R.string.control_menu_exit))
+        }.toTypedArray()
         AlertDialog.Builder(this)
             .setTitle(R.string.control_menu_title)
             .setItems(items) { _, which ->
-                when (which) {
-                    0 -> showGyroSettingsDialog()
-                    1 -> multiplayerPanel.show()
-                    2 -> {
-                        setControlsVisible(true)
-                        controlLayout.enterEditMode()
-                    }
-                    3 -> setControlsVisible(!controlsVisible)
-                    4 -> returnToLauncher()
+                val actions = mutableListOf<() -> Unit>()
+                actions += { showGyroSettingsDialog() }
+                actions += { multiplayerPanel.show() }
+                actions += { communityPanel.show() }
+                if (hasPanels) actions += { showControlPanelPicker(layouts) }
+                actions += {
+                    setControlsVisible(true)
+                    controlLayout.enterEditMode()
+                }
+                actions += { setControlsVisible(!controlsVisible) }
+                actions += { returnToLauncher() }
+                actions.getOrNull(which)?.invoke()
+            }
+            .show()
+    }
+
+    private fun showControlPanelPicker(
+        layouts: List<com.booxin.launcher.core.uiplugin.UiPluginExtraLayout>
+    ) {
+        val current = controlLayout.currentLayoutId()
+        val labels = layouts.map { panel ->
+            val mark = if (panel.id.equals(current, ignoreCase = true)) " ✓" else ""
+            panel.name + mark
+        }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle(R.string.control_menu_panels)
+            .setItems(labels) { _, which ->
+                val panel = layouts.getOrNull(which) ?: return@setItems
+                if (controlLayout.switchLayout(panel.id)) {
+                    setControlsVisible(true)
+                    Toast.makeText(
+                        this,
+                        getString(R.string.control_panel_switched, panel.name),
+                        Toast.LENGTH_SHORT
+                    ).show()
                 }
             }
+            .setNegativeButton(android.R.string.cancel, null)
             .show()
     }
 
     private fun returnToLauncher() {
         if (isFinishing || isDestroyed) return
         canRetryLaunch = false
+        // Unpublish / leave before killing :game so public rooms are not zombies.
+        // Lease file remains until DELETE succeeds; MainActivity will sweep if this is cut short.
+        runCatching {
+            kotlinx.coroutines.runBlocking(kotlinx.coroutines.Dispatchers.IO) {
+                kotlinx.coroutines.withTimeoutOrNull(2_500L) {
+                    multiplayerPanel.leaveForExit()
+                }
+            }
+        }
         runCatching { multiplayerPanel.dispose() }
+        runCatching { communityPanel.dispose() }
         runCatching { GameLaunchService.stop(this) }
         val intent = Intent(this, com.booxin.launcher.ui.MainActivity::class.java).apply {
             addFlags(
@@ -1195,6 +1640,10 @@ class LaunchActivity : AppCompatActivity() {
             )
         }
         startActivity(intent)
+        if (UiPluginManager.isFeatureEnabled("pageSlideTransitions")) {
+            @Suppress("DEPRECATION")
+            overridePendingTransition(R.anim.slide_in_left, R.anim.slide_out_right)
+        }
         finish()
         mainHandler.postDelayed({
             android.os.Process.killProcess(android.os.Process.myPid())
@@ -1364,7 +1813,8 @@ class LaunchActivity : AppCompatActivity() {
             uuid = pendingUuid,
             accessToken = pendingAccessToken,
             userType = pendingUserType,
-            serverAddress = pendingServerAddress
+            serverAddress = pendingServerAddress,
+            offlineSkinPath = pendingOfflineSkinPath
         )
     }
 
@@ -1407,21 +1857,36 @@ class LaunchActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         if (foreground === this) foreground = null
+        val gameStillRunning = isGameSessionActive()
         overlayHideTimeout?.let { mainHandler.removeCallbacks(it) }
         mainHandler.removeCallbacks(inputArmRunnable)
         mainHandler.removeCallbacks(forceRenderWatchdog)
+        mainHandler.removeCallbacks(resumeRebindWatchdog)
         frameHideRunnable?.let { mainHandler.removeCallbacks(it) }
         frameHideRunnable = null
         forceEnterWatchingFrames = false
         frameHideArmed = false
+        mainHandler.removeCallbacks(sdlPresentPoll)
         BooxinBridge.setGrabListener(null)
         if (::gyroscope.isInitialized) gyroscope.disable()
         if (::controlLayout.isInitialized) {
             controlLayout.releaseAllHolds()
         }
         multiplayerPanel.dispose()
+        communityPanel.dispose()
         binding.joystickMove.releaseKeys()
+        // Detach EGL before dropping the listener — some OEMs skip destroy callback.
+        if (gameStillRunning) {
+            detachGameSurfaceForBackground()
+        }
+        if (isSdlLaunch) {
+            binding.surfaceGameSdl.holder.removeCallback(sdlSurfaceCallback)
+        }
         binding.surfaceGame.surfaceTextureListener = null
+        GameSurfaceBridge.onRenderBufferSizeChanged = null
+        if (!gameStillRunning) {
+            GameSurfaceBridge.clearRenderSizeLock()
+        }
         runCatching { textureSurface?.release() }
         textureSurface = null
         logReceiver?.let { unregisterReceiver(it) }
@@ -1437,6 +1902,8 @@ class LaunchActivity : AppCompatActivity() {
         const val EXTRA_USER_TYPE = "user_type"
         /** EasyTier local forward, e.g. 127.0.0.1:37859 */
         const val EXTRA_SERVER_ADDRESS = "server_address"
+        /** Absolute PNG path for offline skin (cross-process to :game). */
+        const val EXTRA_OFFLINE_SKIN_PATH = "offline_skin_path"
         private const val TAG = "LaunchActivity"
         // GLFW window attribs (standard GLFW numeric values).
         private const val GLFW_FOCUSED = 0x00020001

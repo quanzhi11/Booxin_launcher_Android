@@ -74,6 +74,17 @@ data class LobbyUser(
     val pendingIncomingRequestId: String? = null
 )
 
+data class LobbyPage(
+    val users: List<LobbyUser> = emptyList(),
+    val page: Int = 1,
+    val pageSize: Int = 30,
+    val totalCount: Int = 0,
+    val totalPages: Int = 0
+) {
+    val hasPrevious: Boolean get() = page > 1
+    val hasNext: Boolean get() = totalPages > 0 && page < totalPages
+}
+
 data class SearchUser(
     val id: String,
     val username: String,
@@ -92,6 +103,16 @@ data class ChatMessage(
     val isMine: Boolean,
     val isRevoked: Boolean,
     val canRecall: Boolean
+)
+
+data class LobbyChatMessage(
+    val id: Long,
+    val senderId: String,
+    val senderUsername: String,
+    val senderAvatarUrl: String? = null,
+    val body: String,
+    val sentAtUtc: String?,
+    val isMine: Boolean
 )
 
 data class ChatConversation(
@@ -115,8 +136,18 @@ data class PublicRoom(
     val isPublic: Boolean = true,
     val version: String? = null,
     val modpackUrl: String? = null,
+    val modpackGameVersion: String? = null,
+    val modpackLoader: String? = null,
+    val modsJson: String? = null,
+    val mods: List<RoomModDependency> = emptyList(),
     val status: String? = null
-)
+) {
+    fun resolveMods(): List<RoomModDependency> =
+        when {
+            mods.isNotEmpty() -> mods
+            else -> RoomHostDependencyService.deserializeMods(modsJson)
+        }
+}
 
 data class TerracottaLobbyInfo(
     val roomCode: String,
@@ -155,3 +186,38 @@ data class RewardClaimResult(
     val awarded: Int = 0,
     val profile: RewardProfile? = null
 )
+
+/** Aligns with PC MultiplayerUserDetail / UserDetailDialog. */
+data class BooxinUserDetail(
+    val id: String,
+    val username: String,
+    val avatarUrl: String? = null,
+    val signature: String? = null,
+    val createdAtUtc: String? = null,
+    val presenceStatus: String = "offline",
+    val presenceUpdatedAtUtc: String? = null,
+    val isFriend: Boolean = false,
+    val isBlocked: Boolean = false,
+    val isBlockedBy: Boolean = false,
+    val relationship: String? = null
+) {
+    val presenceStatusText: String
+        get() = when (presenceStatus.lowercase()) {
+            "availabletochat" -> "可聊天"
+            "inroom" -> "在房间"
+            "online" -> "在线"
+            else -> "离线"
+        }
+
+    val statusDisplayText: String
+        get() = if (!presenceStatus.equals("offline", ignoreCase = true)) {
+            presenceStatusText
+        } else {
+            PresenceLastSeenFormatter.formatOfflineStatusText(presenceUpdatedAtUtc)
+        }
+}
+
+object MultiplayerSocialConstants {
+    const val MAX_SIGNATURE_LENGTH = 80
+    val RELATIONSHIP_PRESETS = listOf("好友", "闺蜜", "兄弟", "同学", "同事", "网友")
+}

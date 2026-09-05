@@ -5,16 +5,25 @@ import java.io.File
 import java.util.zip.ZipFile
 
 /**
- * Detects Android-incompatible mods (blacklist + desktop-only natives), disables
- * them by renaming to `*.jar.disabled`, then the caller reloads the mod list.
+ * Detects Android-incompatible mods.
+ *
+ * [Severity.HARD]: must disable — wrong arch natives / desktop-only APIs that always crash.
+ * Soft heavy mods (MTR, Create, …) are NOT blocked here; they get MobileGlues + config
+ * tweaks via [com.booxin.launcher.core.launch.ModCompatPrep] so more packs can run.
  */
 object AndroidIncompatibleMods {
+
+    enum class Severity {
+        /** Always crash on ARM Android — disable before launch. */
+        HARD
+    }
 
     data class Entry(
         val id: String,
         val displayName: String,
         val reason: String,
-        val fileHints: List<String> = listOf(id)
+        val fileHints: List<String> = listOf(id),
+        val severity: Severity = Severity.HARD
     )
 
     data class Match(
@@ -32,6 +41,7 @@ object AndroidIncompatibleMods {
         val changed: Boolean get() = disabled.isNotEmpty()
     }
 
+    /** Only mods that cannot work on ARM Android (wrong .so / glibc / desktop GPU path). */
     val entries: List<Entry> = listOf(
         Entry("axiom", "Axiom", "依赖 x86_64 ImGui，ARM 无法加载"),
         Entry(
@@ -68,7 +78,7 @@ object AndroidIncompatibleMods {
         Entry(
             id = "replaymod",
             displayName = "Replay Mod",
-            reason = "桌面录像/OpenGL 路径，手机不兼容",
+            reason = "桌面录像原生路径，手机端无法加载",
             fileHints = listOf("replaymod", "replay-mod")
         ),
         Entry(
@@ -88,6 +98,18 @@ object AndroidIncompatibleMods {
             displayName = "VulkanMod",
             reason = "桌面 Vulkan 渲染路径，手机启动器 GL 桥不兼容",
             fileHints = listOf("vulkanmod", "vulkan-mod")
+        ),
+        Entry(
+            id = "yes_steve_model",
+            displayName = "Yes Steve Model",
+            reason = "依赖桌面 ImGui/原生库，ARM 上无法加载",
+            fileHints = listOf("yes_steve_model", "yesstevemodel", "ysm-")
+        ),
+        Entry(
+            id = "dynamiclights_reforged",
+            displayName = "Dynamic Lights Reforged (broken natives)",
+            reason = "部分版本含错误架构原生库",
+            fileHints = listOf("dynamiclightsreforged")
         )
     )
 
@@ -166,6 +188,10 @@ object AndroidIncompatibleMods {
                 add("axiom")
                 add("flashback")
                 add("veil")
+                add("yes_steve_model")
+            }
+            if ("libm.so.6" in lower || "glibc" in lower) {
+                add("voicechat")
             }
             for (entry in entries) {
                 if (entry.id in lower || entry.fileHints.any { it in lower }) {

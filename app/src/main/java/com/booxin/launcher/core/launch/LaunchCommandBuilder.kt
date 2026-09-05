@@ -1,7 +1,6 @@
 package com.booxin.launcher.core.launch
 
 import android.content.Context
-import android.os.Build
 import com.booxin.launcher.BuildConfig
 import com.booxin.launcher.core.LauncherPaths
 import com.booxin.launcher.core.download.game.GameJsonParser
@@ -51,6 +50,11 @@ data class LaunchCommand(
             appendLine("cwd=${workingDir.absolutePath}")
             appendLine("main=$mainClass")
             appendLine("cp=${classpath.size} jars")
+            if (classpath.size <= 16) {
+                appendLine(
+                    "cpJars=${classpath.joinToString(",") { it.name }}"
+                )
+            }
             if (classpath.size == 1 && classpath[0].name.contains("classpath", ignoreCase = true)) {
                 appendLine("classpathJar=${classpath[0].absolutePath}")
             }
@@ -78,6 +82,8 @@ data class LaunchCommand(
             // Fabric/Quilt 通常无 module-path。
             appendLine("modulePath=${modulePath?.let { "yes (${it.split(File.pathSeparator).size} entries)" } ?: "n/a"}")
             appendLine("ignoreList=${jvmArgs.firstOrNull { it.startsWith("-DignoreList=") } ?: "default"}")
+            val agent = jvmArgs.firstOrNull { it.startsWith("-javaagent:") }
+            appendLine("javaagent=${agent?.substringBefore('=')?.plus("=…") ?: "none"}")
             appendLine("game=${gameArgs.joinToString(" ")}")
         }
     }
@@ -102,7 +108,15 @@ class LaunchCommandBuilder(
         uuid: String? = null,
         accessToken: String? = null,
         userType: String? = null,
-        serverAddress: String? = null
+        serverAddress: String? = null,
+        /** Optional -javaagent:... for vanilla offline skins (authlib-injector). */
+        javaAgentArg: String? = null,
+        /** HMCL/FCL-compatible auth when [javaAgentArg] is set. */
+        offlineSkinAccessToken: String? = null,
+        offlineSkinUserType: String? = null,
+        offlineSkinExtraJvmArgs: List<String> = emptyList(),
+        /** When set, overrides launcher prefs for EGL FORCE_VSYNC. */
+        forceVsync: Boolean? = null
     ): LaunchCommand {
         val versionRoot = File(LauncherPaths.versionsDir, versionId)
         val jsonFile = File(versionRoot, "$versionId.json")
@@ -136,6 +150,10 @@ class LaunchCommandBuilder(
                 modProfile.fallback
             }
         )
+        if (renderer == GlRendererKind.REL) {
+            // Optional: re-extract from adb-pushed APK for QA; bundled librel.so is default.
+            com.booxin.launcher.core.runtime.RendererInstaller.refreshRelFromSideloadIfPresent()
+        }
         // Max compat / Path A: heavy → Zink; then ANGLE; then MobileGlues (LGPL) if still needed.
         if (renderer == GlRendererKind.BOOXIN_GLUES && modProfile.isHeavyGl) {
             if (!com.booxin.launcher.core.runtime.RendererInstaller.isInstalled(GlRendererKind.VULKAN_ZINK)) {
@@ -204,16 +222,43 @@ class LaunchCommandBuilder(
                 "pathA=${pathA?.engine} profile=${modProfile.profileId} " +
                 "matched=${modProfile.matchedMods.take(8)}"
         )
-        val androidLwjgl = AndroidGameRuntime.lwjglJar()
+        val androidLwjgl = AndroidGameRuntime.lwjglJarForJava(java.majorVersion)
         require(androidLwjgl.isFile) {
-            "缺少 Android LWJGL: ${androidLwjgl.absolutePath}"
+            val hint = if (MinecraftJavaRequirement.needsJava8Lwjgl(java.majorVersion)) {
+                "lwjgl-java8.jar"
+            } else {
+                "lwjgl.jar"
+            }
+            "缺少 Android LWJGL ($hint): ${androidLwjgl.absolutePath}"
+        }
+        if (MinecraftJavaRequirement.needsJava8Lwjgl(java.majorVersion)) {
+            android.util.Log.i(
+                "LaunchCmd",
+                "Java ${java.majorVersion} → LWJGL java8 jar (${androidLwjgl.name})"
+            )
         }
 
         val isForgeOrLoader = VersionJsonMerger.isModLoaderVersion(versionId)
         val needsSdl = MinecraftJavaRequirement.usesSdlWindowing(mcVersionId)
+        // Peek mainClass early for legacy LWJGL2 / AWT Frame path (b1.8.1 etc.).
+        val legacyLwjgl = MinecraftJavaRequirement.usesLegacyLwjglWindowing(mcVersionId, mainClass)
 
         val classpath = linkedSetOf<File>()
         val missingLibs = mutableListOf<String>()
+        // Pre-1.13: Cacio goes on -Xbootclasspath/p (not regular -cp) — see jvmArgsWithAwt.
+        val cacioBootJars = if (legacyLwjgl) {
+            val cacio = AndroidGameRuntime.cacioBootJars()
+            require(cacio.isNotEmpty()) {
+                "远古版需要 Cacio AWT: ${AndroidGameRuntime.cacioDir().absolutePath}"
+            }
+            android.util.Log.i(
+                "LaunchCmd",
+                "legacy LWJGL2/AWT → Cacio bootclasspath/p jars=${cacio.joinToString { it.name }}"
+            )
+            cacio
+        } else {
+            emptyList()
+        }
         // SDL (26.3+): thin 3.4 baseline JNI.class first (native invokePZ(IJJ)Z…).
         // Fat Android lwjgl.jar is 3.3.x and lacks those overloads → NoSuchMethodError.
         // Do NOT prepend full lwjgl-core-3.4 (Java25 FFM multi-release).
@@ -257,11 +302,36 @@ class LaunchCommandBuilder(
             }
         }
         classpath += jarFile
-        val existingClasspath = classpath.filter { it.isFile && it.length() > 0L }
+        var existingClasspath = classpath.filter { it.isFile && it.length() > 0L }
         val jnaBootPath = AndroidGameRuntime.jnaBootLibraryPath(jnaJarVersion)
         require(existingClasspath.isNotEmpty()) { "classpath 为空，缺少可用 jar" }
         require(jarFile.isFile && jarFile.length() > 0L) {
             "缺少客户端 jar（Fabric/Forge 需继承原版 jar）: ${jarFile.absolutePath}"
+        }
+
+        val isForgeBootstrap = ForgeBootstrapClasspathHelper.isForgeBootstrapMainClass(mainClass)
+        if (isForgeBootstrap) {
+            // Modern Forge (1.20.3+ / 1.21 / 26.x): curated -cp from shim + forge-client.
+            // Dumping all libraries breaks JPMS → Optional.get No value present (Huawei).
+            val curated = ForgeBootstrapClasspathHelper.buildClasspath(
+                libraries = resolvedLibraries,
+                versionId = versionId
+            ) ?: error(
+                "ForgeBootstrap 启动失败：缺少 shim/client 库。请重新安装对应 Forge 版本后再试。"
+            )
+            val prefix = existingClasspath.filter { file ->
+                val n = file.name.lowercase(Locale.US)
+                n.contains("lwjgl") || n.contains("sdl") || n.contains("jni") ||
+                    n.contains("booxin") || file.absolutePath.contains("android-lwjgl", true)
+            }
+            existingClasspath = (prefix + curated).distinctBy { file ->
+                runCatching { file.canonicalPath }.getOrElse { file.absolutePath }
+            }
+            android.util.Log.i(
+                "LaunchCmd",
+                "ForgeBootstrap curated -cp: prefix=${prefix.size} curated=${curated.size} " +
+                    "total=${existingClasspath.size}"
+            )
         }
         // Fabric Knot fails with "couldn't locate the game" when deps are incomplete.
         if (missingLibs.isNotEmpty()) {
@@ -283,9 +353,14 @@ class LaunchCommandBuilder(
         val assetsDir = LauncherPaths.assetsDir
         val resolvedUuid = uuid?.replace("-", "")?.ifBlank { null }
             ?: OfflineAuth.uuidNoDash(username)
-        // 离线/空 token 用 legacy。
-        val resolvedToken = accessToken?.ifBlank { null } ?: "0"
+        val skinAuthActive = !javaAgentArg.isNullOrBlank()
+        // Plain offline → legacy + token 0; authlib-injector skin → msa + random token (HMCL/FCL).
+        val resolvedToken = when {
+            skinAuthActive && !offlineSkinAccessToken.isNullOrBlank() -> offlineSkinAccessToken
+            else -> accessToken?.ifBlank { null } ?: "0"
+        }
         val resolvedUserType = when {
+            skinAuthActive && !offlineSkinUserType.isNullOrBlank() -> offlineSkinUserType
             resolvedToken == "0" -> "legacy"
             !userType.isNullOrBlank() -> userType
             else -> "msa"
@@ -304,7 +379,8 @@ class LaunchCommandBuilder(
             // Shown in title / F3 as brand; Create etc. also surface this string.
             "version_type" to LAUNCHER_BRAND,
             "user_properties" to userProperties,
-            "auth_session" to resolvedToken,
+            // Legacy ${auth_session}: offline clients expect "-" (not "0").
+            "auth_session" to if (resolvedToken == "0") "-" else resolvedToken,
             "game_assets" to File(assetsDir, "virtual/$assetIndexId").absolutePath,
             "natives_directory" to AndroidGameRuntime.nativesDir().absolutePath,
             "launcher_name" to LAUNCHER_BRAND,
@@ -318,21 +394,28 @@ class LaunchCommandBuilder(
             // Forge ignoreList may reference ${primary_jar_name} so vanilla jar
             // is not turned into a second JPMS module next to forge-*-client.jar.
             "primary_jar_name" to jarFile.name,
-            "language" to Locale.getDefault().toString()
+            "language" to "zh_cn"
         )
 
         val isKnotLoader = isKnotMainClass(mainClass)
         val isOptiFine = isOptiFineVersion(versionId, mainClass, root)
         val isBootstrap = usesBootstrapLauncher(mainClass)
-        // vivo/iQOO only: shrink -cp so JNI_CreateJavaVM does not stall.
-        // Forge → bootstrap jar + legacyClassPath.file; others → one classpath.jar.
-        // Other OEMs keep full -cp. Never enable -Dbsl.debug.
+        // Shrink -cp on sensitive OEMs (vivo / Huawei HarmonyOS).
+        // Do NOT use classpath.jar for Fabric/Quilt Knot: Manifest Class-Path
+        // loads fabric-loader into AppClassLoader and Knot then crashes with
+        // "trying to load FabricLoaderImpl from target class loader".
+        // ForgeBootstrap already has a curated -cp — do not collapse/shorten further.
         val useForgeShortCp =
-            isBootstrap && isForgeOrLoader && OemLaunchProfile.needsForgeShortClasspath()
+            !isForgeBootstrap &&
+                isBootstrap &&
+                isForgeOrLoader &&
+                OemLaunchProfile.needsForgeShortClasspath()
         val useClasspathJar =
-            !useForgeShortCp &&
-                OemLaunchProfile.needsClasspathJar() &&
-                existingClasspath.size >= 8
+            !isForgeBootstrap &&
+                !useForgeShortCp &&
+                !isKnotLoader &&
+                existingClasspath.size >= 8 &&
+                OemLaunchProfile.needsClasspathJar()
         val launchClasspath: List<File>
         val forgeLegacyClasspathFile: File?
         if (useForgeShortCp) {
@@ -345,7 +428,7 @@ class LaunchCommandBuilder(
             }
             android.util.Log.i(
                 "LaunchCmd",
-                "vivo-family Forge short -cp: device=${OemLaunchProfile.describe()} " +
+                "OEM Forge short -cp: device=${OemLaunchProfile.describe()} " +
                     "bootJars=${launchClasspath.size} legacyLines=${existingClasspath.size}"
             )
         } else if (useClasspathJar) {
@@ -355,12 +438,19 @@ class LaunchCommandBuilder(
             forgeLegacyClasspathFile = null
             android.util.Log.i(
                 "LaunchCmd",
-                "vivo-family classpath.jar: device=${OemLaunchProfile.describe()} " +
+                "OEM classpath.jar: device=${OemLaunchProfile.describe()} " +
                     "entries=${existingClasspath.size} jar=${cpJar.absolutePath}"
             )
         } else {
             launchClasspath = existingClasspath
             forgeLegacyClasspathFile = null
+            if (isKnotLoader) {
+                android.util.Log.i(
+                    "LaunchCmd",
+                    "Knot full -cp: jars=${existingClasspath.size} " +
+                        "(classpath.jar skipped — Fabric loader isolation)"
+                )
+            }
         }
         val launchClasspathString =
             launchClasspath.joinToString(File.pathSeparator) { it.absolutePath }
@@ -431,13 +521,45 @@ class LaunchCommandBuilder(
             )
         }
 
-        val gameArgs = forceVersionType(buildGameArgs(root, tokens), LAUNCHER_BRAND)
+        val jvmArgsWithAwt = if (legacyLwjgl) {
+            // Match Pojav Tools.getCacioJavaArgs(java8=true): properties + bootclasspath/p.
+            val boot = cacioBootJars.joinToString(File.pathSeparator) { it.absolutePath }
+            jvmArgs + listOf(
+                "-Djava.awt.headless=false",
+                "-Dcacio.managed.screensize=${windowWidth}x${windowHeight}",
+                "-Dcacio.font.fontmanager=sun.awt.X11FontManager",
+                "-Dcacio.font.fontscaler=sun.font.FreetypeFontScaler",
+                "-Dswing.defaultlaf=javax.swing.plaf.metal.MetalLookAndFeel",
+                "-Dawt.toolkit=net.java.openjdk.cacio.ctc.CTCToolkit",
+                "-Djava.awt.graphicsenv=net.java.openjdk.cacio.ctc.CTCGraphicsEnvironment",
+                "-Xbootclasspath/p:$boot"
+            )
+        } else {
+            jvmArgs
+        }
+
+        val rawGameArgs = buildGameArgs(root, tokens)
+        // LaunchWrapper 1.5 OptionParser only knows gameDir/assetsDir/tweakClass/version —
+        // injecting --versionType throws UnrecognizedOptionException ("Unable to launch").
+        val gameArgs = forceVersionType(rawGameArgs, LAUNCHER_BRAND, root)
             .let { appendServerArgs(it, serverAddress, mcVersionId) }
 
         val stagedNativesDir = AndroidGameRuntime.nativesDir()
         val stagedNatives = stagedNativesDir.absolutePath
         val glLib = RuntimeEnv.glLibraryFile(stagedNativesDir, glKind)
         require(glLib.isFile) { "缺少渲染库: ${glLib.absolutePath}" }
+        // REL: host EGL = system. MG (FCL-compat): LIBGL_EGL = libmobileglues itself.
+        val libGlEgl = when {
+            glKind == GlRendererKind.REL -> "libEGL.so"
+            glKind == GlRendererKind.MOBILE_GLUES -> glLib.absolutePath
+            eglOverride != null -> eglOverride
+            else -> RuntimeEnv.eglLib(glKind)
+        }
+        val bridgeEgl = when {
+            glKind == GlRendererKind.REL || glKind == GlRendererKind.MOBILE_GLUES ->
+                glLib.absolutePath
+            else -> libGlEgl
+        }
         val pluginDir = com.booxin.launcher.core.runtime.RendererInstaller.pluginNativeDir(glKind)
         val libraryPath = buildLibraryPath(
             java.homeDir,
@@ -452,13 +574,16 @@ class LaunchCommandBuilder(
             "LD_LIBRARY_PATH" to libraryPath,
             "LIBGL_ES" to RuntimeEnv.libGlEs(glKind),
             "LIBGL_NAME" to glLib.absolutePath,
-            "LIBGL_STRING" to RuntimeEnv.libGlString(renderer),
-            "LIBGL_EGL" to (eglOverride ?: RuntimeEnv.eglLib(glKind)),
+            // Use effective glKind (Path A may stage MobileGlues under BooxinGlues).
+            "LIBGL_STRING" to RuntimeEnv.libGlString(glKind),
+            "LIBGL_EGL" to libGlEgl,
             "LIBGL_NOERROR" to "1",
             "LIBGL_MIPMAP" to "3",
             "LIBGL_NOINTOVLHACK" to "1",
             "LIBGL_NORMALIZE" to "1",
-            "FORCE_VSYNC" to "false",
+            "FORCE_VSYNC" to BooxinLaunchTune.forceVsyncEnv(
+                forceVsync ?: com.booxin.launcher.core.LauncherPrefs.enableVsync()
+            ),
             "AWTSTUB_WIDTH" to windowWidth.toString(),
             "AWTSTUB_HEIGHT" to windowHeight.toString(),
             "MESA_GLSL_CACHE_DIR" to context.cacheDir.absolutePath
@@ -466,11 +591,25 @@ class LaunchCommandBuilder(
         com.booxin.launcher.core.runtime.BooxinGluesEnv.apply(
             env = envBase,
             context = context,
-            kind = renderer,
+            kind = glKind,
             profile = modProfile,
-            resolved = pathA
+            resolved = pathA,
+            mcVersionId = mcVersionId
         )
         RuntimeEnv.pluginExtraEnv(glKind).forEach { (k, v) -> envBase[k] = v }
+        if (glKind == GlRendererKind.MOBILE_GLUES) {
+            // Match FCL/Zalith: LIBGL_EGL=POJAVEXEC_EGL=libmobileglues.so
+            envBase["LIBGL_EGL"] = glLib.absolutePath
+        }
+        if (glKind == GlRendererKind.MCRENDER) {
+            // Writable caches used by libmcrender (shader dump / disk cache).
+            val mcCache = File(context.cacheDir, "mcrender").also { it.mkdirs() }
+            envBase.putIfAbsent("MCRENDER_CACHE_DIR", mcCache.absolutePath)
+            envBase.putIfAbsent("MCRENDER_SHADER_DUMP_DIR", mcCache.absolutePath)
+            // Same soname the bridge uses — avoid a second libEGL mapping.
+            envBase["LIBGL_EGL"] = "libEGL.so"
+            com.booxin.launcher.core.runtime.McRenderConfig.ensureForLaunch(context, glKind)
+        }
         if (MinecraftJavaRequirement.usesSdlWindowing(mcVersionId)) {
             envBase["BOOXIN_WINDOWING"] = "sdl"
             val sdl3 = File(stagedNativesDir, "libSDL3.so")
@@ -484,28 +623,49 @@ class LaunchCommandBuilder(
             envBase["SDL_OPENGL_ES_DRIVER"] = "1"
             envBase["SDL_VIDEO_FORCE_EGL"] = "1"
             envBase["SDL_OPENGL_LIBRARY"] = glLib.absolutePath
-            envBase["SDL_EGL_LIBRARY"] = glLib.absolutePath
+            envBase["SDL_EGL_LIBRARY"] = if (glKind == GlRendererKind.REL) glLib.absolutePath else libGlEgl
             // Help SDL Android find the app (official zlib path; still no SDLActivity yet).
             envBase["SDL_ANDROID_APK_EXPANSION_MAIN_FILE_VERSION"] = "1"
+        }
+        if (legacyLwjgl) {
+            // LWJGL2 Display path — GLFW.<clinit> is unnecessary and can fail on Java 8.
+            envBase["BOOXIN_SKIP_GLFW_PREINIT"] = "1"
         }
         val env = RuntimeEnv.withNativeAliases(
             envBase,
             stagedNatives,
             glKind,
-            eglOverride = eglOverride
-        )
+            eglOverride = bridgeEgl
+        ).toMutableMap()
+        if (legacyLwjgl) {
+            // lwjglx mglfwCreateWindow: getenv("POJAV_RENDERER").equals(...) — null → NPE.
+            // Set AFTER withNativeAliases (which intentionally omits POJAV_RENDERER for modern).
+            val token = env[RuntimeEnv.RENDERER] ?: RuntimeEnv.rendererToken(glKind)
+            env[RuntimeEnv.LEGACY_POJAV_RENDERER] =
+                if (token.contains("opengles3_rel")) "opengles3" else token
+        }
 
         val injectorArg = InjectorMapResolver.resolveArg(context, versionId, mcVersionId)
-        val finalJvmArgs = if (injectorArg.isNullOrBlank()) {
-            jvmArgs
+        var finalJvmArgs = if (injectorArg.isNullOrBlank()) {
+            jvmArgsWithAwt
         } else {
-            jvmArgs + "-Dbooxin.injector=$injectorArg"
+            jvmArgsWithAwt + "-Dbooxin.injector=$injectorArg"
+        }
+        // javaagent must be a VM option early; enables vanilla offline skins.
+        val agent = javaAgentArg?.takeIf { it.startsWith("-javaagent:") }
+        if (!agent.isNullOrBlank()) {
+            finalJvmArgs = listOf(agent) + offlineSkinExtraJvmArgs + finalJvmArgs
         }
 
         return LaunchCommand(
             javaBinary = java.javaBinary,
             javaHome = java.homeDir,
-            workingDir = gameDir,
+            // ForgeBootstrap shim resolves libraries/ relative to process cwd.
+            workingDir = if (isForgeBootstrap) {
+                ForgeBootstrapClasspathHelper.resolveLibrariesRoot()
+            } else {
+                gameDir
+            },
             jvmArgs = finalJvmArgs,
             mainClass = mainClass,
             gameArgs = gameArgs,
@@ -552,14 +712,14 @@ class LaunchCommandBuilder(
         if (installed.isSuccess) return requested
         val err = installed.exceptionOrNull()?.message ?: "unknown"
         val chain = (profileFallback + listOf(
-            GlRendererKind.BOOXIN_GLUES,
             GlRendererKind.MOBILE_GLUES,
+            GlRendererKind.BOOXIN_GLUES,
             GlRendererProfile.forVersion(mcVersionId)
         )).distinct()
         val fallback = chain.firstOrNull { candidate ->
             !candidate.requiresPlugin ||
                 com.booxin.launcher.core.runtime.RendererInstaller.isInstalled(candidate)
-        } ?: GlRendererKind.BOOXIN_GLUES
+        } ?: GlRendererKind.MOBILE_GLUES
         android.util.Log.w(
             "LaunchCmd",
             "渲染器 ${requested.displayName} 下载失败，回退 ${fallback.displayName}: $err"
@@ -624,6 +784,13 @@ class LaunchCommandBuilder(
         if (parts.size < 3) return null
         val groupPath = parts[0].replace('.', '/')
         val artifact = parts[1]
+        val version = parts[2]
+        val exactDir = File(LauncherPaths.librariesDir, "$groupPath/$artifact/$version")
+        if (exactDir.isDirectory) {
+            exactDir.listFiles()
+                ?.firstOrNull { it.isFile && it.extension == "jar" && it.length() > 0L }
+                ?.let { return it }
+        }
         val dir = File(LauncherPaths.librariesDir, "$groupPath/$artifact")
         if (!dir.isDirectory) return null
         return dir.walkTopDown()
@@ -648,7 +815,9 @@ class LaunchCommandBuilder(
             if (!LibraryFilter.shouldKeep(name)) continue
             // earlydisplay opens a second GLFW window and races our Surface → crash.
             // Progress is shown on the Android loading overlay instead.
-            if (isForgeOrLoader && name.contains("fmlearlydisplay", ignoreCase = true)) continue
+            // Forge: net.minecraftforge:fmlearlydisplay:…
+            // NeoForge: net.neoforged.fml:earlydisplay:… (takeOverGlfwWindow NPE on stub)
+            if (isForgeOrLoader && isEarlyDisplayLibrary(name)) continue
             val artifact = lib.optJSONObject("downloads")?.optJSONObject("artifact")
             if (artifact == null && lib.has("natives")) continue
             if (!rulesAllow(lib.optJSONArray("rules"))) continue
@@ -718,12 +887,17 @@ class LaunchCommandBuilder(
             // Point Knot at the real vanilla client jar (often parent of fabric-* id).
             add("-Dfabric.gameJarPath=${jarFile.absolutePath}")
             add("-Dloader.gameJarPath=${jarFile.absolutePath}")
-            // Fabric props
+            // Fabric props — keep Android LWJGL on system classloader.
             add("-Dfabric.systemLibraries=${androidLwjgl.absolutePath}")
             add("-Dfabric.noGui=true")
             // Quilt props (Fabric ignores unknown loader.* keys)
             add("-Dloader.systemLibraries=${androidLwjgl.absolutePath}")
             add("-Dloader.noGui=true")
+            // Help more mods: don't bail on "unknown" OS; allow Mixin remapping verbosity off.
+            add("-Dmixin.env.remapRefMap=true")
+            add("-Dfabric.log.disableAnsi=true")
+            add("-Dorg.lwjgl.util.DebugLoader=false")
+            add("-Dorg.lwjgl.glfw.checkThread0=false")
         }
     }
 
@@ -845,7 +1019,10 @@ class LaunchCommandBuilder(
                 )
             }
             addAll(patchIgnoreList(versionJvm, ignoreExtras))
-            // BootstrapLauncher needs this on Java 9+.
+            // cpw BootstrapLauncher (Forge 1.17–1.20.2) needs this on Java 9+.
+            // Do NOT invent exports for net.minecraftforge.bootstrap.ForgeBootstrap —
+            // that named module is loaded from -cp via SecureJar and bad --add-exports
+            // break boot-layer resolution on some devices (Huawei).
             if (javaMajor != 8 && usesBootstrapLauncher(mainClass)) {
                 add("--add-exports")
                 add("cpw.mods.bootstraplauncher/cpw.mods.bootstraplauncher=ALL-UNNAMED")
@@ -854,6 +1031,10 @@ class LaunchCommandBuilder(
             // but that module is not visible to unnamed bootstrap code until -p is applied.
             if (javaMajor >= 9) {
                 addAll(forgeUnnamedModuleOpens())
+            }
+            // Drop JVM flags that crash older Android JREs (e.g. Java 21 vs CompactObjectHeaders).
+            if (javaMajor < 24) {
+                removeAll { it.contains("UseCompactObjectHeaders") }
             }
         }
     }
@@ -925,6 +1106,8 @@ class LaunchCommandBuilder(
             add("-Djava.security.egd=file:/dev/./urandom")
             add("-Dsecurerandom.source=file:/dev/urandom")
             add("-XX:ActiveProcessorCount=${Runtime.getRuntime().availableProcessors()}")
+            // Booxin launch tune: G1 + short pause goals (no mods).
+            addAll(BooxinLaunchTune.jvmPerformanceArgs(maxMemoryMb))
             if (javaMajor >= 17) {
                 add("--enable-native-access=ALL-UNNAMED")
             }
@@ -957,10 +1140,13 @@ class LaunchCommandBuilder(
             }
             add("-Djava.io.tmpdir=${context.cacheDir.absolutePath}")
             add("-Dos.name=Linux")
-            add("-Dos.version=Android-${Build.VERSION.RELEASE}")
+            // Linux-like version: avoid advertising "Android-*" to mods that
+            // fingerprint the JVM. POJAV_RENDERER is also withheld from Java getenv
+            // (Create brands it as PojavLauncher); LWJGL reads BOOXIN_RENDERER.
+            add("-Dos.version=5.10.0-booxin")
             add("-Duser.home=${gameDir.absolutePath}")
-            add("-Duser.language=${Locale.getDefault().language}")
-            add("-Duser.country=${Locale.getDefault().country}")
+            add("-Duser.language=zh")
+            add("-Duser.country=CN")
             add("-Duser.timezone=${TimeZone.getDefault().id}")
             add("-Djdk.lang.Process.launchMechanism=FORK")
             add("-Dglfwstub.windowWidth=$windowWidth")
@@ -969,10 +1155,10 @@ class LaunchCommandBuilder(
             add("-Djava.library.path=$nativeDir")
             add("-Dorg.lwjgl.librarypath=$nativeDir")
             add("-Dorg.lwjgl.opengl.libname=$glLibName")
-            // Android LWJGL GLFW$Functions resolves pojav* from the GLFW SharedLibrary.
+            // Android LWJGL GLFW$Functions resolves bridge symbols from the GLFW SharedLibrary.
             // Point it at our bridge so Forge/module-layer loads don't fall back to X11.
-            val glfwBridge = File(nativeDir, "libpojavexec.so").takeIf { it.isFile }
-                ?: File(nativeDir, "libbooxin_bridge.so")
+            val glfwBridge = File(nativeDir, "libbooxin_bridge.so").takeIf { it.isFile }
+                ?: File(nativeDir, "libpojavexec.so")
             if (glfwBridge.isFile) {
                 add("-Dorg.lwjgl.glfw.libname=${glfwBridge.absolutePath}")
             }
@@ -1067,6 +1253,39 @@ class LaunchCommandBuilder(
             val config = File(gameDir, "config")
             if (!config.isDirectory) config.mkdirs()
             File(config, "splash.properties").writeText("enabled=false")
+            // NeoForge/FML 10+ ignores -Dfml.earlyWindowControl; it reads config/fml.toml.
+            // Leaving earlyWindowControl=true loads earlydisplay → takeOverGlfwWindow NPE
+            // on Android GLFW stubs (glfwSetWindowSizeCallback returns null).
+            ensureEarlyWindowDisabled(File(config, "fml.toml"))
+        }
+    }
+
+    /** Forge/NeoForge early loading screen JARs — unsafe on Android GLFW stubs. */
+    private fun isEarlyDisplayLibrary(name: String): Boolean {
+        val n = name.lowercase()
+        if ("fmlearlydisplay" in n) return true
+        val parts = n.substringBefore('@').split(':')
+        val artifact = parts.getOrNull(1).orEmpty()
+        return artifact == "earlydisplay"
+    }
+
+    /**
+     * Force `earlyWindowControl=false` in FML's NightConfig file.
+     * System properties alone do not disable NeoForge ImmediateWindowProvider.
+     */
+    private fun ensureEarlyWindowDisabled(fmlToml: File) {
+        val existing = if (fmlToml.isFile) fmlToml.readText() else ""
+        val key = Regex("""(?m)^\s*earlyWindowControl\s*=\s*\S+""")
+        val updated = when {
+            key.containsMatchIn(existing) ->
+                key.replace(existing, "earlyWindowControl=false")
+            existing.isBlank() ->
+                "earlyWindowControl=false\n"
+            else ->
+                existing.trimEnd() + "\nearlyWindowControl=false\n"
+        }
+        if (updated != existing) {
+            fmlToml.writeText(updated)
         }
     }
 
@@ -1118,12 +1337,21 @@ class LaunchCommandBuilder(
         )
     }
 
-    private fun forceVersionType(args: List<String>, brand: String): List<String> {
+    private fun forceVersionType(
+        args: List<String>,
+        brand: String,
+        root: JSONObject
+    ): List<String> {
         val out = args.toMutableList()
         val idx = out.indexOf("--versionType")
         if (idx >= 0 && idx + 1 < out.size) {
             out[idx + 1] = brand
-        } else {
+            return out
+        }
+        // Modern clients (arguments.game) accept --versionType; legacy minecraftArguments
+        // + LaunchWrapper 1.5 do not — leave args untouched.
+        val hasModernGameArgs = root.optJSONObject("arguments")?.optJSONArray("game") != null
+        if (hasModernGameArgs) {
             out += listOf("--versionType", brand)
         }
         return out

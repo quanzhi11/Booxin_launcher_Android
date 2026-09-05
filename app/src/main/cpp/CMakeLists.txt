@@ -28,6 +28,7 @@ add_library(
     booxin_bridge/booxin_jni.c
     booxin_bridge/booxin_lwjgl_jni_shim.c
     booxin_bridge/booxin_sdl_gl_hook.c
+    booxin_bridge/booxin_api_aliases.c
 )
 
 target_include_directories(booxin_bridge PRIVATE booxin_bridge)

@@ -52,6 +52,47 @@ object RendererPackages {
             disguiseAsGl4es = true
         ),
         RendererPackage(
+            id = "rel",
+            kind = GlRendererKind.REL,
+            // Bundled in APK jniLibs; URL kept for optional QA sideload refresh only.
+            downloadUrl =
+                "https://github.com/Layer-MC-Team/Layer-MC-Team-REL/releases/download/v1.0.0/RELv1.0.0.apk",
+            glLib = "librel.so",
+            eglLib = "librel.so",
+            rendererToken = "opengles3_rel",
+            libGlEs = "3",
+            disguiseAsGl4es = true,
+            extraEnv = mapOf(
+                "MESA_NO_ERROR" to "1",
+                // Prefer single-thread GL on Adreno: less texture upload races at world join.
+                "MESA_GLTHREAD" to "false",
+                "REL_ENABLE_TIMER_QUERY" to "0",
+                "REL_DEBUG" to "0",
+                // Prefer glBufferData path over EXT_buffer_storage (lower peak VRAM on some Adreno).
+                "REL_HIDE_BUFFER_STORAGE" to "1",
+                // Default FSR scale remaps FBO0 and clips phone GUI — keep off; we scale window instead.
+                "REL_FSR_ENABLE" to "0"
+            )
+        ),
+        RendererPackage(
+            id = "mcrender",
+            kind = GlRendererKind.MCRENDER,
+            // Bundled arm64 libmcrender.so; asset APK kept for import / sideload refresh.
+            downloadUrl = "asset://app_runtime/renderers/mcrender.apk",
+            glLib = "libmcrender.so",
+            eglLib = "libEGL.so",
+            // Must load as libmcrender.so (not disguised gl4es): MCrender self-promote
+            // via dladdr fails when the soname is rewritten, leaving glGetString null.
+            rendererToken = "opengles3",
+            libGlEs = "3",
+            disguiseAsGl4es = false,
+            extraEnv = mapOf(
+                "LIBGL_MIPMAP" to "3",
+                "LIBGL_NORMALIZE" to "1",
+                "LIBGL_NOERROR" to "1"
+            )
+        ),
+        RendererPackage(
             id = "zink",
             kind = GlRendererKind.VULKAN_ZINK,
             downloadUrl = "$RENDERER_PLUGIN_BASE/Zink.Mesa25.apk",
@@ -119,10 +160,15 @@ object RendererPackages {
     fun forKind(kind: GlRendererKind): RendererPackage? = all.firstOrNull { it.kind == kind }
 
     /**
-     * Built-ins first (MobileGlues, then GL4ES), then downloadable plugins.
-     * BooxinGlues is not listed in the manual picker.
+     * Built-ins first (MobileGlues, REL, GL4ES), then downloadable plugins.
+     * BooxinGlues is not listed in the manual picker. REL metadata stays in [all]
+     * for env/token defaults but is not offered as a downloadable plugin.
      */
     fun selectableKinds(): List<GlRendererKind> =
-        listOf(GlRendererKind.MOBILE_GLUES, GlRendererKind.GL4ES) +
-            all.map { it.kind }
+        listOf(
+            GlRendererKind.MOBILE_GLUES,
+            GlRendererKind.MCRENDER,
+            GlRendererKind.REL,
+            GlRendererKind.GL4ES
+        ) + all.map { it.kind }.filter { it.requiresPlugin }
 }

@@ -39,6 +39,7 @@ class LogcatTailer(
                     "BooxinJvm:I",
                     "BooxinInput:I",
                     "BooxinBridge:I",
+                    "BooxinEGL:I",
                     "LaunchActivity:I",
                     "GameLaunchService:I",
                     "AndroidRuntime:E",

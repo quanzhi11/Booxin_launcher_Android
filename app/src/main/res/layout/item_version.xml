@@ -44,7 +44,7 @@
         android:paddingVertical="4dp"
         android:textColor="@color/white"
         android:textSize="11sp"
-        tools:text="release" />
+            tools:text="正式版" />
 
     <com.google.android.material.button.MaterialButton
         android:id="@+id/buttonManageVersion"

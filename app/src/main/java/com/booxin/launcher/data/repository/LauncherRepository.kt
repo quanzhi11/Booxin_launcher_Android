@@ -430,7 +430,11 @@ class LauncherRepository(
                                 ?: com.booxin.launcher.core.skin.OfflineSkinStore
                                     .skinFile(o.getString("id"))
                                     .takeIf { it.isFile }
-                                    ?.absolutePath
+                                    ?.absolutePath,
+                            skinMode = o.optString("skinMode").ifBlank { null },
+                            skinModel = o.optString("skinModel", "classic").ifBlank { "classic" },
+                            skinPlayerName = o.optString("skinPlayerName").ifBlank { null },
+                            skinPlayerUuid = o.optString("skinPlayerUuid").ifBlank { null }
                         )
                     )
                 }
@@ -441,11 +445,14 @@ class LauncherRepository(
                     if (account.type != AccountType.OFFLINE) return@map account
                     val uuid = account.uuid?.replace("-", "")?.ifBlank { null }
                         ?: com.booxin.launcher.core.launch.OfflineAuth.uuidNoDash(account.name)
+                    val mode = account.skinMode?.ifBlank { null }
+                        ?: if (!account.skinPath.isNullOrBlank()) "custom" else null
                     account.copy(
                         uuid = uuid,
                         accessToken = "0",
                         userType = "legacy",
-                        hasMinecraft = true
+                        hasMinecraft = true,
+                        skinMode = mode
                     )
                 }
                 val hasSelected = normalized.any { it.selected }
@@ -477,17 +484,57 @@ class LauncherRepository(
                     .put("userType", a.userType)
                     .put("hasMinecraft", a.hasMinecraft)
                     .put("skinPath", a.skinPath)
+                    .put("skinMode", a.skinMode)
+                    .put("skinModel", a.skinModel)
+                    .put("skinPlayerName", a.skinPlayerName)
+                    .put("skinPlayerUuid", a.skinPlayerUuid)
             )
         }
         prefs.edit().putString(KEY_ACCOUNTS, arr.toString()).apply()
     }
 
     fun setOfflineSkin(accountId: String, skinPath: String?) {
+        updateOfflineSkin(
+            accountId = accountId,
+            skinPath = skinPath,
+            skinMode = if (skinPath.isNullOrBlank()) "random" else "custom"
+        )
+    }
+
+    fun updateOfflineSkin(
+        accountId: String,
+        skinPath: String? = null,
+        skinMode: String? = null,
+        skinModel: String? = null,
+        skinPlayerName: String? = null,
+        skinPlayerUuid: String? = null,
+        clearSkinFile: Boolean = false
+    ) {
         _accounts.update { list ->
             list.map {
-                if (it.id == accountId && it.type == AccountType.OFFLINE) {
-                    it.copy(skinPath = skinPath)
-                } else it
+                if (it.id != accountId || it.type != AccountType.OFFLINE) return@map it
+                val nextMode = skinMode ?: it.skinMode
+                val mode = com.booxin.launcher.core.skin.OfflineSkinMode.parse(nextMode)
+                val keepPlayer = mode == com.booxin.launcher.core.skin.OfflineSkinMode.PLAYER
+                it.copy(
+                    skinPath = when {
+                        clearSkinFile -> null
+                        skinPath != null -> skinPath
+                        else -> it.skinPath
+                    },
+                    skinMode = nextMode,
+                    skinModel = skinModel ?: it.skinModel,
+                    skinPlayerName = when {
+                        !keepPlayer -> null
+                        skinPlayerName != null -> skinPlayerName
+                        else -> it.skinPlayerName
+                    },
+                    skinPlayerUuid = when {
+                        !keepPlayer -> null
+                        skinPlayerUuid != null -> skinPlayerUuid
+                        else -> it.skinPlayerUuid
+                    }
+                )
             }
         }
         persistAccounts()

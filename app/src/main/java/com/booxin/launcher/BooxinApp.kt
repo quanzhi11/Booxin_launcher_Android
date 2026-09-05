@@ -9,7 +9,10 @@ import com.booxin.launcher.core.launch.AndroidGameRuntime
 import coil.ImageLoader
 import coil.Coil
 import com.booxin.launcher.core.community.CommunityDescriptionTranslator
+import com.booxin.launcher.core.multiplayer.AppForeground
 import com.booxin.launcher.core.multiplayer.DmInboxWatcher
+import com.booxin.launcher.core.multiplayer.HostedRoomCleanup
+import com.booxin.launcher.core.multiplayer.RoomInviteWatcher
 import com.booxin.launcher.core.net.HttpClients
 import com.booxin.launcher.core.plugin.PluginManager
 import kotlinx.coroutines.CoroutineScope
@@ -34,7 +37,10 @@ class BooxinApp : Application() {
                 .build()
         )
         runCatching { AndroidGameRuntime.ensure(this) }
+        AppForeground.install(this)
         DmInboxWatcher.start(this)
+        RoomInviteWatcher.start(this)
+        HostedRoomCleanup.sweepAsync(this)
         appScope.launch {
             runCatching { PluginManager.init(this@BooxinApp) }
             runCatching { DownloadProviders.ensureProbed(this@BooxinApp) }

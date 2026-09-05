@@ -64,10 +64,12 @@ class BooxinRoomApi {
         version: String = "1.20.1",
         modpackUrl: String? = null,
         modpackGameVersion: String? = null,
-        modpackLoader: String? = null
+        modpackLoader: String? = null,
+        roomMods: List<RoomModDependency> = emptyList()
     ): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
             firstRoot { root ->
+                val modsJson = RoomHostDependencyService.serializeMods(roomMods)
                 val body = JSONObject()
                     .put("RoomCode", roomCode)
                     .put("HostId", hostId)
@@ -81,6 +83,7 @@ class BooxinRoomApi {
                     .put("ModpackUrl", modpackUrl)
                     .put("ModpackGameVersion", modpackGameVersion)
                     .put("ModpackLoader", modpackLoader)
+                    .put("ModsJson", modsJson)
                     .toString()
                     .toRequestBody(JSON)
                 execute(
@@ -103,6 +106,23 @@ class BooxinRoomApi {
                     Request.Builder()
                         .url("$root/api/rooms/${roomCode.trim()}")
                         .delete()
+                        .header("User-Agent", HttpClients.USER_AGENT)
+                        .header("Accept", "application/json")
+                        .build()
+                )
+                Unit
+            }
+        }
+    }
+
+    /** PC LobbyService public-room heartbeat → POST /api/rooms/{code}/ping */
+    suspend fun pingRoom(roomCode: String): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            firstRoot { root ->
+                execute(
+                    Request.Builder()
+                        .url("$root/api/rooms/${roomCode.trim()}/ping")
+                        .post(ByteArray(0).toRequestBody())
                         .header("User-Agent", HttpClients.USER_AGENT)
                         .header("Accept", "application/json")
                         .build()
@@ -173,20 +193,54 @@ class BooxinRoomApi {
         }
     }
 
-    private fun parseRoom(o: JSONObject) = PublicRoom(
-        id = o.optString("id"),
-        roomCode = o.optString("roomCode"),
-        hostName = o.optString("hostName"),
-        motd = o.optString("motd"),
-        remark = o.optString("remark").ifBlank { null },
-        port = o.optInt("port", 25565),
-        maxPlayers = o.optInt("maxPlayers", 0),
-        currentPlayers = o.optInt("currentPlayers", 0),
-        isPublic = o.optBoolean("isPublic", true),
-        version = o.optString("version").ifBlank { null },
-        modpackUrl = o.optString("modpackUrl").ifBlank { null },
-        status = o.optString("status").ifBlank { null }
-    )
+    private fun parseRoom(o: JSONObject): PublicRoom {
+        val modsJson = firstNonBlank(o.optString("modsJson"), o.optString("ModsJson"))
+        val modsFromArray = parseModsArray(o.optJSONArray("mods") ?: o.optJSONArray("Mods"))
+        return PublicRoom(
+            id = firstNonBlank(o.optString("id"), o.optString("Id")).orEmpty(),
+            roomCode = firstNonBlank(o.optString("roomCode"), o.optString("RoomCode")).orEmpty(),
+            hostName = firstNonBlank(o.optString("hostName"), o.optString("HostName")).orEmpty(),
+            motd = firstNonBlank(o.optString("motd"), o.optString("Motd")).orEmpty(),
+            remark = firstNonBlank(o.optString("remark"), o.optString("Remark")),
+            port = o.optInt("port", o.optInt("Port", 25565)),
+            maxPlayers = o.optInt("maxPlayers", o.optInt("MaxPlayers", 0)),
+            currentPlayers = o.optInt("currentPlayers", o.optInt("CurrentPlayers", 0)),
+            isPublic = o.optBoolean("isPublic", o.optBoolean("IsPublic", true)),
+            version = firstNonBlank(o.optString("version"), o.optString("Version")),
+            modpackUrl = firstNonBlank(o.optString("modpackUrl"), o.optString("ModpackUrl")),
+            modpackGameVersion = firstNonBlank(
+                o.optString("modpackGameVersion"),
+                o.optString("ModpackGameVersion")
+            ),
+            modpackLoader = firstNonBlank(
+                o.optString("modpackLoader"),
+                o.optString("ModpackLoader")
+            ),
+            modsJson = modsJson,
+            mods = modsFromArray,
+            status = firstNonBlank(o.optString("status"), o.optString("Status"))
+        )
+    }
+
+    private fun parseModsArray(arr: JSONArray?): List<RoomModDependency> {
+        if (arr == null || arr.length() == 0) return emptyList()
+        return buildList {
+            for (i in 0 until arr.length()) {
+                val item = arr.optJSONObject(i) ?: continue
+                val mod = RoomHostDependencyService.parseModObject(item)
+                if (mod.hasDownloadSource) add(mod)
+                if (size >= RoomHostDependencyService.MAX_MODS) break
+            }
+        }
+    }
+
+    private fun firstNonBlank(vararg values: String?): String? {
+        for (v in values) {
+            val t = v?.trim().orEmpty()
+            if (t.isNotEmpty() && t != "null") return t
+        }
+        return null
+    }
 
     private fun execute(request: Request): String {
         // Cleartext room host; dedicated client avoids any SSL-redirect to https://IP.

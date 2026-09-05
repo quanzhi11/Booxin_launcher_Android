@@ -16,11 +16,16 @@ import coil.load
 import com.booxin.launcher.AppContainer
 import com.booxin.launcher.R
 import com.booxin.launcher.core.community.CommunityDescriptionTranslator
+import com.booxin.launcher.core.download.game.VersionJsonMerger
 import com.booxin.launcher.data.model.CommunityContentType
+import com.booxin.launcher.data.model.CommunityLoader
 import com.booxin.launcher.data.model.InstallTargetRecommendation
+import com.booxin.launcher.data.model.ModpackInstallProgress
 import com.booxin.launcher.data.model.ModrinthProject
 import com.booxin.launcher.data.model.ModrinthProjectVersion
+import com.booxin.launcher.data.model.ModrinthResolvedDependency
 import com.booxin.launcher.databinding.FragmentCommunityProjectDetailBinding
+import com.booxin.launcher.databinding.ItemCommunityDependencyBinding
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import java.text.NumberFormat
 import java.util.Locale
@@ -49,7 +54,6 @@ class CommunityProjectDetailFragment : Fragment() {
         onInstall = ::onInstallVersion,
         onSelect = ::onSelectVersion
     )
-    private lateinit var dependencyAdapter: CommunityDependencyAdapter
     private var translateJob: Job? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -73,24 +77,22 @@ class CommunityProjectDetailFragment : Fragment() {
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
-        dependencyAdapter = CommunityDependencyAdapter(viewLifecycleOwner.lifecycleScope) { dep ->
-            if (!isAdded || _binding == null) return@CommunityDependencyAdapter
-            findNavController().navigate(
-                R.id.action_community_project_detail_self,
-                bundleOf(
-                    ARG_PROJECT_ID to dep.projectId,
-                    ARG_CONTENT_TYPE to CommunityContentType.MOD.name
-                )
-            )
-        }
         binding.buttonBack.setOnClickListener { findNavController().navigateUp() }
         binding.recyclerVersions.layoutManager = LinearLayoutManager(requireContext())
         binding.recyclerVersions.adapter = versionAdapter
-        binding.recyclerDependencies.layoutManager = LinearLayoutManager(requireContext())
-        binding.recyclerDependencies.adapter = dependencyAdapter
         binding.buttonExpandDescription.setOnClickListener { toggleDescription() }
         binding.textDescription.movementMethod = LinkMovementMethod.getInstance()
+        updateDependenciesSectionVisibility()
         loadDetail()
+    }
+
+    private fun updateDependenciesSectionVisibility() {
+        val b = _binding ?: return
+        val show = contentType == CommunityContentType.MOD
+        b.textDependenciesSection.isVisible = show
+        b.textDependenciesHint.isVisible = show
+        b.layoutDependencies.isVisible = show
+        b.textDependenciesEmpty.isVisible = show
     }
 
     private fun loadDetail() {
@@ -153,7 +155,7 @@ class CommunityProjectDetailFragment : Fragment() {
             }
             if (_binding == null) return@launch
             versions = prepared.map { it.first }
-            selectedVersion = versions.firstOrNull()
+            selectedVersion = pickDefaultVersion(prepared)
             bindVersionRows(
                 prepared.map { (version, targetId) ->
                     version to targetId?.let { getString(R.string.community_recommended_short, it) }
@@ -232,14 +234,67 @@ class CommunityProjectDetailFragment : Fragment() {
     ): List<Pair<ModrinthProjectVersion, String?>> {
         val selected = AppContainer.repository.session.value.selectedVersionId
         val labels = AppContainer.communityRepository.recommendLabels(contentType, list)
+        val installedMc = AppContainer.repository.installedVersions.value
+            .map {
+                com.booxin.launcher.core.download.game.VersionJsonMerger.resolveMinecraftVersionId(it.id)
+            }
+            .filter { it.isNotBlank() }
+            .toSet()
         val sorted = list.sortedWith(
             compareByDescending<ModrinthProjectVersion> {
                 selected != null && labels[it.id] == selected
-            }.thenByDescending { it.datePublished.orEmpty() }
+            }.thenBy { versionStabilityRank(it.versionType) }
+                .thenByDescending { !labels[it.id].isNullOrBlank() }
+                .thenByDescending { version ->
+                    version.gameVersions.any { it in installedMc }
+                }
+                .thenByDescending { it.datePublished.orEmpty() }
         )
-        // 限制列表长度。
         return sorted.take(MAX_VERSIONS_SHOWN).map { version ->
             version to labels[version.id]
+        }
+    }
+
+    /** Prefer release over beta/alpha so “default” is not always the newest pre-release. */
+    private fun versionStabilityRank(type: String): Int = when (type.lowercase(Locale.US)) {
+        "release" -> 0
+        "beta" -> 1
+        "alpha" -> 2
+        else -> 3
+    }
+
+    private fun pickDefaultVersion(
+        rows: List<Pair<ModrinthProjectVersion, String?>>
+    ): ModrinthProjectVersion? {
+        if (rows.isEmpty()) return null
+        val selectedId = AppContainer.repository.session.value.selectedVersionId
+        val selectedLoader = selectedId?.let { CommunityLoader.fromVersionId(it) }
+        val selectedMc = selectedId?.let {
+            runCatching { VersionJsonMerger.resolveMinecraftVersionId(it) }.getOrNull()
+        }
+        return rows.maxByOrNull { (version, targetId) ->
+            var score = 0
+            if (targetId != null && selectedId != null && targetId == selectedId) score += 100
+            if (version.versionType.equals("release", ignoreCase = true)) score += 20
+            if (targetId != null) score += 10
+            if (versionMatchesLoader(version, selectedLoader)) score += 50
+            if (selectedMc != null && selectedMc in version.gameVersions) score += 30
+            score
+        }?.first ?: rows.first().first
+    }
+
+    private fun versionMatchesLoader(
+        version: ModrinthProjectVersion,
+        loader: CommunityLoader?
+    ): Boolean {
+        if (loader == null || loader == CommunityLoader.ANY) return true
+        val normalized = version.loaders.map { it.lowercase() }
+        return when (loader) {
+            CommunityLoader.FORGE -> "forge" in normalized
+            CommunityLoader.NEOFORGE -> "neoforge" in normalized
+            CommunityLoader.FABRIC -> "fabric" in normalized
+            CommunityLoader.QUILT -> "quilt" in normalized
+            CommunityLoader.ANY -> true
         }
     }
 
@@ -257,10 +312,13 @@ class CommunityProjectDetailFragment : Fragment() {
 
     private fun refreshDependencies() {
         val b = _binding ?: return
+        if (contentType != CommunityContentType.MOD) {
+            b.layoutDependencies.removeAllViews()
+            return
+        }
         val version = selectedVersion
         if (version == null) {
-            dependencyAdapter.submit(emptyList())
-            b.textDependenciesEmpty.isVisible = true
+            bindDependencies(emptyList())
             b.textDependenciesHint.text = getString(R.string.community_dependencies_hint)
             return
         }
@@ -270,11 +328,54 @@ class CommunityProjectDetailFragment : Fragment() {
         )
         depsJob?.cancel()
         depsJob = viewLifecycleOwner.lifecycleScope.launch {
-            val deps = AppContainer.communityRepository.resolveRequiredDependencies(version)
-                .getOrElse { emptyList() }
-            val ui = _binding ?: return@launch
-            dependencyAdapter.submit(deps)
-            ui.textDependenciesEmpty.isVisible = deps.isEmpty()
+            val result = AppContainer.communityRepository.resolveRequiredDependencies(version)
+            if (_binding == null) return@launch
+            result.fold(
+                onSuccess = { deps -> bindDependencies(deps) },
+                onFailure = { err ->
+                    bindDependencies(emptyList())
+                    if (isAdded) {
+                        Toast.makeText(
+                            requireContext(),
+                            getString(R.string.community_dependencies_failed, err.message ?: "unknown"),
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                }
+            )
+        }
+    }
+
+    private fun bindDependencies(deps: List<ModrinthResolvedDependency>) {
+        val b = _binding ?: return
+        b.layoutDependencies.removeAllViews()
+        b.textDependenciesEmpty.isVisible = deps.isEmpty()
+        if (deps.isEmpty()) return
+        val inflater = LayoutInflater.from(requireContext())
+        deps.forEach { dep ->
+            val item = ItemCommunityDependencyBinding.inflate(inflater, b.layoutDependencies, false)
+            item.textTitle.text = dep.title
+            CommunityDescriptionTranslator.bind(
+                item.textDescription,
+                dep.description,
+                viewLifecycleOwner.lifecycleScope
+            )
+            item.imageIcon.load(dep.iconUrl) {
+                crossfade(true)
+                placeholder(R.drawable.ic_nav_versions)
+                error(R.drawable.ic_nav_versions)
+            }
+            item.root.setOnClickListener {
+                if (!isAdded || _binding == null) return@setOnClickListener
+                findNavController().navigate(
+                    R.id.action_community_project_detail_self,
+                    bundleOf(
+                        ARG_PROJECT_ID to dep.projectId,
+                        ARG_CONTENT_TYPE to CommunityContentType.MOD.name
+                    )
+                )
+            }
+            b.layoutDependencies.addView(item.root)
         }
     }
 
@@ -318,10 +419,21 @@ class CommunityProjectDetailFragment : Fragment() {
     ) {
         viewLifecycleOwner.lifecycleScope.launch {
             showLoading(getString(R.string.community_installing_target, target.versionId))
+            var lastUiAt = 0L
             val result = AppContainer.communityRepository.installVersionFile(
                 contentType = contentType,
                 targetVersionId = target.versionId,
-                version = version
+                version = version,
+                onProgress = { p ->
+                    val now = System.currentTimeMillis()
+                    if (p.bytesDownloaded >= 0L && now - lastUiAt < 200L) return@installVersionFile
+                    lastUiAt = now
+                    val line = formatInstallProgress(p)
+                    viewLifecycleOwner.lifecycleScope.launch(Dispatchers.Main.immediate) {
+                        if (_binding == null) return@launch
+                        showLoading(line)
+                    }
+                }
             )
             hideLoading()
             result.fold(
@@ -369,21 +481,7 @@ class CommunityProjectDetailFragment : Fragment() {
                     val now = System.currentTimeMillis()
                     if (p.bytesDownloaded >= 0L && now - lastUiAt < 200L) return@installModpack
                     lastUiAt = now
-                    val line = buildString {
-                        append(p.stage)
-                        if (p.total > 0) append(" (${p.current}/${p.total})")
-                        if (p.bytesTotal > 0L) {
-                            append(" · ")
-                            append("%.1f".format(p.bytesDownloaded.coerceAtLeast(0L) / 1048576.0))
-                            append('/')
-                            append("%.1f".format(p.bytesTotal / 1048576.0))
-                            append(" MB")
-                        }
-                        if (p.detail.isNotBlank()) {
-                            append('\n')
-                            append(p.detail)
-                        }
-                    }
+                    val line = formatInstallProgress(p)
                     viewLifecycleOwner.lifecycleScope.launch(Dispatchers.Main.immediate) {
                         if (_binding == null) return@launch
                         showLoading(line)
@@ -407,6 +505,28 @@ class CommunityProjectDetailFragment : Fragment() {
                     ).show()
                 }
             )
+        }
+    }
+
+    private fun formatInstallProgress(p: ModpackInstallProgress): String {
+        return buildString {
+            append(p.stage)
+            if (p.total > 0) append(" (${p.current}/${p.total})")
+            if (p.bytesTotal > 0L) {
+                append(" · ")
+                append("%.1f".format(p.bytesDownloaded.coerceAtLeast(0L) / 1048576.0))
+                append('/')
+                append("%.1f".format(p.bytesTotal / 1048576.0))
+                append(" MB")
+            } else if (p.bytesDownloaded > 0L) {
+                append(" · ")
+                append("%.1f".format(p.bytesDownloaded / 1048576.0))
+                append(" MB")
+            }
+            if (p.detail.isNotBlank()) {
+                append('\n')
+                append(p.detail)
+            }
         }
     }
 
@@ -445,6 +565,6 @@ class CommunityProjectDetailFragment : Fragment() {
     companion object {
         const val ARG_PROJECT_ID = "projectId"
         const val ARG_CONTENT_TYPE = "contentType"
-        private const val MAX_VERSIONS_SHOWN = 40
+        private const val MAX_VERSIONS_SHOWN = 200
     }
 }

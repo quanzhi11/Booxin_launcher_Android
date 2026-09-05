@@ -136,6 +136,6 @@ class LibraryDownloadHelper(
 
     companion object {
         private const val TAG = "LibraryDownload"
-        private const val LIBRARY_CONCURRENCY = 6
+        private const val LIBRARY_CONCURRENCY = 12
     }
 }

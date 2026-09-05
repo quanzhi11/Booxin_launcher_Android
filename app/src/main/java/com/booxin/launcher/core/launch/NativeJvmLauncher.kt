@@ -51,6 +51,9 @@ object NativeJvmLauncher {
     fun invokeMouseButtonCallback(button: Int, action: Int, mods: Int): Boolean =
         nativeInvokeMouseButtonCallback(button, action, mods)
 
+    /** SDL/MG successful presents (may advance while TextureView frames stay 0). */
+    fun getSdlPresentCount(): Long = nativeGetSdlPresentCount()
+
     private external fun nativeChdir(path: String): Boolean
 
     private external fun nativeProbeJvm(): Boolean
@@ -78,6 +81,8 @@ object NativeJvmLauncher {
     private external fun nativeInvokeCursorPosCallback(x: Float, y: Float): Boolean
 
     private external fun nativeInvokeMouseButtonCallback(button: Int, action: Int, mods: Int): Boolean
+
+    private external fun nativeGetSdlPresentCount(): Long
 
     private external fun nativeLaunchJvm(
         args: Array<String>,

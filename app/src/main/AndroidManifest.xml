@@ -4,6 +4,9 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Guest LAN MOTD rebroadcast (Minecraft multiplayer LAN list discovery). -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_MODE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission
         android:name="android.permission.READ_EXTERNAL_STORAGE"
@@ -29,7 +32,7 @@
         android:smallScreens="true"
         android:xlargeScreens="true" />
 
-    <!-- API 30+: discover FCL-style renderer/driver plugin packages + file pickers. -->
+    <!-- API 30+: discover third-party renderer/driver plugin packages + file pickers. -->
     <queries>
         <intent>
             <action android:name="android.intent.action.MAIN" />
@@ -75,6 +78,7 @@
         <activity
             android:name=".ui.MainActivity"
             android:exported="true"
+            android:launchMode="singleTop"
             android:resizeableActivity="true"
             android:screenOrientation="sensorLandscape"
             android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
@@ -83,10 +87,38 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- PC / share style join links -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="booxin" android:host="join" />
+            </intent-filter>
+            <intent-filter android:autoVerify="false">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="boonix.art"
+                    android:pathPrefix="/join" />
+                <data
+                    android:scheme="https"
+                    android:host="www.boonix.art"
+                    android:pathPrefix="/join" />
+            </intent-filter>
             <meta-data
                 android:name="android.max_aspect"
                 android:value="3.0" />
         </activity>
+
+        <receiver
+            android:name=".core.multiplayer.RoomInviteActionReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.booxin.launcher.action.DISMISS_ROOM_INVITE" />
+            </intent-filter>
+        </receiver>
 
         <activity
             android:name=".ui.launch.LaunchActivity"
@@ -113,6 +145,16 @@
             android:parentActivityName=".ui.MainActivity"
             android:resizeableActivity="true"
             android:screenOrientation="sensorLandscape"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
+            android:name=".ui.multiplayer.LobbyChatActivity"
+            android:exported="false"
+            android:label="@string/multiplayer_lobby_chat_title"
+            android:parentActivityName=".ui.MainActivity"
+            android:resizeableActivity="true"
+            android:screenOrientation="sensorPortrait"
             android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
             android:windowSoftInputMode="adjustResize" />
 

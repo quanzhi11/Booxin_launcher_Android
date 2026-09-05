@@ -96,22 +96,27 @@ class ForgeProcessorService : Service() {
             Log.e(TAG, "job file missing command separator")
             return 1
         }
-        val jvmArgs = lines.subList(2, sep)
+        // New: workingDir, javaMajor, logPath, jvmArgs..., --, command
+        // Old: workingDir, javaMajor, jvmArgs..., --, command
+        val hasLogPath = sep >= 3 && !lines[2].startsWith("-")
+        val logFile = if (hasLogPath) File(lines[2]) else null
+        val jvmArgs = lines.subList(if (hasLogPath) 3 else 2, sep)
         val command = lines.subList(sep + 1, lines.size).toTypedArray()
-        return runProcessor(javaMajor, workingDir, jvmArgs, command)
+        return runProcessor(javaMajor, workingDir, jvmArgs, command, logFile)
     }
 
     private fun runProcessor(
         javaMajor: Int,
         workingDir: String,
         jvmArgs: List<String>,
-        command: Array<String>
+        command: Array<String>,
+        logFile: File? = null
     ): Int {
         return try {
             val java = AppContainer.javaEnvironment.findInstalled(javaMajor)
                 ?: error("Java $javaMajor 未安装")
             val tmpDir = File(LauncherPaths.rootDir, "cache/forge/tmp").also { it.mkdirs() }
-            ToolJvmEnvironment.apply(this, java, tmpDir)
+            ToolJvmEnvironment.apply(this, java, tmpDir, logFile)
             if (!NativeJvmLauncher.chdir(workingDir)) {
                 Log.w(TAG, "chdir failed: $workingDir")
             }

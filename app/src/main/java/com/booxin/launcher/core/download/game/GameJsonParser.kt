@@ -50,11 +50,18 @@ data class ResolvedVersion(
 )
 
 data class AssetObject(
+    val name: String,
     val hash: String,
     val size: Long
 ) {
     val hashPath: String get() = "${hash.substring(0, 2)}/$hash"
 }
+
+data class AssetIndexContents(
+    val virtual: Boolean,
+    val mapToResources: Boolean,
+    val objects: List<AssetObject>
+)
 
 object GameJsonParser {
 
@@ -120,19 +127,27 @@ object GameJsonParser {
         )
     }
 
-    fun parseAssetIndex(json: String): List<AssetObject> {
-        val objects = JSONObject(json).getJSONObject("objects")
+    fun parseAssetIndex(json: String): List<AssetObject> = parseAssetIndexFull(json).objects
+
+    fun parseAssetIndexFull(json: String): AssetIndexContents {
+        val root = JSONObject(json)
+        val objects = root.getJSONObject("objects")
         val result = ArrayList<AssetObject>(objects.length())
         val keys = objects.keys()
         while (keys.hasNext()) {
             val key = keys.next()
             val obj = objects.getJSONObject(key)
             result += AssetObject(
+                name = key,
                 hash = obj.getString("hash"),
                 size = obj.optLong("size", 0L)
             )
         }
-        return result
+        return AssetIndexContents(
+            virtual = root.optBoolean("virtual", false),
+            mapToResources = root.optBoolean("map_to_resources", false),
+            objects = result
+        )
     }
 
     private fun resolveLibraries(

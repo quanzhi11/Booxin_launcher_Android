@@ -62,7 +62,8 @@ typedef struct booxin_environ {
     void *GLFW_invoke_WindowSize;
 } booxin_environ_t;
 
-/* Exported symbol name is required by LWJGL / pump lookup; do not rename. */
+/* Primary environ export; legacy pojav_environ aliases the same pointer. */
+extern booxin_environ_t *booxin_environ;
 extern booxin_environ_t *pojav_environ;
 extern booxin_environ_t g_booxin_environ;
 
@@ -70,6 +71,10 @@ void booxin_environ_init(void);
 
 void booxin_retain_native_window(ANativeWindow *win);
 ANativeWindow *booxin_ensure_native_window(void);
+
+/** SDL/MG present progress for Java overlay peel (TextureView may not update). */
+void booxin_note_sdl_present(void);
+unsigned long long booxin_sdl_present_count(void);
 
 /** Pause/resume window EGLSurface across Android SurfaceView destroy/create. */
 void booxin_egl_detach_window(void);

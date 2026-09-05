@@ -15,6 +15,7 @@ import androidx.lifecycle.repeatOnLifecycle
 import androidx.navigation.fragment.findNavController
 import com.booxin.launcher.AppContainer
 import com.booxin.launcher.R
+import com.booxin.launcher.core.LauncherPrefs
 import com.booxin.launcher.core.ai.AiBackendSettings
 import com.booxin.launcher.core.ai.AiMemberTier
 import com.booxin.launcher.core.ai.AiModeQuality
@@ -23,7 +24,10 @@ import com.booxin.launcher.core.ai.AiModelProvider
 import com.booxin.launcher.core.ai.AiQuotaSnapshot
 import com.booxin.launcher.databinding.FragmentAiAssistantBinding
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
 
 class AiAssistantFragment : Fragment() {
 
@@ -31,6 +35,7 @@ class AiAssistantFragment : Fragment() {
     private val binding get() = _binding!!
     private var lastSnapshot: AiQuotaSnapshot? = null
     private var syncingMode = false
+    private var pollJob: Job? = null
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -88,9 +93,15 @@ class AiAssistantFragment : Fragment() {
                 AppContainer.multiplayerAuth.session.collect {
                     applyAccessGate()
                     refreshQuotaUi()
+                    maybePollPendingSubscription()
                 }
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        maybePollPendingSubscription()
     }
 
     private fun openChat() {
@@ -172,16 +183,32 @@ class AiAssistantFragment : Fragment() {
     }
 
     private fun showMoreMenu() {
+        val labels = listOf(
+            getString(R.string.ai_subscribe_mobile_unsupported),
+            getString(R.string.ai_play_pass)
+        )
+        val adapter = object : android.widget.ArrayAdapter<String>(
+            requireContext(),
+            android.R.layout.simple_list_item_1,
+            labels
+        ) {
+            override fun isEnabled(position: Int): Boolean = position != 0
+
+            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+                val view = super.getView(position, convertView, parent)
+                (view as? android.widget.TextView)?.setTextColor(
+                    requireContext().getColor(
+                        if (position == 0) R.color.md_theme_light_outline
+                        else R.color.md_theme_light_onSurface
+                    )
+                )
+                return view
+            }
+        }
         MaterialAlertDialogBuilder(requireContext())
             .setTitle(R.string.ai_more_title)
-            .setItems(
-                arrayOf(
-                    getString(R.string.ai_subscribe),
-                    getString(R.string.ai_play_pass)
-                )
-            ) { _, which ->
+            .setAdapter(adapter) { _, which ->
                 when (which) {
-                    0 -> showSubscribeDialog()
                     1 -> showPlayPassDialog()
                 }
             }
@@ -281,8 +308,12 @@ class AiAssistantFragment : Fragment() {
                         ).show()
                         return@launch
                     }
+                    result.outTradeNo?.let {
+                        LauncherPrefs.setAiPendingSubscription(it, userKey)
+                    }
                     startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(result.payUrl)))
                     Toast.makeText(requireContext(), R.string.ai_subscribe_open_pay, Toast.LENGTH_SHORT).show()
+                    maybePollPendingSubscription()
                 }
             }
             .show()
@@ -324,7 +355,38 @@ class AiAssistantFragment : Fragment() {
             .show()
     }
 
+    private fun maybePollPendingSubscription() {
+        val outTradeNo = LauncherPrefs.aiPendingOutTradeNo() ?: return
+        val userKey = LauncherPrefs.aiPendingUserKey() ?: return
+        if (pollJob?.isActive == true) return
+        pollJob = viewLifecycleOwner.lifecycleScope.launch {
+            var attempts = 0
+            while (isActive && attempts < 60) {
+                attempts++
+                val status = AppContainer.aiBackend.getSubscriptionStatus(outTradeNo, userKey)
+                if (status.paid) {
+                    LauncherPrefs.clearAiPendingSubscription()
+                    if (status.snapshot != null) lastSnapshot = status.snapshot
+                    refreshQuotaUi()
+                    val toast = when {
+                        status.upgraded -> getString(R.string.ai_subscribe_credited)
+                        else -> status.message.ifBlank { getString(R.string.ai_subscribe_paid_wait) }
+                    }
+                    Toast.makeText(requireContext(), toast, Toast.LENGTH_LONG).show()
+                    return@launch
+                }
+                if (status.status.equals("Forbidden", ignoreCase = true)) {
+                    LauncherPrefs.clearAiPendingSubscription()
+                    return@launch
+                }
+                delay(3_000)
+            }
+        }
+    }
+
     override fun onDestroyView() {
+        pollJob?.cancel()
+        pollJob = null
         _binding = null
         super.onDestroyView()
     }

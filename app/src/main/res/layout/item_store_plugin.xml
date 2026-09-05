@@ -27,6 +27,15 @@
         tools:text="渲染器 · 开发者 xxx" />
 
     <TextView
+        android:id="@+id/textStorePluginPlatforms"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:textColor="@color/md_theme_light_outline"
+        android:textSize="12sp"
+        tools:text="Android · 桌面" />
+
+    <TextView
         android:id="@+id/textStorePluginDesc"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"

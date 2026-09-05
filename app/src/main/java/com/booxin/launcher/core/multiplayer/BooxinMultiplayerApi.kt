@@ -78,16 +78,58 @@ class BooxinMultiplayerApi {
             }
         }
 
+    suspend fun fetchUserDetail(session: BooxinAuthSession, userId: String): Result<BooxinUserDetail> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val text = execute(
+                    authorizedGet(session, "${session.apiRoot}/api/auth/users/$userId")
+                )
+                parseUserDetail(JSONObject(text))
+            }
+        }
+
+    suspend fun updateRelationship(
+        session: BooxinAuthSession,
+        friendUserId: String,
+        relationship: String
+    ): Result<String> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val body = JSONObject().put("relationship", relationship.trim())
+                    .toString().toRequestBody(JSON)
+                messageFrom(
+                    execute(
+                        authorizedPatch(
+                            session,
+                            "${session.apiRoot}/api/friends/$friendUserId/relationship",
+                            body
+                        )
+                    ),
+                    "关系已更新"
+                )
+            }
+        }
+
     suspend fun fetchFriends(session: BooxinAuthSession): Result<FriendsDashboard> =
         withContext(Dispatchers.IO) {
             runCatching {
                 val root = JSONObject(execute(authorizedGet(session, "${session.apiRoot}/api/friends")))
                 FriendsDashboard(
-                    friends = parseFriendArray(root.optJSONArray("friends")),
-                    incomingRequests = parseRequestArray(root.optJSONArray("incomingRequests")),
-                    outgoingRequests = parseRequestArray(root.optJSONArray("outgoingRequests")),
-                    pendingRoomInvites = parseInviteArray(root.optJSONArray("pendingRoomInvites")),
-                    blockedUsers = parseBlockedArray(root.optJSONArray("blockedUsers"))
+                    friends = parseFriendArray(
+                        root.optJSONArray("friends") ?: root.optJSONArray("Friends")
+                    ),
+                    incomingRequests = parseRequestArray(
+                        root.optJSONArray("incomingRequests") ?: root.optJSONArray("IncomingRequests")
+                    ),
+                    outgoingRequests = parseRequestArray(
+                        root.optJSONArray("outgoingRequests") ?: root.optJSONArray("OutgoingRequests")
+                    ),
+                    pendingRoomInvites = parseInviteArray(
+                        root.optJSONArray("pendingRoomInvites") ?: root.optJSONArray("PendingRoomInvites")
+                    ),
+                    blockedUsers = parseBlockedArray(
+                        root.optJSONArray("blockedUsers") ?: root.optJSONArray("BlockedUsers")
+                    )
                 )
             }
         }
@@ -98,15 +140,17 @@ class BooxinMultiplayerApi {
         pageSize: Int = 30,
         onlineOnly: Boolean = false,
         query: String? = null
-    ) = withContext(Dispatchers.IO) {
+    ): Result<LobbyPage> = withContext(Dispatchers.IO) {
             runCatching {
+                val safePage = page.coerceAtLeast(1)
+                val safePageSize = pageSize.coerceIn(1, 50)
                 val queryPart = query?.trim()?.takeIf { it.isNotEmpty() }?.let {
                     "&query=${URLEncoder.encode(it, Charsets.UTF_8.name())}"
                 }.orEmpty()
                 val url =
-                    "${session.apiRoot}/api/auth/users/lobby?page=$page&pageSize=$pageSize&onlineOnly=$onlineOnly$queryPart"
+                    "${session.apiRoot}/api/auth/users/lobby?page=$safePage&pageSize=$safePageSize&onlineOnly=$onlineOnly$queryPart"
                 val root = JSONObject(execute(authorizedGet(session, url)))
-                parseLobby(readPagedUsers(root))
+                parseLobbyPage(root, safePage, safePageSize)
             }
         }
 
@@ -277,6 +321,33 @@ class BooxinMultiplayerApi {
         }
     }
 
+    suspend fun getLobbyMessages(
+        session: BooxinAuthSession,
+        afterId: Long = 0L
+    ): Result<List<LobbyChatMessage>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val url = "${session.apiRoot}/api/lobby-chat?afterId=$afterId"
+            val root = JSONObject(execute(authorizedGet(session, url)))
+            parseLobbyMessages(root.optJSONArray("messages"))
+        }
+    }
+
+    suspend fun sendLobbyMessage(
+        session: BooxinAuthSession,
+        body: String
+    ): Result<LobbyChatMessage> = withContext(Dispatchers.IO) {
+        runCatching {
+            val payload = JSONObject()
+                .put("body", body)
+                .toString()
+                .toRequestBody(JSON)
+            val o = JSONObject(
+                execute(authorizedPost(session, "${session.apiRoot}/api/lobby-chat", payload))
+            )
+            parseLobbyMessage(o)
+        }
+    }
+
     suspend fun markRead(
         session: BooxinAuthSession,
         peerUserId: String,
@@ -432,6 +503,30 @@ class BooxinMultiplayerApi {
                 firstSuccessEcoRoot { root ->
                     val text = execute(authorizedGet(session, "$root/api/rewards/me/profile"))
                     parseRewardProfile(JSONObject(text))
+                }
+            }
+        }
+
+    /** Public reward card (no auth), same as PC MultiplayerRewardService.GetProfileAsync. */
+    suspend fun getPublicRewardProfile(userId: String): Result<RewardProfile> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                firstSuccessEcoRoot { root ->
+                    val text = execute(
+                        Request.Builder()
+                            .url("$root/api/rewards/$userId")
+                            .get()
+                            .header("User-Agent", HttpClients.USER_AGENT)
+                            .header("Accept", "application/json")
+                            .build()
+                    )
+                    parseRewardProfile(JSONObject(text)).let { profile ->
+                        if (profile.booxinUserId.isBlank()) {
+                            profile.copy(booxinUserId = userId)
+                        } else {
+                            profile
+                        }
+                    }
                 }
             }
         }
@@ -639,6 +734,27 @@ class BooxinMultiplayerApi {
         isInRoom = o.optBoolean("isInRoom", false)
     )
 
+    private fun parseUserDetail(o: JSONObject) = BooxinUserDetail(
+        id = firstNonBlank(o.optString("id"), o.optString("Id")) ?: "",
+        username = firstNonBlank(o.optString("username"), o.optString("Username")) ?: "",
+        avatarUrl = firstNonBlank(o.optString("avatarUrl"), o.optString("AvatarUrl")),
+        signature = firstNonBlank(o.optString("signature"), o.optString("Signature")),
+        createdAtUtc = firstNonBlank(o.optString("createdAtUtc"), o.optString("CreatedAtUtc")),
+        presenceStatus = firstNonBlank(
+            o.optString("presenceStatus"),
+            o.optString("PresenceStatus"),
+            "offline"
+        ) ?: "offline",
+        presenceUpdatedAtUtc = firstNonBlank(
+            o.optString("presenceUpdatedAtUtc"),
+            o.optString("PresenceUpdatedAtUtc")
+        ),
+        isFriend = o.optBoolean("isFriend", o.optBoolean("IsFriend", false)),
+        isBlocked = o.optBoolean("isBlocked", o.optBoolean("IsBlocked", false)),
+        isBlockedBy = o.optBoolean("isBlockedBy", o.optBoolean("IsBlockedBy", false)),
+        relationship = firstNonBlank(o.optString("relationship"), o.optString("Relationship"))
+    )
+
     private fun parseFriendArray(arr: JSONArray?): List<BooxinFriend> {
         if (arr == null) return emptyList()
         return buildList {
@@ -656,9 +772,20 @@ class BooxinMultiplayerApi {
                     !roomCode.isNullOrBlank()
                 add(
                     BooxinFriend(
-                        userId = o.optString("userId").ifBlank { o.optString("id") },
-                        username = o.optString("username"),
-                        avatarUrl = o.optString("avatarUrl").ifBlank { null },
+                        userId = firstNonBlank(
+                            o.optString("userId"),
+                            o.optString("UserId"),
+                            o.optString("id"),
+                            o.optString("Id")
+                        ).orEmpty(),
+                        username = firstNonBlank(
+                            o.optString("username"),
+                            o.optString("Username")
+                        ).orEmpty(),
+                        avatarUrl = firstNonBlank(
+                            o.optString("avatarUrl"),
+                            o.optString("AvatarUrl")
+                        ),
                         selectedFrameId = o.optString("selectedFrameId").ifBlank { null },
                         isOnline = o.optBoolean("isOnline", false) || o.optBoolean("IsOnline", false),
                         isInRoom = inRoom,
@@ -741,7 +868,34 @@ class BooxinMultiplayerApi {
     private fun readPagedUsers(root: JSONObject): JSONArray? {
         // Lobby API returns `users`; search uses `results` (see bphone PaginatedResponse).
         return root.optJSONArray("users")
+            ?: root.optJSONArray("Users")
             ?: root.optJSONArray("results")
+    }
+
+    private fun parseLobbyPage(root: JSONObject, fallbackPage: Int, fallbackPageSize: Int): LobbyPage {
+        val users = parseLobby(readPagedUsers(root))
+        val page = optIntAny(root, "page", "Page", fallbackPage).coerceAtLeast(1)
+        val pageSize = optIntAny(root, "pageSize", "PageSize", fallbackPageSize).coerceIn(1, 50)
+        val totalCount = optIntAny(root, "totalCount", "TotalCount", users.size).coerceAtLeast(0)
+        val totalPages = optIntAny(
+            root,
+            "totalPages",
+            "TotalPages",
+            if (totalCount == 0) 0 else ((totalCount + pageSize - 1) / pageSize)
+        ).coerceAtLeast(0)
+        return LobbyPage(
+            users = users,
+            page = page,
+            pageSize = pageSize,
+            totalCount = totalCount,
+            totalPages = totalPages
+        )
+    }
+
+    private fun optIntAny(root: JSONObject, camel: String, pascal: String, default: Int): Int {
+        if (root.has(camel) && !root.isNull(camel)) return root.optInt(camel, default)
+        if (root.has(pascal) && !root.isNull(pascal)) return root.optInt(pascal, default)
+        return default
     }
 
     private fun parseLobby(arr: JSONArray?): List<LobbyUser> {
@@ -803,6 +957,25 @@ class BooxinMultiplayerApi {
         isMine = o.optBoolean("isMine", false),
         isRevoked = o.optBoolean("isRevoked", false),
         canRecall = o.optBoolean("canRecall", false)
+    )
+
+    private fun parseLobbyMessages(arr: JSONArray?): List<LobbyChatMessage> {
+        if (arr == null) return emptyList()
+        return buildList {
+            for (i in 0 until arr.length()) {
+                add(parseLobbyMessage(arr.getJSONObject(i)))
+            }
+        }
+    }
+
+    private fun parseLobbyMessage(o: JSONObject) = LobbyChatMessage(
+        id = o.optLong("id"),
+        senderId = o.optString("senderId"),
+        senderUsername = o.optString("senderUsername").ifBlank { "未知用户" },
+        senderAvatarUrl = o.optString("senderAvatarUrl").ifBlank { null },
+        body = o.optString("body"),
+        sentAtUtc = o.optString("sentAtUtc").ifBlank { null },
+        isMine = o.optBoolean("isMine", false)
     )
 
     private fun parseRewardProfile(o: JSONObject) = RewardProfile(

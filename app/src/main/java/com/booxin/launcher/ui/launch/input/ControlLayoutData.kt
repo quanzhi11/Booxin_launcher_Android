@@ -7,12 +7,19 @@ data class ControlLayoutData(
     val buttons: List<ControlButtonSpec>,
     val joystick: JoystickSpec = JoystickSpec(),
     val floatingBall: FloatingBallSpec = FloatingBallSpec(),
-    val gestureQuick: GestureQuickSpec = GestureQuickSpec()
+    val gestureQuick: GestureQuickSpec = GestureQuickSpec(),
+    /** Default CSS-like chrome for all buttons (per-button style overrides). */
+    val buttonStyle: ControlButtonStyle? = null
 ) {
     data class JoystickSpec(
         val x: Float = 0.13f,
         val y: Float = 0.84f,
-        val sizeDp: Int = 150
+        val sizeDp: Int = 150,
+        /**
+         * On press, pad recenters under the finger; base chases past the rim;
+         * springs home on release.
+         */
+        val follow: Boolean = true
     )
 
     data class FloatingBallSpec(

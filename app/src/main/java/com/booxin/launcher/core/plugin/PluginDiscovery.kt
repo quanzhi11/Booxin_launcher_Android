@@ -9,7 +9,7 @@ import com.booxin.launcher.core.runtime.RendererPackages
 import java.io.File
 
 /**
- * Discovers plugins from builtin catalog, local extract dirs, and FCL-style APKs.
+ * Discovers plugins from builtin catalog, local extract dirs, and third-party APKs.
  */
 object PluginDiscovery {
 
@@ -46,7 +46,8 @@ object PluginDiscovery {
     }
 
     private fun discoverBuiltin(): List<PluginDescriptor> {
-        return RendererPackages.all.map { pkg ->
+        // Only catalog downloadable plugins; bundled kinds (MobileGlues / REL / GL4ES) skip this.
+        return RendererPackages.all.filter { it.kind.requiresPlugin }.map { pkg ->
             val legacyDir = RendererInstaller.installDir(pkg)
             val pluginDir = PluginInstaller.installDir(pkg.id)
             val dir = when {
@@ -221,24 +222,39 @@ object PluginDiscovery {
         val glLib = when {
             !glHint.isNullOrBlank() -> glHint.substringAfterLast('/')
             "ltw" in pkgLower -> "libltw.so"
+            "mcrender" in pkgLower -> "libmcrender.so"
+            "rel" in pkgLower || "openrel" in pkgLower -> "librel.so"
             "angle" in pkgLower -> "libGLESv2_angle.so"
             "zink" in pkgLower || "mesa" in pkgLower -> "libOSMesa.so"
             "krypton" in pkgLower || "ngg" in pkgLower -> "libng_gl4es.so"
             else -> "libgl4es_114.so"
         }
+        val isRel = "rel" in pkgLower || "openrel" in pkgLower
+        val isMcRender = "mcrender" in pkgLower
         return PkgMeta(
             type = type,
             glLib = glLib,
-            eglLib = if ("angle" in pkgLower) "libEGL_angle.so" else "libEGL.so",
+            eglLib = when {
+                "angle" in pkgLower -> "libEGL_angle.so"
+                isRel -> "librel.so"
+                else -> "libEGL.so"
+            },
             rendererToken = when {
                 "ltw" in pkgLower -> "opengles3_ltw"
+                isRel -> "opengles3_rel"
                 "zink" in pkgLower -> "vulkan_zink"
                 "virgl" in pkgLower -> "gallium_virgl"
                 else -> "opengles3"
             },
             libGlEs = "3",
-            kindName = null,
-            disguiseAsGl4es = "ltw" in pkgLower || "krypton" in pkgLower || "gl4es" in pkgLower,
+            kindName = when {
+                isRel -> "REL"
+                isMcRender -> "MCRENDER"
+                else -> null
+            },
+            disguiseAsGl4es =
+                "ltw" in pkgLower || "krypton" in pkgLower || "gl4es" in pkgLower ||
+                    isRel, // MCrender must keep soname libmcrender.so (no gl4es disguise)
             extraEnv = emptyMap(),
             requireGl = !looksFcl
         )

@@ -5,7 +5,7 @@
     {
       "id": "iris",
       "matchAny": ["iris-", "iris_", "oculus-", "irisflywheel"],
-      "preferredRenderer": "BOOXIN_GLUES",
+      "preferredRenderer": "MOBILE_GLUES",
       "fallback": ["VULKAN_ZINK", "ANGLE", "GL4ES", "MOBILE_GLUES"],
       "features": ["shaders", "multidraw", "dsa"],
       "env": {
@@ -16,7 +16,7 @@
     {
       "id": "sodium",
       "matchAny": ["sodium-", "sodium_", "embeddium-", "rubidium-", "indium-"],
-      "preferredRenderer": "BOOXIN_GLUES",
+      "preferredRenderer": "MOBILE_GLUES",
       "fallback": ["VULKAN_ZINK", "LTW", "ANGLE", "MOBILE_GLUES"],
       "features": ["multidraw", "buffer_storage", "dsa"],
       "env": {
@@ -27,7 +27,7 @@
     {
       "id": "distanthorizons",
       "matchAny": ["distanthorizons", "distant-horizons", "distant_horizons"],
-      "preferredRenderer": "BOOXIN_GLUES",
+      "preferredRenderer": "MOBILE_GLUES",
       "fallback": ["VULKAN_ZINK", "ANGLE", "MOBILE_GLUES"],
       "features": ["custom_render", "multidraw", "dsa"],
       "env": {
@@ -38,7 +38,7 @@
     {
       "id": "immersiveportals",
       "matchAny": ["immersiveportals", "immersive_portals", "imm_ptl"],
-      "preferredRenderer": "BOOXIN_GLUES",
+      "preferredRenderer": "MOBILE_GLUES",
       "fallback": ["VULKAN_ZINK", "ANGLE", "MOBILE_GLUES"],
       "features": ["custom_render", "dsa"],
       "env": {
@@ -49,7 +49,7 @@
     {
       "id": "create",
       "matchAny": ["create-", "create_"],
-      "preferredRenderer": "BOOXIN_GLUES",
+      "preferredRenderer": "MOBILE_GLUES",
       "fallback": ["VULKAN_ZINK", "ANGLE", "GL4ES", "MOBILE_GLUES"],
       "features": ["custom_render", "compute_emulate", "dsa"],
       "env": {
@@ -62,7 +62,7 @@
     {
       "id": "journeymap",
       "matchAny": ["journeymap", "xaero", "voxelmap"],
-      "preferredRenderer": "BOOXIN_GLUES",
+      "preferredRenderer": "MOBILE_GLUES",
       "fallback": ["GL4ES", "MOBILE_GLUES"],
       "features": ["custom_render"],
       "env": {
@@ -72,7 +72,7 @@
     {
       "id": "neoforge",
       "matchLoader": ["neoforge"],
-      "preferredRenderer": "BOOXIN_GLUES",
+      "preferredRenderer": "MOBILE_GLUES",
       "fallback": ["GL4ES", "MOBILE_GLUES"],
       "env": {
         "BOOXIN_GLUES_PROFILE": "neoforge"
@@ -81,7 +81,7 @@
     {
       "id": "vanilla",
       "matchAny": [],
-      "preferredRenderer": "BOOXIN_GLUES",
+      "preferredRenderer": "MOBILE_GLUES",
       "fallback": ["VULKAN_ZINK", "GL4ES", "MOBILE_GLUES"],
       "env": {
         "BOOXIN_GLUES_PROFILE": "vanilla",

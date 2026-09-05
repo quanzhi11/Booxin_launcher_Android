@@ -24,7 +24,8 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * Auto-translate Modrinth project blurbs / bodies into Simplified Chinese.
+ * Auto-translate Modrinth project blurbs / bodies into Simplified Chinese,
+ * and Chinese community search queries into English for Modrinth.
  *
  * Translation runs on an app-level scope so RecyclerView recycle / fragment
  * lifecycle cancel does not abort in-flight work (results still fill the cache).
@@ -32,12 +33,19 @@ import org.json.JSONObject
 object CommunityDescriptionTranslator {
     private const val TAG = "CommunityTranslate"
     private const val MAX_CHUNK = 450
+    private const val PREFS_ZH = "community_desc_zh"
+    private const val PREFS_EN = "community_query_en"
 
     private val memory = LruCache<String, String>(512)
     private val inflight = ConcurrentHashMap<String, CompletableDeferred<String>>()
     private val gate = Semaphore(permits = 3)
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private lateinit var appContext: Context
+
+    private enum class Target(val prefs: String, val cachePrefix: String) {
+        ZH(PREFS_ZH, "zh:"),
+        EN(PREFS_EN, "en:")
+    }
 
     fun init(context: Context) {
         appContext = context.applicationContext
@@ -58,7 +66,7 @@ object CommunityDescriptionTranslator {
             return
         }
 
-        cached(original)?.let { hit ->
+        cached(original, Target.ZH)?.let { hit ->
             textView.text = hit
             return
         }
@@ -83,56 +91,63 @@ object CommunityDescriptionTranslator {
     fun prefetch(texts: Collection<String>) {
         texts.forEach { raw ->
             val text = raw.trim()
-            if (text.isBlank() || !needsTranslate(text) || cached(text) != null) return@forEach
+            if (text.isBlank() || !needsTranslate(text) || cached(text, Target.ZH) != null) return@forEach
             appScope.launch { runCatching { translate(text) } }
         }
     }
 
-    suspend fun translate(text: String): String = withContext(Dispatchers.IO) {
-        val trimmed = text.trim()
-        if (trimmed.isBlank() || !needsTranslate(trimmed)) return@withContext trimmed
-        cached(trimmed)?.let { return@withContext it }
+    suspend fun translate(text: String): String = translateInternal(text, Target.ZH)
 
-        val key = keyOf(trimmed)
-        val existing = inflight[key]
-        if (existing != null) return@withContext existing.await()
+    /** Chinese / mixed query → English for Modrinth search. */
+    suspend fun translateToEnglish(text: String): String = translateInternal(text, Target.EN)
 
-        val deferred = CompletableDeferred<String>()
-        val winner = inflight.putIfAbsent(key, deferred)
-        if (winner != null) return@withContext winner.await()
+    private suspend fun translateInternal(text: String, target: Target): String =
+        withContext(Dispatchers.IO) {
+            val trimmed = text.trim()
+            if (trimmed.isBlank()) return@withContext trimmed
+            if (target == Target.ZH && !needsTranslate(trimmed)) return@withContext trimmed
+            if (target == Target.EN && !CommunitySearchQuery.containsChinese(trimmed)) {
+                return@withContext trimmed
+            }
+            cached(trimmed, target)?.let { return@withContext it }
 
-        try {
-            val chunks = chunk(trimmed)
-            val out = StringBuilder()
-            for (part in chunks) {
-                val zh = gate.withPermit {
-                    translateChunk(part).getOrElse { err ->
-                        Log.w(TAG, "chunk failed: ${err.message}")
-                        part
+            val key = keyOf(trimmed, target)
+            val existing = inflight[key]
+            if (existing != null) return@withContext existing.await()
+
+            val deferred = CompletableDeferred<String>()
+            val winner = inflight.putIfAbsent(key, deferred)
+            if (winner != null) return@withContext winner.await()
+
+            try {
+                val chunks = chunk(trimmed)
+                val out = StringBuilder()
+                for (part in chunks) {
+                    val done = gate.withPermit {
+                        translateChunk(part, target).getOrElse { err ->
+                            Log.w(TAG, "chunk failed (${target.name}): ${err.message}")
+                            part
+                        }
                     }
+                    if (out.isNotEmpty()) out.append('\n')
+                    out.append(done)
                 }
-                if (out.isNotEmpty()) out.append('\n')
-                out.append(zh)
+                val result = out.toString().ifBlank { trimmed }
+                if (result != trimmed) {
+                    putCache(trimmed, result, target)
+                } else {
+                    Log.w(TAG, "all providers returned original (${trimmed.length} chars) → ${target.name}")
+                }
+                deferred.complete(result)
+                result
+            } catch (t: Throwable) {
+                deferred.complete(trimmed)
+                Log.w(TAG, "translate failed (${target.name})", t)
+                trimmed
+            } finally {
+                inflight.remove(key, deferred)
             }
-            val result = out.toString().ifBlank { trimmed }
-            if (result != trimmed && looksMostlyChinese(result)) {
-                putCache(trimmed, result)
-            } else if (result != trimmed) {
-                // Accept anyway if providers returned something different.
-                putCache(trimmed, result)
-            } else {
-                Log.w(TAG, "all providers returned original (${trimmed.length} chars)")
-            }
-            deferred.complete(result)
-            result
-        } catch (t: Throwable) {
-            deferred.complete(trimmed)
-            Log.w(TAG, "translate failed", t)
-            trimmed
-        } finally {
-            inflight.remove(key, deferred)
         }
-    }
 
     fun needsTranslate(text: String): Boolean {
         val sample = text.take(800)
@@ -156,42 +171,27 @@ object CommunityDescriptionTranslator {
         return cjk.toFloat() / letters < 0.40f
     }
 
-    private fun looksMostlyChinese(text: String): Boolean {
-        var letters = 0
-        var cjk = 0
-        for (ch in text.take(400)) {
-            when {
-                ch in '\u4e00'..'\u9fff' -> {
-                    letters++
-                    cjk++
-                }
-                ch.isLetter() -> letters++
-            }
-        }
-        return letters > 0 && cjk.toFloat() / letters >= 0.35f
-    }
-
-    private fun cached(source: String): String? {
-        val key = keyOf(source)
+    private fun cached(source: String, target: Target): String? {
+        val key = keyOf(source, target)
         memory.get(key)?.let { return it }
         if (!::appContext.isInitialized) return null
-        val prefs = appContext.getSharedPreferences("community_desc_zh", Context.MODE_PRIVATE)
+        val prefs = appContext.getSharedPreferences(target.prefs, Context.MODE_PRIVATE)
         return prefs.getString(key, null)?.also { memory.put(key, it) }
     }
 
-    private fun putCache(source: String, translated: String) {
-        val key = keyOf(source)
+    private fun putCache(source: String, translated: String, target: Target) {
+        val key = keyOf(source, target)
         memory.put(key, translated)
         if (!::appContext.isInitialized) return
-        appContext.getSharedPreferences("community_desc_zh", Context.MODE_PRIVATE)
+        appContext.getSharedPreferences(target.prefs, Context.MODE_PRIVATE)
             .edit()
             .putString(key, translated)
             .apply()
     }
 
-    private fun keyOf(source: String): String {
+    private fun keyOf(source: String, target: Target = Target.ZH): String {
         val md = MessageDigest.getInstance("SHA-256")
-        val bytes = md.digest(source.toByteArray(Charsets.UTF_8))
+        val bytes = md.digest((target.cachePrefix + source).toByteArray(Charsets.UTF_8))
         return bytes.joinToString("") { "%02x".format(it) }.take(32)
     }
 
@@ -226,15 +226,22 @@ object CommunityDescriptionTranslator {
         return parts.ifEmpty { listOf(text.take(MAX_CHUNK)) }
     }
 
-    private fun translateChunk(text: String): Result<String> {
-        val providers = listOf(
-            ::translateYoudaoDemo,
-            ::translateMyMemory,
-            ::translateGoogleGtx
-        )
+    private fun translateChunk(text: String, target: Target): Result<String> {
+        val providers = when (target) {
+            Target.ZH -> listOf(
+                { translateYoudaoDemo(text, toZh = true) },
+                { translateMyMemory(text, toZh = true) },
+                { translateGoogleGtx(text, toZh = true) }
+            )
+            Target.EN -> listOf(
+                { translateYoudaoDemo(text, toZh = false) },
+                { translateMyMemory(text, toZh = false) },
+                { translateGoogleGtx(text, toZh = false) }
+            )
+        }
         var last: Throwable? = null
         for (provider in providers) {
-            val result = runCatching { provider(text) }
+            val result = runCatching { provider() }
             val value = result.getOrNull()?.trim()
             if (!value.isNullOrBlank() && !value.equals(text, ignoreCase = true)) {
                 return Result.success(value)
@@ -246,11 +253,11 @@ object CommunityDescriptionTranslator {
 
     private fun client() = HttpClients.shared
 
-    private fun translateYoudaoDemo(text: String): String {
+    private fun translateYoudaoDemo(text: String, toZh: Boolean): String {
         val body = FormBody.Builder()
             .add("q", text)
             .add("from", "Auto")
-            .add("to", "zh-CHS")
+            .add("to", if (toZh) "zh-CHS" else "en")
             .build()
         val req = Request.Builder()
             .url("https://aidemo.youdao.com/trans")
@@ -274,9 +281,10 @@ object CommunityDescriptionTranslator {
         }
     }
 
-    private fun translateMyMemory(text: String): String {
+    private fun translateMyMemory(text: String, toZh: Boolean): String {
         val q = URLEncoder.encode(text, Charsets.UTF_8.name())
-        val url = "https://api.mymemory.translated.net/get?q=$q&langpair=en|zh-CN"
+        val pair = if (toZh) "en|zh-CN" else "zh-CN|en"
+        val url = "https://api.mymemory.translated.net/get?q=$q&langpair=$pair"
         val req = Request.Builder()
             .url(url)
             .header("User-Agent", HttpClients.USER_AGENT)
@@ -296,10 +304,11 @@ object CommunityDescriptionTranslator {
         }
     }
 
-    private fun translateGoogleGtx(text: String): String {
+    private fun translateGoogleGtx(text: String, toZh: Boolean): String {
         val q = URLEncoder.encode(text, Charsets.UTF_8.name())
+        val tl = if (toZh) "zh-CN" else "en"
         val url =
-            "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=zh-CN&dt=t&q=$q"
+            "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=$tl&dt=t&q=$q"
         val req = Request.Builder()
             .url(url)
             .header("User-Agent", HttpClients.USER_AGENT)

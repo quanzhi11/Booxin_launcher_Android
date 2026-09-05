@@ -12,8 +12,8 @@ import kotlin.math.abs
 /**
  * Full-screen touch to mouse.
  *
- * Grabbed: drag looks; tap clicks by [gestureMode]
- * (BUILD = RMB, FIGHT = LMB).
+ * Grabbed: drag looks; short tap clicks by [gestureMode]
+ * (COMBINED = RMB, FIGHT = LMB); long-press holds LMB (mine/attack).
  * Second finger can look while a virtual key is held.
  *
  * GUI clicks are frame-scheduled so cursor is committed before button down,
@@ -26,7 +26,7 @@ class GameTouchPad @JvmOverloads constructor(
 ) : View(context, attrs, defStyleAttr) {
 
     var mouseMoveMode: MouseMoveMode = MouseMoveMode.CLICK
-    var gestureMode: GestureMode = GestureMode.BUILD
+    var gestureMode: GestureMode = GestureMode.COMBINED
     var disableGesture: Boolean = false
     var lookSensitivity: Float = 1.0f
     var guiSensitivity: Float = 1.0f
@@ -48,11 +48,20 @@ class GameTouchPad @JvmOverloads constructor(
     private var clickDownPending = false
     /** True while LMB is logically held from GUI click scheduling. */
     private var guiLmbHeld = false
-    /** Pending grabbed-mode tap release (BUILD/FIGHT short tap). */
+    /** Pending grabbed-mode tap release (COMBINED/FIGHT short tap). */
     private var grabbedTapUp: Choreographer.FrameCallback? = null
     private var grabbedTapButton: Int = -1
+    /** True while LMB is held from an in-world long-press. */
+    private var grabbedLongPressLmb = false
 
     private val choreographer: Choreographer get() = BooxinBridge.sChoreographer
+
+    private val longPressRunnable = Runnable {
+        if (!shouldBeDown || tapCancelled || disableGesture || pointerId < 0) return@Runnable
+        cancelGrabbedTap(releaseIfHeld = true)
+        grabbedLongPressLmb = true
+        GameInput.sendKeyEvent(GameInput.MOUSE_LEFT, true)
+    }
 
     private val clickDownFrame: Choreographer.FrameCallback = Choreographer.FrameCallback {
         clickDownPending = false
@@ -125,6 +134,14 @@ class GameTouchPad @JvmOverloads constructor(
         grabbedTapButton = -1
     }
 
+    private fun cancelLongPress(releaseIfHeld: Boolean) {
+        removeCallbacks(longPressRunnable)
+        if (releaseIfHeld && grabbedLongPressLmb) {
+            GameInput.sendKeyEvent(GameInput.MOUSE_LEFT, false)
+            grabbedLongPressLmb = false
+        }
+    }
+
     init {
         isClickable = true
         isFocusable = false
@@ -135,6 +152,7 @@ class GameTouchPad @JvmOverloads constructor(
     }
 
     fun resetTouchState() {
+        cancelLongPress(releaseIfHeld = true)
         cancelGrabbedTap(releaseIfHeld = true)
         flushGuiClick(releaseIfHeld = true)
         pointerId = -1
@@ -287,6 +305,7 @@ class GameTouchPad @JvmOverloads constructor(
                 if (pointerId >= 0) {
                     endLook(allowTap = false)
                 } else {
+                    cancelLongPress(releaseIfHeld = true)
                     shouldBeDown = false
                     tapCancelled = false
                 }
@@ -300,6 +319,11 @@ class GameTouchPad @JvmOverloads constructor(
             (abs(newDownX - tapAnchorX) > TAP_SLOP || abs(newDownY - tapAnchorY) > TAP_SLOP)
         ) {
             tapCancelled = true
+            // Looking around cancels a pending long-press arm, but keeps an
+            // already-active LMB hold so you can mine while adjusting aim.
+            if (!grabbedLongPressLmb) {
+                removeCallbacks(longPressRunnable)
+            }
         }
         val scale = GameInput.scaleFactor().coerceAtLeast(0.0001)
         val deltaX = ((newDownX - downX) * lookSensitivity / scale).toInt()
@@ -312,6 +336,7 @@ class GameTouchPad @JvmOverloads constructor(
     }
 
     private fun beginLook(id: Int, x: Int, y: Int) {
+        cancelLongPress(releaseIfHeld = true)
         pointerId = id
         shouldBeDown = true
         downX = x
@@ -322,13 +347,26 @@ class GameTouchPad @JvmOverloads constructor(
         downTime = System.currentTimeMillis()
         initialX = GameInput.pointerX
         initialY = GameInput.pointerY
+        if (!disableGesture) {
+            removeCallbacks(longPressRunnable)
+            postDelayed(longPressRunnable, LONG_PRESS_MS)
+        }
     }
 
     private fun endLook(allowTap: Boolean) {
         shouldBeDown = false
+        removeCallbacks(longPressRunnable)
+        if (grabbedLongPressLmb) {
+            GameInput.sendKeyEvent(GameInput.MOUSE_LEFT, false)
+            grabbedLongPressLmb = false
+            pointerId = -1
+            tapCancelled = false
+            return
+        }
         if (allowTap && !tapCancelled && !disableGesture) {
+            // 综合：短按=右键；战斗：短按=左键。长按均为按住左键。
             val button = when (gestureMode) {
-                GestureMode.BUILD -> GameInput.MOUSE_RIGHT
+                GestureMode.COMBINED -> GameInput.MOUSE_RIGHT
                 GestureMode.FIGHT -> GameInput.MOUSE_LEFT
             }
             scheduleGrabbedTap(button)
@@ -341,5 +379,7 @@ class GameTouchPad @JvmOverloads constructor(
         private const val CLICK_FRAME_DELAY_MS = 33L
         private const val TAP_MS = 100L
         private const val TAP_SLOP = 12
+        /** Hold this long without sliding → LMB down until finger up. */
+        private const val LONG_PRESS_MS = 400L
     }
 }

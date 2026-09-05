@@ -1,9 +1,14 @@
 package com.booxin.launcher.core.multiplayer
 
+import android.util.Log
+import com.booxin.launcher.BooxinApp
+import com.booxin.launcher.core.net.FileDownloader
 import java.time.LocalDate
 import java.time.MonthDay
 import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 data class OfficialServerInfo(
@@ -24,24 +29,15 @@ data class OfficialServerInfo(
 }
 
 /**
- * Official server config.
- *
- * Production uses the built-in vanilla target (no remote guanfu / mod sync).
- * [parse] remains for unit tests and tooling.
+ * Official server config — aligned with PC [OfficialServerCatalogService]:
+ * 1. Download https://www.boonix.art/guanfu.txt
+ * 2. Fall back to bundled assets/official/guanfu.txt
  */
 object OfficialServerCatalog {
 
-    /** Legacy remote catalog URL (no longer fetched at runtime). */
     const val CATALOG_URL = "https://www.boonix.art/guanfu.txt"
-
-    private val BUILTIN = OfficialServerInfo(
-        name = "Booxin 官方服务器",
-        host = "svip2.minekuai.com",
-        port = 23825,
-        version = "26.1.2",
-        forgeVersion = "",
-        modUrls = emptyList()
-    )
+    private const val TAG = "OfficialServer"
+    private const val ASSET_FALLBACK = "official/guanfu.txt"
 
     private val keyValueQuoted =
         Regex("""^\s*(.+?)\s*:\s*"([^"]*)"\s*$""", RegexOption.IGNORE_CASE)
@@ -49,20 +45,60 @@ object OfficialServerCatalog {
         Regex("""^\s*(.+?)\s*:\s*(.+?)\s*$""", RegexOption.IGNORE_CASE)
     private val httpUrl = Regex("""https?://[^\s"']+""", RegexOption.IGNORE_CASE)
 
+    private val downloader = FileDownloader()
+    private val loadMutex = Mutex()
+
     @Volatile
-    private var cached: List<OfficialServerInfo> = listOf(BUILTIN)
+    private var cached: List<OfficialServerInfo> = emptyList()
+
+    @Volatile
+    private var loadedOnce: Boolean = false
 
     fun getServers(): List<OfficialServerInfo> = cached
 
     fun invalidate() {
-        cached = listOf(BUILTIN)
+        cached = emptyList()
+        loadedOnce = false
     }
 
     suspend fun ensureLoaded(force: Boolean = false): List<OfficialServerInfo> =
         withContext(Dispatchers.IO) {
-            cached = listOf(BUILTIN)
-            cached
+            loadMutex.withLock {
+                if (!force && loadedOnce) return@withLock cached
+                val content = tryDownload() ?: tryLoadBundledFallback()
+                cached = if (content.isNullOrBlank()) {
+                    emptyList()
+                } else {
+                    parse(content)
+                }
+                loadedOnce = true
+                Log.i(TAG, "loaded ${cached.size} official server(s)")
+                cached
+            }
         }
+
+    private suspend fun tryDownload(): String? =
+        downloader.downloadText(CATALOG_URL).fold(
+            onSuccess = { text ->
+                text.takeIf { it.isNotBlank() }.also {
+                    if (it != null) Log.i(TAG, "downloaded $CATALOG_URL (${it.length} chars)")
+                }
+            },
+            onFailure = { err ->
+                Log.w(TAG, "download failed: ${err.message}")
+                null
+            }
+        )
+
+    private fun tryLoadBundledFallback(): String? =
+        runCatching {
+            val ctx = BooxinApp.getAppContext()
+            ctx.assets.open(ASSET_FALLBACK).bufferedReader(Charsets.UTF_8).use { it.readText() }
+                .takeIf { it.isNotBlank() }
+                ?.also { Log.i(TAG, "using bundled $ASSET_FALLBACK") }
+        }.onFailure { err ->
+            Log.w(TAG, "bundled fallback missing: ${err.message}")
+        }.getOrNull()
 
     internal fun parse(content: String): List<OfficialServerInfo> {
         var host = ""

@@ -8,18 +8,14 @@ import java.io.File
 /**
  * Loads the staged input/GL bridge once.
  *
- * LWJGL looks up a fixed bridge soname, so we stage our library under that name.
+ * Prefer [BOOXIN_SONAME]; legacy libpojavexec.so alias is still accepted.
  * ART and HotSpot must map the same file — prefer the app-private staged copy.
- *
- * Shared-storage absolute paths fail with classloader-namespace; staging lives
- * under [LauncherPaths.runtimeDir] (app filesDir), with APK nativeLibraryDir
- * as fallback.
  */
 object ExecBridgeLoader {
 
     private const val TAG = "ExecBridgeLoader"
-    private const val LWJGL_SONAME = "libpojavexec.so"
     private const val BOOXIN_SONAME = "libbooxin_bridge.so"
+    private const val LEGACY_SONAME = "libpojavexec.so"
     private const val BOOXIN_LIB_NAME = "booxin_bridge"
 
     @Volatile
@@ -33,7 +29,7 @@ object ExecBridgeLoader {
 
             // 1) App-private staged natives (same path HotSpot will System.load).
             val dir = AndroidGameRuntime.nativesDir()
-            val staged = listOf(File(dir, LWJGL_SONAME), File(dir, BOOXIN_SONAME))
+            val staged = listOf(File(dir, BOOXIN_SONAME), File(dir, LEGACY_SONAME))
             for (file in staged) {
                 if (!file.isFile) continue
                 runCatching {

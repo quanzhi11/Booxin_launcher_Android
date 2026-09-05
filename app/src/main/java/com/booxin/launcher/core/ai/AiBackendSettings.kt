@@ -5,6 +5,8 @@ object AiBackendSettings {
     const val PROVIDER_HEADER = "X-AI-Provider"
     const val CHAT_PATH = "/api/ai/chat/completions"
     const val REALTIME_WS_PATH = "/api/ai/realtime/ws"
+    /** Separate mobile membership / quota from PC & Studio. */
+    const val CHANNEL = "mobile"
 
     // Domain only — IP is pinned in ResilientDns (HTTPS to raw IP fails cert host check).
     val baseUrlCandidates = listOf(

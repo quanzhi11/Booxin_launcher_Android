@@ -27,6 +27,7 @@ import com.booxin.launcher.core.runtime.RuntimeEnv
 import com.booxin.launcher.core.version.AndroidIncompatibleMods
 import com.booxin.launcher.core.version.VersionModsManager
 import com.booxin.launcher.ui.launch.LaunchActivity
+import com.booxin.runtime.BooxinBridge
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -96,6 +97,7 @@ class GameLaunchService : Service() {
         val accessToken = intent?.getStringExtra(EXTRA_ACCESS_TOKEN)
         val userType = intent?.getStringExtra(EXTRA_USER_TYPE)
         val serverAddress = intent?.getStringExtra(EXTRA_SERVER_ADDRESS)?.takeIf { it.isNotBlank() }
+        val offlineSkinPath = intent?.getStringExtra(EXTRA_OFFLINE_SKIN_PATH)?.takeIf { it.isNotBlank() }
         val windowWidth = intent?.getIntExtra(EXTRA_WINDOW_WIDTH, 0) ?: 0
         val windowHeight = intent?.getIntExtra(EXTRA_WINDOW_HEIGHT, 0) ?: 0
 
@@ -120,7 +122,8 @@ class GameLaunchService : Service() {
 
         launchJob = scope.launch {
             var outcome: LaunchOutcome = LaunchOutcome.Failed("未知错误")
-            var incompatibleRetryUsed = false
+            var relHealRetryUsed = false
+            var lastExitCode = -1
             try {
                 coroutineScope {
                     while (true) {
@@ -132,26 +135,33 @@ class GameLaunchService : Service() {
                             uuid = uuid,
                             accessToken = accessToken,
                             userType = userType,
-                            serverAddress = serverAddress
+                            serverAddress = serverAddress,
+                            offlineSkinPath = offlineSkinPath
                         )
-                        if (incompatibleRetryUsed) break
-                        if (outcome !is LaunchOutcome.Success &&
-                            outcome !is LaunchOutcome.HardExit
-                        ) {
-                            break
-                        }
                         if (LaunchSession.current() == LaunchPhase.Stopping) break
-                        val crashedMods = disableIncompatibleFromRecentCrash(versionId)
-                        if (crashedMods.isEmpty()) break
-                        incompatibleRetryUsed = true
-                        appendLog("游戏因不兼容模组退出，已禁用:")
-                        crashedMods.forEach { appendLog("  · $it") }
-                        appendLog("重新加载模组列表并自动重试启动…")
-                        LaunchSession.fail("retry-after-incompatible-mod")
-                        if (!LaunchSession.tryBegin()) {
-                            appendLog("无法重试启动（会话忙）")
-                            break
+
+                        // Only after REL already ran with VRAM mitigations and still died.
+                        if (!relHealRetryUsed) {
+                            val healed = com.booxin.launcher.core.runtime.RendererCrashHeal
+                                .healRelWorldJoinCrash(this@GameLaunchService, versionId)
+                            if (healed != null) {
+                                relHealRetryUsed = true
+                                appendLog(healed)
+                                appendLog("使用 MobileGlues 自动重试启动…")
+                                LaunchSession.fail("retry-after-rel-crash")
+                                if (!LaunchSession.tryBegin()) {
+                                    appendLog("无法重试启动（会话忙）")
+                                    break
+                                }
+                                continue
+                            }
                         }
+
+                        lastExitCode = when (outcome) {
+                            is LaunchOutcome.Success -> outcome.exitCode
+                            else -> -1
+                        }
+                        break
                     }
                 }
             } catch (e: CancellationException) {
@@ -169,6 +179,7 @@ class GameLaunchService : Service() {
                 }
             } finally {
                 if (!hardKillScheduled) {
+                    maybeStoreCrashReport(versionId, lastExitCode)
                     settleOutcome(outcome, startId)
                 }
             }
@@ -180,10 +191,11 @@ class GameLaunchService : Service() {
     private sealed class LaunchOutcome(val message: String) {
         class Failed(message: String) : LaunchOutcome(message)
         class HardExit(message: String) : LaunchOutcome(message)
-        class Success(message: String) : LaunchOutcome(message)
+        class Success(message: String, val exitCode: Int = 0) : LaunchOutcome(message)
     }
 
     private fun settleOutcome(outcome: LaunchOutcome, startId: Int) {
+        com.booxin.launcher.core.skin.OfflineSkinLaunch.shutdown()
         when (outcome) {
             is LaunchOutcome.HardExit, is LaunchOutcome.Success -> {
                 appendLog(outcome.message)
@@ -251,7 +263,8 @@ class GameLaunchService : Service() {
         uuid: String? = null,
         accessToken: String? = null,
         userType: String? = null,
-        serverAddress: String? = null
+        serverAddress: String? = null,
+        offlineSkinPath: String? = null
     ): LaunchOutcome {
         appendLog("准备 Java 与游戏文件…")
         GameLaunchLogBus.muteUi.set(false)
@@ -293,18 +306,27 @@ class GameLaunchService : Service() {
         }
         appendLog("游戏资源就绪")
 
-        SodiumPodiumInstaller.ensure(this@GameLaunchService, versionId)?.let { appendLog(it) }
+        SodiumCompatPrep.prepare(versionId)?.let { appendLog(it) }
 
         appendLog("正在扫描模组兼容性…")
         val modScan = AndroidIncompatibleMods.scanAndDisable(versionId)
         if (modScan.changed) {
-            appendLog("发现不兼容模组，已禁用并重新加载模组列表:")
+            appendLog("发现不兼容模组（仅禁用 ARM 无法加载的），已处理:")
             modScan.disabled.forEach { appendLog("  · $it") }
+        } else {
+            appendLog("未发现必须禁用的模组（x86 原生库等）")
         }
         val enabledMods = VersionModsManager.list(versionId).count { it.enabled }
         if (VersionJsonMerger.isModLoaderVersion(versionId)) {
             appendLog("模组列表就绪：启用 $enabledMods 个")
         }
+
+        val gameDirForCompat = File(
+            com.booxin.launcher.core.LauncherPaths.versionsDir,
+            versionId
+        )
+        val compat = ModCompatPrep.prepare(gameDirForCompat, versionId)
+        compat.notes.forEach { appendLog(it) }
 
         val java = AppContainer.javaEnvironment.ensureForMinecraft(versionId).getOrElse {
             return LaunchOutcome.Failed("Java 不可用: ${it.message}")
@@ -323,17 +345,104 @@ class GameLaunchService : Service() {
         if (!surface.isValid) {
             return LaunchOutcome.Failed("Surface 无效")
         }
-        val width = when {
+        var width = when {
             GameSurfaceBridge.width > 1 -> GameSurfaceBridge.width
             windowWidth > 0 -> windowWidth
             else -> resources.displayMetrics.widthPixels
         }
-        val height = when {
+        var height = when {
             GameSurfaceBridge.height > 1 -> GameSurfaceBridge.height
             windowHeight > 0 -> windowHeight
             else -> resources.displayMetrics.heightPixels
         }
-        GameSurfaceBridge.onSurfaceSizeChanged(width, height)
+        val physicalWidth = width
+        val physicalHeight = height
+        GameSurfaceBridge.noteViewSize(physicalWidth, physicalHeight)
+        val mcVersionId = runCatching {
+            VersionJsonMerger.resolveMinecraftVersionId(versionId)
+        }.getOrDefault(versionId)
+        val rendererKind = com.booxin.launcher.core.runtime.RendererBackend.kindForLaunch(
+            instanceVersionId = versionId,
+            mcVersionId = mcVersionId
+        )
+        val launchTune = runCatching {
+            BooxinLaunchTune.resolve(this@GameLaunchService)
+        }.getOrElse {
+            appendLog("启动调优解析失败，使用当前设置: ${it.message}")
+            null
+        }
+        if (launchTune != null) {
+            appendLog("Booxin 启动调优：${launchTune.summaryZh}")
+            // holy GL4ES + 降分辨率：Mojang 后常黑屏。MobileGlues 保留调优缩放（否则
+            // 全分辨率 + Auto guiScale 会把界面放得过大）。
+            val resScale =
+                if ((rendererKind == com.booxin.launcher.core.launch.GlRendererKind.GL4ES ||
+                        rendererKind == com.booxin.launcher.core.launch.GlRendererKind.BOOXIN_GLUES) &&
+                    launchTune.resolutionScale < 0.99f
+                ) {
+                    appendLog(
+                        "GL4ES：禁用分辨率缩放 ${"%.0f".format(launchTune.resolutionScale * 100)}%→100%（避免黑屏）"
+                    )
+                    1f
+                } else {
+                    launchTune.resolutionScale
+                }
+            BooxinLaunchTune.scaledWindow(width, height, resScale)
+                ?.let { (w, h) ->
+                    appendLog(
+                        "渲染分辨率 ${width}x${height} → ${w}x${h} " +
+                            "（${(resScale * 100).toInt()}%，降低填色压力）"
+                    )
+                    width = w
+                    height = h
+                }
+        }
+        val requestedMem = launchTune?.maxMemoryMb
+            ?: com.booxin.launcher.core.LauncherPrefs.maxMemoryMb()
+        val relGuard = com.booxin.launcher.core.runtime.RendererCrashHeal.buildVramGuard(
+            width = width,
+            height = height,
+            requestedMemoryMb = requestedMem,
+            kind = rendererKind
+        )
+        if (relGuard != null) {
+            width = relGuard.width
+            height = relGuard.height
+            appendLog("REL 显存防护：${relGuard.notes.joinToString("；")}")
+            com.booxin.launcher.core.runtime.RendererCrashHeal.markMitigationsApplied(versionId)
+        }
+        // MobileGlues official backend: write its own config.json (GLSL cache / no compute path).
+        if (rendererKind == com.booxin.launcher.core.launch.GlRendererKind.MOBILE_GLUES ||
+            rendererKind == com.booxin.launcher.core.launch.GlRendererKind.BOOXIN_GLUES
+        ) {
+            com.booxin.launcher.core.runtime.MobileGluesConfig.writeProfile(
+                this@GameLaunchService,
+                launchTune,
+                mcVersionId = mcVersionId ?: versionId
+            )
+            appendLog("已写入 MobileGlues 性能配置（官方后端自读取）")
+        }
+        if (rendererKind == com.booxin.launcher.core.launch.GlRendererKind.MCRENDER) {
+            com.booxin.launcher.core.runtime.McRenderConfig.ensureForLaunch(
+                this@GameLaunchService,
+                rendererKind
+            )
+            appendLog("已写入 mcrender.conf（compat=0，修正偏色）")
+        }
+        // Align SurfaceTexture buffer with GLFW size *before* EGL create. REL has no
+        // present blit when FSR is off — a full-physical EGL + shrunk viewport leaves
+        // the unused FB uncleared (solid red) and the game stuck in the bottom-left.
+        val needBufferAlign = width != physicalWidth || height != physicalHeight
+        kotlinx.coroutines.withContext(Dispatchers.Main) {
+            if (needBufferAlign) {
+                GameSurfaceBridge.applyRenderSize(width, height)
+                appendLog(
+                    "渲染缓冲对齐 Surface ${width}x${height}（物理 ${physicalWidth}x${physicalHeight}）"
+                )
+            } else {
+                GameSurfaceBridge.onSurfaceSizeChanged(width, height)
+            }
+        }
         appendLog(PerfSnapshot.launchLine(this@GameLaunchService, width, height))
         runCatching {
             DiagEventLog.i("Perf", PerfSnapshot.launchLine(this@GameLaunchService, width, height))
@@ -343,20 +452,48 @@ class GameLaunchService : Service() {
                 com.booxin.launcher.core.LauncherPaths.versionsDir,
                 versionId
             )
-            GameOptionsPatch.applyWindowOverrides(gameDir, width, height)
-            appendLog(
-                "options.txt → ${width}x${height}，" +
-                    "rd=${com.booxin.launcher.core.LauncherPrefs.renderDistance()}，" +
-                    "vsync=${com.booxin.launcher.core.LauncherPrefs.enableVsync()}"
+            GameOptionsPatch.applyWindowOverrides(
+                gameDir,
+                width,
+                height,
+                launchTune,
+                relMipmapCap = relGuard?.mipmapLevels
             )
+            val rd = launchTune?.renderDistance
+                ?: com.booxin.launcher.core.LauncherPrefs.renderDistance()
+            val vsync = launchTune?.enableVsync
+                ?: com.booxin.launcher.core.LauncherPrefs.enableVsync()
+            appendLog("options.txt → ${width}x${height}，rd=$rd，vsync=$vsync，lang=zh_cn")
         }.onFailure {
             appendLog("options.txt 写入失败: ${it.message}")
         }
-        appendLog("构建启动命令…（窗口 ${width}x${height}，内存 ${com.booxin.launcher.core.LauncherPrefs.maxMemoryMb()} MB）")
-        if (OemLaunchProfile.isVivoFamily()) {
+        val effectiveMemoryMb = relGuard?.maxMemoryMb ?: requestedMem
+        appendLog("构建启动命令…（窗口 ${width}x${height}，内存 ${effectiveMemoryMb} MB）")
+        appendLog("设备配置文件: ${OemLaunchProfile.describe()}")
+        if (OemLaunchProfile.needsClasspathMitigation()) {
             appendLog(
-                "vivo 系 CreateJavaVM 优化：短 classpath / classpath.jar（${OemLaunchProfile.describe()}）"
+                "OEM CreateJavaVM 优化：短 classpath / classpath.jar（${OemLaunchProfile.describe()}）"
             )
+        }
+        val userRenderer = com.booxin.launcher.core.LauncherPrefs.rendererKind()
+        if (userRenderer != null &&
+            OemLaunchProfile.shouldForceMobileGlues(userRenderer) &&
+            rendererKind == com.booxin.launcher.core.launch.GlRendererKind.MOBILE_GLUES
+        ) {
+            appendLog(
+                "OEM 渲染：${userRenderer.displayName} 在此机型易黑屏/无法启动，已改用 MobileGlues"
+            )
+        } else if (userRenderer != null) {
+            appendLog("渲染器：用户指定 ${userRenderer.displayName}（不自动更换）")
+        } else if (
+            OemLaunchProfile.shouldUpgradeGl4esToMobileGlues() &&
+            rendererKind == com.booxin.launcher.core.launch.GlRendererKind.MOBILE_GLUES
+        ) {
+            appendLog("OEM 渲染：自动模式使用 MobileGlues（避免 GL4ES 黑屏/无帧）")
+        }
+        val idLower = versionId.lowercase()
+        if ("fabric" in idLower || "quilt" in idLower) {
+            appendLog("Fabric/Quilt：使用完整 classpath（避免 loader 被打进错误 ClassLoader）")
         }
         if (com.booxin.launcher.core.java.MinecraftJavaRequirement.usesSdlWindowing(versionId)) {
             val sdl = File(com.booxin.launcher.core.launch.AndroidGameRuntime.nativesDir(), "libSDL3.so")
@@ -373,20 +510,60 @@ class GameLaunchService : Service() {
         if (!serverAddress.isNullOrBlank()) {
             appendLog("自动加入服务器: $serverAddress")
         }
+        val offlineSkin = runCatching {
+            if (
+                (accessToken.isNullOrBlank() || accessToken == "0" ||
+                    userType.equals("legacy", ignoreCase = true)) &&
+                com.booxin.launcher.core.skin.OfflineSkinLaunch.resolveSkinFile(
+                    username,
+                    offlineSkinPath
+                ) != null
+            ) {
+                if (!com.booxin.launcher.core.skin.AuthlibInjectorInstaller.isReady()) {
+                    appendLog("正在下载 authlib-injector（原版离线皮肤，非模组）…")
+                }
+            }
+            com.booxin.launcher.core.skin.OfflineSkinLaunch.prepare(
+                username = username,
+                uuidNoDash = uuid,
+                accessToken = accessToken,
+                userType = userType,
+                skinPathHint = offlineSkinPath
+            )
+        }.onFailure {
+            appendLog("离线皮肤准备失败: ${it.message}")
+        }.getOrNull()
+        if (offlineSkin != null) {
+            appendLog("原版离线皮肤已启用（authlib-injector @ ${offlineSkin.apiRoot}）")
+        } else if (
+            (accessToken.isNullOrBlank() || accessToken == "0") &&
+            com.booxin.launcher.core.skin.OfflineSkinLaunch.resolveSkinFile(
+                username,
+                offlineSkinPath
+            ) != null
+        ) {
+            appendLog("离线皮肤未能启用（将使用默认皮肤）")
+        }
         val command = runCatching {
             LaunchCommandBuilder(this@GameLaunchService).build(
                 versionId = versionId,
                 username = username,
                 java = java,
-                maxMemoryMb = com.booxin.launcher.core.LauncherPrefs.maxMemoryMb(),
+                maxMemoryMb = effectiveMemoryMb,
                 windowWidth = width,
                 windowHeight = height,
                 uuid = uuid,
                 accessToken = accessToken,
                 userType = userType,
-                serverAddress = serverAddress
+                serverAddress = serverAddress,
+                javaAgentArg = offlineSkin?.javaAgentArg,
+                offlineSkinAccessToken = offlineSkin?.accessToken,
+                offlineSkinUserType = offlineSkin?.userType,
+                offlineSkinExtraJvmArgs = offlineSkin?.extraJvmArgs.orEmpty(),
+                forceVsync = launchTune?.enableVsync
             )
         }.getOrElse {
+            com.booxin.launcher.core.skin.OfflineSkinLaunch.shutdown()
             return LaunchOutcome.Failed("命令构建失败: ${it.message}")
         }
 
@@ -456,11 +633,15 @@ class GameLaunchService : Service() {
                 val act = LaunchActivity.foregroundOrNull()
                 val surf = GameSurfaceBridge.currentSurface()
                 if (act != null && surf != null) {
-                    appendLog("初始化 SDL3（大栈 ART load）…")
+                    appendLog("初始化 SDL3（仅附着 Surface，库延后加载）…")
                     kotlinx.coroutines.withContext(Dispatchers.Main) {
                         BooxinSdlBootstrap.maybePrepare(act, versionId, surf, width, height)
                     }
-                    appendLog("SDL3 Android JNI 就绪")
+                    appendLog("SDL3 Surface 已附着（JVM 创建后再完成 JNI）")
+                    // Avoid SIGSEGV=IGN during CreateJavaVM while SDL is not yet loaded.
+                    runCatching {
+                        android.system.Os.setenv("BOOXIN_KEEP_SIGSEGV", "1", true)
+                    }
                 } else {
                     appendLog("跳过 SDL 绑定：activity=${act != null} surface=${surf != null}")
                 }
@@ -505,53 +686,22 @@ class GameLaunchService : Service() {
             if (exit.isFailure) {
                 LaunchOutcome.HardExit("启动失败: ${exit.exceptionOrNull()?.message}")
             } else {
-                LaunchOutcome.Success("进程已结束，退出码 ${exit.getOrNull() ?: -1}")
+                val code = exit.getOrNull() ?: -1
+            LaunchOutcome.Success("进程已结束，退出码 $code", code)
             }
         } finally {
             logJob.cancel()
         }
     }
 
-    /**
-     * After JVM exits, read recent crash / launch logs and disable offending mods.
-     */
-    private fun disableIncompatibleFromRecentCrash(versionId: String): List<String> {
-        val cutoff = System.currentTimeMillis() - 5 * 60_000L
-        val chunks = ArrayList<String>()
-        val versionRoot = File(LauncherPaths.versionsDir, versionId)
-        File(versionRoot, "crash-reports").listFiles()
-            ?.filter { it.isFile && it.lastModified() >= cutoff }
-            ?.sortedByDescending { it.lastModified() }
-            ?.take(3)
-            ?.forEach { f ->
-                runCatching { chunks += f.readText().take(120_000) }
-            }
-        versionRoot.listFiles()
-            ?.filter {
-                it.isFile && it.lastModified() >= cutoff &&
-                    (it.name.startsWith("hs_err_pid") || it.name.contains("crash", ignoreCase = true))
-            }
-            ?.sortedByDescending { it.lastModified() }
-            ?.take(2)
-            ?.forEach { f ->
-                runCatching { chunks += f.readText().take(80_000) }
-            }
-        runCatching {
-            val launchLog = File(LauncherPaths.rootDir, "logs/latest-launch.log")
-            if (launchLog.isFile && launchLog.lastModified() >= cutoff) {
-                chunks += launchLog.readText().takeLast(100_000)
-            }
-        }
-        val text = chunks.joinToString("\n")
-        if (text.isBlank()) return emptyList()
-        val looksNativeFail =
-            "UnsatisfiedLinkError" in text ||
-                "EM_X86_64" in text ||
-                "em_x86_64" in text.lowercase() ||
-                "Can't load library" in text ||
-                "libimgui" in text.lowercase()
-        if (!looksNativeFail) return emptyList()
-        return AndroidIncompatibleMods.disableFromCrashText(versionId, text)
+    private fun maybeStoreCrashReport(versionId: String, exitCode: Int) {
+        val report = GameCrashAnalyzer.analyze(
+            versionId = versionId,
+            exitCode = exitCode,
+            gameWasRunning = LaunchSession.hotspotEntered
+        ) ?: return
+        GameCrashReportStore.save(applicationContext, report)
+        appendLog("已记录崩溃报告：${report.summary}")
     }
 
     private fun startAsForeground(content: String) {
@@ -646,6 +796,14 @@ class GameLaunchService : Service() {
                 )
                 GameSurfaceBridge.markRebound()
                 backend.enableInput()
+                // Nudge MC to rebuild the framebuffer after resume rebind.
+                val w = GameSurfaceBridge.width
+                val h = GameSurfaceBridge.height
+                if (w > 2 && h > 2) {
+                    runCatching {
+                        BooxinBridge.sendUpdateWindowSize(w, h)
+                    }
+                }
                 appendLog(
                     if (attempt == 0) "游戏窗口已重新绑定"
                     else "游戏窗口已重新绑定（重试 ${attempt + 1}）"
@@ -680,6 +838,7 @@ class GameLaunchService : Service() {
     }
 
     override fun onDestroy() {
+        com.booxin.launcher.core.skin.OfflineSkinLaunch.shutdown()
         GameSurfaceBridge.onSurfaceLostWhileRunning = null
         GameSurfaceBridge.onSurfaceRestoredWhileRunning = null
         muteReceiver?.let { runCatching { unregisterReceiver(it) } }
@@ -700,6 +859,7 @@ class GameLaunchService : Service() {
         const val EXTRA_ACCESS_TOKEN = "access_token"
         const val EXTRA_USER_TYPE = "user_type"
         const val EXTRA_SERVER_ADDRESS = "server_address"
+        const val EXTRA_OFFLINE_SKIN_PATH = "offline_skin_path"
         const val ACTION_STOP = "com.booxin.launcher.STOP_GAME"
         private const val CHANNEL_ID = "booxin_game"
         private const val NOTIFICATION_ID = 2107
@@ -713,7 +873,8 @@ class GameLaunchService : Service() {
             uuid: String? = null,
             accessToken: String? = null,
             userType: String? = null,
-            serverAddress: String? = null
+            serverAddress: String? = null,
+            offlineSkinPath: String? = null
         ) {
             val intent = Intent(context, GameLaunchService::class.java).apply {
                 putExtra(EXTRA_VERSION_ID, versionId)
@@ -724,6 +885,7 @@ class GameLaunchService : Service() {
                 accessToken?.let { putExtra(EXTRA_ACCESS_TOKEN, it) }
                 userType?.let { putExtra(EXTRA_USER_TYPE, it) }
                 serverAddress?.takeIf { it.isNotBlank() }?.let { putExtra(EXTRA_SERVER_ADDRESS, it) }
+                offlineSkinPath?.takeIf { it.isNotBlank() }?.let { putExtra(EXTRA_OFFLINE_SKIN_PATH, it) }
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)

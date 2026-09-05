@@ -9,6 +9,7 @@ import android.view.WindowManager
 import com.booxin.launcher.AppContainer
 import com.booxin.launcher.core.LauncherPaths
 import com.booxin.launcher.core.LauncherPrefs
+import com.booxin.launcher.core.launch.BooxinLaunchTune
 import com.booxin.launcher.core.launch.GameSurfaceBridge
 import com.booxin.launcher.core.launch.GlRendererProfile
 import com.booxin.launcher.core.runtime.RendererInstaller
@@ -46,15 +47,17 @@ object PerfSnapshot {
 
     fun launchLine(context: Context, width: Int, height: Int): String {
         val dm = context.resources.displayMetrics
-        val mem = LauncherPrefs.maxMemoryMb()
+        val tune = runCatching { BooxinLaunchTune.resolve(context) }.getOrNull()
+        val mem = tune?.maxMemoryMb ?: LauncherPrefs.maxMemoryMb()
         val pref = LauncherPrefs.rendererPreference()
         val autoKind = AppContainer.repository.session.value.selectedVersionId
             ?.let { GlRendererProfile.forVersion(it) }
             ?.name
             ?: "?"
+        val tuneLabel = tune?.let { "${it.mode.prefValue}->${it.effective.prefValue}" } ?: "?"
         return "PERF surface=${width}x${height} physical=${dm.widthPixels}x${dm.heightPixels} " +
             "density=${dm.density} refresh=${refreshHz(context)} " +
-            "mem=${mem}MB rendererPref=$pref autoKind=$autoKind"
+            "mem=${mem}MB tune=$tuneLabel rendererPref=$pref autoKind=$autoKind"
     }
 
     private fun StringBuilder.appendDevice(context: Context) {
@@ -118,6 +121,7 @@ object PerfSnapshot {
         appendLine("-- launcher prefs --")
         appendLine("maxMemoryMb=${LauncherPrefs.maxMemoryMb()}")
         appendLine("recommendedMaxMb=${LauncherPrefs.recommendedMaxMb()}")
+        appendLine("launchTuneMode=${LauncherPrefs.launchTuneMode().prefValue}")
         val pref = LauncherPrefs.rendererPreference()
         val kind = LauncherPrefs.rendererKind()
         appendLine("rendererPreference=$pref")
@@ -148,7 +152,9 @@ object PerfSnapshot {
         )
         for (name in listOf(
             "libbooxin_bridge.so",
-            "libpojavexec.so",
+            "libbooxin_bridge.so",
+            "libpojavexec.so", // legacy alias copy, if still staged
+
             "libSDL3.so",
             "libmobileglues.so",
             "libgl4es_114.so",

@@ -13,12 +13,12 @@ enum class PluginSource {
     BUILTIN,
     /** Extracted under booxin-runtime/plugins or renderers. */
     LOCAL,
-    /** Discovered via PackageManager (FCL-style installed APK). */
+    /** Discovered via PackageManager (third-party installed APK). */
     PACKAGE
 }
 
 /**
- * Unified renderer/driver plugin descriptor (FCL-inspired).
+ * Unified renderer/driver plugin descriptor.
  */
 data class PluginDescriptor(
     val id: String,

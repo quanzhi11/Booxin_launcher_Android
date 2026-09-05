@@ -28,17 +28,19 @@ object EmbeddedJavaRunner {
 
     /**
      * @param command `-cp`, classpath, mainClass, then processor args
+     * @param logFile optional path for BOOXIN_LAUNCH_LOG (processor stdout/stderr)
      */
     fun run(
         java: InstalledJavaRuntime,
         workingDir: File,
         command: List<String>,
-        extraJvmArgs: List<String> = emptyList()
+        extraJvmArgs: List<String> = emptyList(),
+        logFile: File? = null
     ): Int {
         val chain = listOf(java.majorVersion, 8, 17, 11, 21).distinct()
         for (major in chain) {
             val runtime = AppContainer.javaEnvironment.findInstalled(major) ?: continue
-            val code = runOnce(runtime, workingDir, command, extraJvmArgs)
+            val code = runOnce(runtime, workingDir, command, extraJvmArgs, logFile)
             Log.i(TAG, "java=$major exit=$code")
             if (code == 0) return 0
         }
@@ -49,7 +51,8 @@ object EmbeddedJavaRunner {
         java: InstalledJavaRuntime,
         workingDir: File,
         command: List<String>,
-        extraJvmArgs: List<String>
+        extraJvmArgs: List<String>,
+        logFile: File?
     ): Int {
         killStaleForgeProcesses()
         waitForSiblingProcesses()
@@ -59,10 +62,16 @@ object EmbeddedJavaRunner {
         val commandFile = File(jobDir, "cmd-$jobId.txt")
         val exitFile = File(jobDir, "exit-$jobId.txt")
         exitFile.delete()
+        val resolvedLog = logFile ?: File(jobDir, "log-$jobId.txt")
+        runCatching {
+            resolvedLog.parentFile?.mkdirs()
+            if (!resolvedLog.exists()) resolvedLog.writeText("")
+        }
         commandFile.writeText(
             buildString {
                 appendLine(workingDir.absolutePath)
                 appendLine(java.majorVersion.toString())
+                appendLine(resolvedLog.absolutePath)
                 (defaultJvmArgs() + extraJvmArgs).forEach { appendLine(it) }
                 appendLine("--")
                 command.forEach { appendLine(it) }
@@ -108,7 +117,7 @@ object EmbeddedJavaRunner {
         receiver.start()
         if (!ready.await(3, TimeUnit.SECONDS) || !socketAlive.get()) {
             Log.e(TAG, "UDP listener failed to bind — using in-process fallback")
-            return runInProcess(java, workingDir, command, extraJvmArgs).also {
+            return runInProcess(java, workingDir, command, extraJvmArgs, resolvedLog).also {
                 commandFile.delete()
                 exitFile.delete()
             }
@@ -125,7 +134,7 @@ object EmbeddedJavaRunner {
         } catch (error: Exception) {
             Log.e(TAG, "startForegroundService failed — in-process fallback", error)
             runCatching { receiver.interrupt() }
-            return runInProcess(java, workingDir, command, extraJvmArgs).also {
+            return runInProcess(java, workingDir, command, extraJvmArgs, resolvedLog).also {
                 commandFile.delete()
                 exitFile.delete()
             }
@@ -146,7 +155,7 @@ object EmbeddedJavaRunner {
             Log.e(TAG, ":forge process did not start within ${PROCESS_START_GRACE_MS}ms — in-process fallback")
             killStaleForgeProcesses()
             runCatching { receiver.interrupt() }
-            return runInProcess(java, workingDir, command, extraJvmArgs).also {
+            return runInProcess(java, workingDir, command, extraJvmArgs, resolvedLog).also {
                 commandFile.delete()
                 exitFile.delete()
             }
@@ -196,12 +205,13 @@ object EmbeddedJavaRunner {
         java: InstalledJavaRuntime,
         workingDir: File,
         command: List<String>,
-        extraJvmArgs: List<String>
+        extraJvmArgs: List<String>,
+        logFile: File?
     ): Int {
         return try {
             Log.w(TAG, "running processor in-process java=${java.majorVersion}")
             val tmpDir = File(LauncherPaths.rootDir, "cache/forge/tmp").also { it.mkdirs() }
-            ToolJvmEnvironment.apply(BooxinApp.getAppContext(), java, tmpDir)
+            ToolJvmEnvironment.apply(BooxinApp.getAppContext(), java, tmpDir, logFile)
             if (!NativeJvmLauncher.chdir(workingDir.absolutePath)) {
                 Log.w(TAG, "chdir failed: ${workingDir.absolutePath}")
             }

@@ -19,6 +19,7 @@ import org.json.JSONObject
 import java.io.File
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 
 /** Vanilla install: version.json → client.jar → libraries → assets. */
 class VanillaGameInstaller(
@@ -86,29 +87,32 @@ class VanillaGameInstaller(
                     val file = File(LauncherPaths.assetsDir, "objects/${obj.hashPath}")
                     !file.isFile || file.length() <= 0L
                 }
-                if (missing.isEmpty()) return@runCatching
-                emit(
-                    versionId,
-                    GameInstallPhase.ASSETS,
-                    "正在补全缺失资源 ${missing.size} 个…",
-                    0,
-                    missing.size
-                )
-                val provider = DownloadProviders.current()
-                downloadAll(
-                    items = missing.map { obj ->
-                        DownloadItem(
-                            rawUrl = obj.hashPath,
-                            destination = File(LauncherPaths.assetsDir, "objects/${obj.hashPath}"),
-                            sha1 = obj.hash,
-                            label = obj.hash,
-                            urlCandidates = provider.assetCandidates(obj.hashPath)
-                        )
-                    },
-                    versionId = versionId,
-                    phase = GameInstallPhase.ASSETS,
-                    concurrency = ASSET_CONCURRENCY
-                )
+                if (missing.isNotEmpty()) {
+                    emit(
+                        versionId,
+                        GameInstallPhase.ASSETS,
+                        "正在补全缺失资源 ${missing.size} 个…",
+                        0,
+                        missing.size
+                    )
+                    val provider = DownloadProviders.current()
+                    downloadAll(
+                        items = missing.map { obj ->
+                            DownloadItem(
+                                rawUrl = obj.hashPath,
+                                destination = File(LauncherPaths.assetsDir, "objects/${obj.hashPath}"),
+                                sha1 = obj.hash,
+                                label = obj.hash,
+                                urlCandidates = provider.assetCandidates(obj.hashPath)
+                            )
+                        },
+                        versionId = versionId,
+                        phase = GameInstallPhase.ASSETS,
+                        concurrency = ASSET_CONCURRENCY
+                    )
+                }
+                // pre-1.6 / legacy: objects → virtual/<id>/ (+ version resources/)
+                reconstructLegacyAssets(versionId, indexId, indexFile)
             }.onFailure { error ->
                 if (error is kotlinx.coroutines.CancellationException) throw error
                 emit(versionId, GameInstallPhase.FAILED, error.message ?: "资源补全失败")
@@ -126,7 +130,7 @@ class VanillaGameInstaller(
             val indexId = assetIndexObj.optString("id").ifBlank { return@runCatching emptyList() }
             val indexFile = File(LauncherPaths.assetsDir, "indexes/$indexId.json")
             if (!indexFile.isFile) {
-                return@runCatching listOf(AssetObject(hash = "missing-index", size = -1L))
+                return@runCatching listOf(AssetObject(name = "index", hash = "missing-index", size = -1L))
             }
             GameJsonParser.parseAssetIndex(indexFile.readText()).filter { obj ->
                 val file = File(LauncherPaths.assetsDir, "objects/${obj.hashPath}")
@@ -203,6 +207,7 @@ class VanillaGameInstaller(
                         phase = GameInstallPhase.ASSETS,
                         concurrency = ASSET_CONCURRENCY
                     )
+                    reconstructLegacyAssets(versionId, assetIndex.id, indexFile)
                 }
 
                 emit(versionId, GameInstallPhase.DONE, "安装完成")
@@ -231,13 +236,19 @@ class VanillaGameInstaller(
         val semaphore = Semaphore(concurrency)
         val completed = AtomicInteger(0)
         val total = items.size
+        val lastEmitAt = AtomicLong(0L)
+        // Assets: existence+size is enough; full SHA on every file throttles throughput hard.
+        val skipShaIfPresent = phase == GameInstallPhase.ASSETS
         items.map { item ->
             async(Dispatchers.IO) {
                 semaphore.withPermit {
-                    if (!Digests.matchesSha1(item.destination, item.sha1)) {
+                    val dest = item.destination
+                    val alreadyThere = dest.isFile && dest.length() > 0L &&
+                        (skipShaIfPresent || Digests.matchesSha1(dest, item.sha1))
+                    if (!alreadyThere) {
                         downloadVerified(
                             rawUrl = item.rawUrl,
-                            destination = item.destination,
+                            destination = dest,
                             sha1 = item.sha1,
                             versionId = versionId,
                             phase = phase,
@@ -246,10 +257,18 @@ class VanillaGameInstaller(
                         )
                     }
                     val done = completed.incrementAndGet()
-                    emit(versionId, phase, "已完成 $done / $total", done, total)
+                    val now = System.currentTimeMillis()
+                    val prev = lastEmitAt.get()
+                    if (done == 1 || done == total || now - prev >= ASSET_PROGRESS_EMIT_MS) {
+                        if (lastEmitAt.compareAndSet(prev, now) || done == total || done == 1) {
+                            lastEmitAt.set(now)
+                            emit(versionId, phase, "已完成 $done / $total", done, total)
+                        }
+                    }
                 }
             }
         }.awaitAll()
+        emit(versionId, phase, "已完成 $total / $total", total, total)
     }
 
     private suspend fun downloadVerified(
@@ -314,6 +333,70 @@ class VanillaGameInstaller(
         )
     }
 
+    /**
+     * HMCL reconstructAssets: for virtual / map_to_resources indexes (pre-1.6, legacy),
+     * copy hashed objects into assets/virtual/<id>/ and optionally <version>/resources/
+     * so Beta/early-release clients find icons & sounds without the dead S3 host.
+     */
+    private fun reconstructLegacyAssets(versionId: String, indexId: String, indexFile: File) {
+        if (!indexFile.isFile) return
+        val index = runCatching { GameJsonParser.parseAssetIndexFull(indexFile.readText()) }
+            .getOrNull() ?: return
+        // Always rebuild virtual tree when index is marked virtual OR known legacy ids,
+        // or when map_to_resources is set (pre-1.6 sounds/icons).
+        val knownLegacy = indexId.equals("pre-1.6", true) ||
+            indexId.equals("legacy", true)
+        if (!index.virtual && !index.mapToResources && !knownLegacy) return
+
+        emit(versionId, GameInstallPhase.ASSETS, "正在重建旧版资源目录（virtual/$indexId）…")
+        val virtualRoot = File(LauncherPaths.assetsDir, "virtual/$indexId")
+        val resourcesRoot = File(LauncherPaths.versionsDir, "$versionId/resources")
+        var copied = 0
+        var present = 0
+        for (obj in index.objects) {
+            if (obj.name.isBlank()) continue
+            val original = File(LauncherPaths.assetsDir, "objects/${obj.hashPath}")
+            if (!original.isFile || original.length() <= 0L) continue
+            present++
+            val virtualTarget = File(virtualRoot, obj.name)
+            if (linkOrCopy(original, virtualTarget)) copied++
+            if (index.mapToResources || knownLegacy) {
+                linkOrCopy(original, File(resourcesRoot, obj.name))
+            }
+        }
+        // HMCL: if fewer than 10% of objects exist, virtual tree is useless.
+        if (index.objects.isNotEmpty() && present * 10 < index.objects.size) {
+            android.util.Log.w(
+                "VanillaInstaller",
+                "legacy virtual assets sparse present=$present/${index.objects.size} for $indexId"
+            )
+        } else {
+            android.util.Log.i(
+                "VanillaInstaller",
+                "legacy virtual assets index=$indexId present=$present linkedOrCopied=$copied " +
+                    "mapToResources=${index.mapToResources || knownLegacy}"
+            )
+        }
+    }
+
+    private fun linkOrCopy(source: File, dest: File): Boolean {
+        if (dest.isFile && dest.length() == source.length()) return false
+        dest.parentFile?.mkdirs()
+        // Prefer hardlink (same filesystem, cheap); fall back to copy.
+        val linked = runCatching {
+            if (dest.exists()) dest.delete()
+            java.nio.file.Files.createLink(dest.toPath(), source.toPath())
+            true
+        }.getOrDefault(false)
+        if (linked) return true
+        return runCatching {
+            source.inputStream().use { input ->
+                dest.outputStream().use { output -> input.copyTo(output) }
+            }
+            true
+        }.getOrDefault(false)
+    }
+
     private data class DownloadItem(
         val rawUrl: String,
         val destination: File,
@@ -323,7 +406,10 @@ class VanillaGameInstaller(
     )
 
     companion object {
-        private const val LIBRARY_CONCURRENCY = 6
-        private const val ASSET_CONCURRENCY = 12
+        private const val LIBRARY_CONCURRENCY = 12
+        /** Many small asset objects — higher concurrency materially cuts wall time. */
+        private const val ASSET_CONCURRENCY = 32
+        /** Avoid flooding UI/StateFlow on every tiny asset completion. */
+        private const val ASSET_PROGRESS_EMIT_MS = 120L
     }
 }

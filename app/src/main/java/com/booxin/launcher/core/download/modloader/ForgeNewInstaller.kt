@@ -301,6 +301,10 @@ object ForgeNewInstaller {
         val outputHint = outputs.keys.firstOrNull()?.let { File(it).name } ?: "输出 jar"
         onStatus("正在启动 Java 工具…\n目标：$outputHint")
 
+        // jarsplitter/binarypatcher need parent dirs; stale .cache can NPE / exit 1.
+        ensureProcessorPaths(args, outputs.keys)
+        clearStaleProcessorCaches(outputs.keys)
+
         val command = buildList {
             add("-cp")
             add(classpath.joinToString(File.pathSeparator))
@@ -308,6 +312,11 @@ object ForgeNewInstaller {
             addAll(args)
         }
         val watchFiles = outputs.keys.map(::File)
+        val procLog = File(LauncherPaths.rootDir, "cache/forge/last-processor.log")
+        runCatching {
+            procLog.parentFile?.mkdirs()
+            procLog.writeText("")
+        }
         val exitCode = try {
             coroutineScope {
                 val startedAt = System.currentTimeMillis()
@@ -315,7 +324,8 @@ object ForgeNewInstaller {
                     EmbeddedJavaRunner.run(
                         java = java,
                         workingDir = LauncherPaths.rootDir,
-                        command = command
+                        command = command,
+                        logFile = procLog
                     )
                 }
                 while (!runner.isCompleted) {
@@ -332,10 +342,15 @@ object ForgeNewInstaller {
             }
         } catch (error: Exception) {
             Log.e(TAG, "processor crashed: $mainClass", error)
-            throw IllegalStateException("Forge processor 运行失败: ${error.message}", error)
+            throw IllegalStateException(
+                "Forge processor 运行失败: ${error.message}" + processorLogTail(procLog),
+                error
+            )
         }
         if (exitCode != 0) {
-            throw IllegalStateException("Forge processor 退出码 $exitCode（$mainClass）")
+            throw IllegalStateException(
+                "Forge processor 退出码 $exitCode（$mainClass）" + processorLogTail(procLog)
+            )
         }
         Log.i(TAG, "processor done: $mainClass")
         onStatus("工具已结束，正在校验输出…")
@@ -441,6 +456,10 @@ object ForgeNewInstaller {
         }
         val descriptor = processorJarDescriptor(processor).lowercase()
         return when {
+            "jarsplitter" in descriptor -> ProcessorDetail(
+                "拆分 client.jar",
+                "生成 slim/extra jar；通常很快。失败时看退出码后的 Java 日志"
+            )
             "fart" in descriptor || "renaming" in descriptor -> ProcessorDetail(
                 "重命名 MC jar",
                 "把原版 client.jar 转成 official 映射名；约 2–5 分钟，属正常"
@@ -455,6 +474,43 @@ object ForgeNewInstaller {
                 "正在执行 Forge 安装器子步骤"
             )
         }
+    }
+
+    /** Create parents for absolute file args / outputs (avoids jarsplitter NPE on null parent). */
+    private fun ensureProcessorPaths(args: List<String>, outputs: Collection<String>) {
+        val candidates = (args + outputs).filter { looksLikeFilePath(it) }
+        for (path in candidates) {
+            runCatching {
+                val file = File(path)
+                val abs = if (file.isAbsolute) file else File(LauncherPaths.rootDir, path)
+                abs.parentFile?.mkdirs()
+            }
+        }
+    }
+
+    private fun clearStaleProcessorCaches(outputs: Collection<String>) {
+        for (path in outputs) {
+            runCatching {
+                val cache = File("$path.cache")
+                if (cache.isFile) cache.delete()
+            }
+        }
+    }
+
+    private fun looksLikeFilePath(value: String): Boolean {
+        if (value.isBlank() || value.startsWith("--")) return false
+        if (value.startsWith("/") || value.contains('\\')) return true
+        return value.endsWith(".jar") || value.endsWith(".txt") ||
+            value.endsWith(".lzma") || value.endsWith(".json") ||
+            value.endsWith(".cfg") || value.contains("/libraries/")
+    }
+
+    private fun processorLogTail(logFile: File): String {
+        if (!logFile.isFile || logFile.length() == 0L) return ""
+        val text = runCatching { logFile.readText() }.getOrNull().orEmpty()
+        if (text.isBlank()) return ""
+        val trimmed = text.trim().takeLast(900)
+        return "\n—— 工具日志 ——\n$trimmed"
     }
 
     private fun processorLabel(processor: JSONObject): String {
@@ -482,7 +538,7 @@ object ForgeNewInstaller {
         } else {
             GameJsonParser.mavenPath(descriptor)
         }
-        return File(LauncherPaths.librariesDir, path)
+        return File(LauncherPaths.librariesDir, path).also { it.parentFile?.mkdirs() }
     }
 
     private fun extractInstallerEntry(zip: ZipFile, tempDir: File, path: String): String {

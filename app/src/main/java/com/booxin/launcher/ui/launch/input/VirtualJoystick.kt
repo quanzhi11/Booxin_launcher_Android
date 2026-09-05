@@ -12,6 +12,7 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
 import kotlin.math.abs
 import kotlin.math.atan2
@@ -21,6 +22,10 @@ import kotlin.math.min
 /**
  * Left-side virtual WASD stick (mobile-style movement pad).
  * In edit mode it can be dragged / resized like other controls.
+ *
+ * Follow mode (default): on press the pad recenters under the finger; while dragging
+ * only the knob moves (base stays). If the finger goes past the rim, the base chases
+ * so control stays reachable; on release the pad springs home.
  */
 class VirtualJoystick @JvmOverloads constructor(
     context: Context,
@@ -35,6 +40,7 @@ class VirtualJoystick @JvmOverloads constructor(
         set(value) {
             field = value
             if (!value) releaseAll()
+            if (!value) snapFollowHome(animate = false)
             invalidate()
         }
 
@@ -97,6 +103,7 @@ class VirtualJoystick @JvmOverloads constructor(
 
     fun applySpec(newSpec: ControlLayoutData.JoystickSpec) {
         spec = newSpec
+        if (!newSpec.follow) snapFollowHome(animate = false)
         val parent = parent as? ViewGroup
         if (parent != null && parent.width > 0 && parent.height > 0) {
             layoutInParent(parent.width, parent.height)
@@ -163,12 +170,39 @@ class VirtualJoystick @JvmOverloads constructor(
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 pointerId = event.getPointerId(0)
-                applyStick(event.getX(0), event.getY(0), cx, cy, maxR)
+                if (spec.follow) {
+                    // Dynamic joystick: base jumps under thumb once; stick starts neutral.
+                    animate().cancel()
+                    translationX += event.x - cx
+                    translationY += event.y - cy
+                    clampTranslationToParent()
+                    applyStick(cx, cy, cx, cy, maxR)
+                } else {
+                    applyStick(event.getX(0), event.getY(0), cx, cy, maxR)
+                }
             }
             MotionEvent.ACTION_MOVE -> {
                 val idx = event.findPointerIndex(pointerId)
                 if (idx < 0) return true
-                applyStick(event.getX(idx), event.getY(idx), cx, cy, maxR)
+                var x = event.getX(idx)
+                var y = event.getY(idx)
+                if (spec.follow) {
+                    val dx = x - cx
+                    val dy = y - cy
+                    val dist = hypot(dx, dy)
+                    // Soft chase: slide base by the excess past the rim (coords are visual-local).
+                    if (dist > maxR && dist > 0.001f) {
+                        val excess = dist - maxR
+                        val ux = dx / dist
+                        val uy = dy / dist
+                        translationX += ux * excess
+                        translationY += uy * excess
+                        clampTranslationToParent()
+                        x = cx + ux * maxR
+                        y = cy + uy * maxR
+                    }
+                }
+                applyStick(x, y, cx, cy, maxR)
             }
             MotionEvent.ACTION_POINTER_UP -> {
                 if (event.getPointerId(event.actionIndex) == pointerId) {
@@ -180,6 +214,15 @@ class VirtualJoystick @JvmOverloads constructor(
             }
         }
         return true
+    }
+
+    /** Keep the pad on-screen while follow translation is applied. */
+    private fun clampTranslationToParent() {
+        val parent = parent as? ViewGroup ?: return
+        val maxTx = (parent.width - width - left).toFloat().coerceAtLeast(-left.toFloat())
+        val maxTy = (parent.height - height - top).toFloat().coerceAtLeast(-top.toFloat())
+        translationX = translationX.coerceIn(-left.toFloat(), maxTx)
+        translationY = translationY.coerceIn(-top.toFloat(), maxTy)
     }
 
     private fun applyStick(x: Float, y: Float, cx: Float, cy: Float, maxR: Float) {
@@ -202,7 +245,24 @@ class VirtualJoystick @JvmOverloads constructor(
         active = false
         knob.set(cx, cy)
         releaseAll()
+        snapFollowHome(animate = spec.follow)
         invalidate()
+    }
+
+    private fun snapFollowHome(animate: Boolean) {
+        if (!animate || (translationX == 0f && translationY == 0f)) {
+            animate().cancel()
+            translationX = 0f
+            translationY = 0f
+            return
+        }
+        animate().cancel()
+        animate()
+            .translationX(0f)
+            .translationY(0f)
+            .setDuration(180L)
+            .setInterpolator(DecelerateInterpolator())
+            .start()
     }
 
     private fun handleEdit(event: MotionEvent): Boolean {
@@ -295,6 +355,7 @@ class VirtualJoystick @JvmOverloads constructor(
         pointerId = -1
         releaseAll()
         active = false
+        snapFollowHome(animate = false)
         if (width > 0 && height > 0) {
             knob.set(width / 2f, height / 2f)
             invalidate()

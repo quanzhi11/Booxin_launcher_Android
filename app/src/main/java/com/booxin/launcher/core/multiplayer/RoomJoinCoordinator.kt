@@ -10,7 +10,9 @@ data class RoomJoinResult(
     val directConnectAddress: String,
     val hostHostname: String,
     val playerCount: Int,
-    val members: List<RoomMember> = emptyList()
+    val members: List<RoomMember> = emptyList(),
+    /** True when guest-side LAN MOTD rebroadcast was started (best-effort). */
+    val lanBroadcastStarted: Boolean = false
 )
 
 /**
@@ -23,6 +25,7 @@ class RoomJoinCoordinator(
 ) {
     private var easyTier: EasyTierSession? = null
     private var scaffolding: ScaffoldingClient? = null
+    private var lanBroadcast: LanBroadcast? = null
 
     suspend fun join(roomCode: String, playerName: String): RoomJoinResult {
         leave()
@@ -66,18 +69,26 @@ class RoomJoinCoordinator(
         waitForLocalTcp(localMcPort)
 
         val address = if (localMcPort == 25565) "127.0.0.1" else "127.0.0.1:$localMcPort"
-        onStatus("加入成功 · 直连 $address · ${members.size} 人")
-        DiagEventLog.i(TAG, "join ok room=${lobby.roomCode} addr=$address players=${members.size}")
+        val description = LanBroadcast.buildDescription(members)
+        val broadcastStarted = startLanBroadcastBestEffort(description, localMcPort)
+
+        onStatus(JOIN_SUCCESS_STATUS)
+        DiagEventLog.i(
+            TAG,
+            "join ok room=${lobby.roomCode} addr=$address lanBroadcast=$broadcastStarted players=${members.size}"
+        )
         return RoomJoinResult(
             lobby = lobby,
             directConnectAddress = address,
             hostHostname = host.hostname,
             playerCount = members.size,
-            members = members
+            members = members,
+            lanBroadcastStarted = broadcastStarted
         )
     }
 
     fun leave() {
+        stopLanBroadcast()
         try {
             scaffolding?.close()
         } catch (_: Throwable) {
@@ -90,6 +101,33 @@ class RoomJoinCoordinator(
         easyTier = null
         EasyTierSessionHolder.stop()
         onMembersChanged(emptyList())
+    }
+
+    private fun startLanBroadcastBestEffort(description: String, localMcPort: Int): Boolean {
+        stopLanBroadcast()
+        return try {
+            val broadcast = LanBroadcast(
+                context = context,
+                description = description,
+                localPort = localMcPort
+            )
+            broadcast.start()
+            lanBroadcast = broadcast
+            true
+        } catch (t: Throwable) {
+            DiagEventLog.w(TAG, "LAN broadcast start failed (join continues): ${t.message}")
+            lanBroadcast = null
+            false
+        }
+    }
+
+    private fun stopLanBroadcast() {
+        try {
+            lanBroadcast?.close()
+        } catch (t: Throwable) {
+            DiagEventLog.w(TAG, "LAN broadcast stop failed: ${t.message}")
+        }
+        lanBroadcast = null
     }
 
     private suspend fun connectScaffoldingWithRetry(client: ScaffoldingClient, attempts: Int = 8) {
@@ -109,5 +147,7 @@ class RoomJoinCoordinator(
 
     companion object {
         private const val TAG = "RoomJoin"
+        const val JOIN_SUCCESS_STATUS =
+            "加入成功。请打开游戏 → 多人游戏 → 在局域网列表中进入房间（不要手动填 127.0.0.1，除非局域网列表没有出现）"
     }
 }

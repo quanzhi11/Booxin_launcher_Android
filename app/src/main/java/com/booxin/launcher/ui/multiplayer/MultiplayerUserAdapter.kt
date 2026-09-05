@@ -54,6 +54,8 @@ class MultiplayerUserAdapter(
         holder.binding.buttonSecondary.isVisible = !item.secondaryLabel.isNullOrBlank()
         holder.binding.buttonSecondary.text = item.secondaryLabel
         holder.binding.buttonSecondary.setOnClickListener { onSecondary(item) }
+        // Match PC: avatar tap opens user detail; whole row also opens for phone UX.
+        holder.binding.imageAvatar.setOnClickListener { onItemClick(item) }
         holder.binding.root.setOnClickListener { onItemClick(item) }
     }
 

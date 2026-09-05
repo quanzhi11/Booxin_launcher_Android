@@ -3,6 +3,7 @@
 #include <android/log.h>
 #include <android/native_window.h>
 #include <android/native_window_jni.h>
+#include <dlfcn.h>
 #include <jni.h>
 #include <stdlib.h>
 #include <string.h>
@@ -21,8 +22,8 @@ jboolean critical_send_char_mods(jchar codepoint, jint mods);
 void critical_send_scroll(jdouble xoffset, jdouble yoffset);
 void critical_send_screen_size(jint width, jint height);
 void booxin_environ_init(void);
-int pojavInit(void);
-int pojavInitOpenGL(void);
+int booxinInit(void);
+int booxinInitOpenGL(void);
 void booxin_egl_detach_window(void);
 int booxin_egl_attach_window(void);
 
@@ -31,18 +32,28 @@ static JavaVM *g_vm = NULL;
 JNIEXPORT void JNICALL
 Java_org_lwjgl_glfw_CallbackBridge_setupBridgeWindow(JNIEnv *env, jclass cls, jobject surface) {
     (void)cls;
-    if (!pojav_environ) booxin_environ_init();
+    if (!booxin_environ) booxin_environ_init();
     if (surface) {
         ANativeWindow *win = ANativeWindow_fromSurface(env, surface);
         if (win) {
             booxin_retain_native_window(win);
             ANativeWindow_release(win);
-            /* Recreate EGL window surface — required for 2nd+ resume after SurfaceView recreate. */
-            if (!booxin_egl_attach_window()) {
+            /*
+             * SDL (26.3+): do NOT create a Pojav/GLFW EGL window surface on the
+             * shared ANativeWindow. That steals the only Android window surface;
+             * SDL/MobileGlues then cannot present → TextureView frames=0.
+             */
+            const char *win_mode = getenv("BOOXIN_WINDOWING");
+            int sdl_mode = win_mode && strcmp(win_mode, "sdl") == 0;
+            if (sdl_mode) {
+                LOGI("setupBridgeWindow SDL: retain only %dx%d (skip egl attach)",
+                     booxin_environ->savedWidth, booxin_environ->savedHeight);
+            } else if (!booxin_egl_attach_window()) {
                 LOGW("setupBridgeWindow: egl attach deferred (GL not ready yet)");
+            } else {
+                LOGI("setupBridgeWindow %dx%d",
+                     booxin_environ->savedWidth, booxin_environ->savedHeight);
             }
-            LOGI("setupBridgeWindow %dx%d",
-                 pojav_environ->savedWidth, pojav_environ->savedHeight);
         } else {
             LOGW("setupBridgeWindow: ANativeWindow_fromSurface returned null");
         }
@@ -62,13 +73,13 @@ Java_net_kdt_pojavlaunch_utils_JREUtils_releaseBridgeWindow(JNIEnv *env, jclass 
 JNIEXPORT jboolean JNICALL
 Java_org_lwjgl_glfw_CallbackBridge_nativeSetInputReady(JNIEnv *env, jclass cls, jboolean ready) {
     (void)env; (void)cls;
-    if (pojav_environ) pojav_environ->isInputReady = ready == JNI_TRUE;
+    if (booxin_environ) booxin_environ->isInputReady = ready == JNI_TRUE;
     return JNI_TRUE;
 }
 
 JNIEXPORT jboolean JNICALL
 JavaCritical_org_lwjgl_glfw_CallbackBridge_nativeSetInputReady(jboolean ready) {
-    if (pojav_environ) pojav_environ->isInputReady = ready == JNI_TRUE;
+    if (booxin_environ) booxin_environ->isInputReady = ready == JNI_TRUE;
     return JNI_TRUE;
 }
 
@@ -76,13 +87,13 @@ JNIEXPORT void JNICALL
 Java_org_lwjgl_glfw_CallbackBridge_nativeSetGrabbing(JNIEnv *env, jclass cls, jboolean grab) {
     (void)env;
     (void)cls;
-    if (!pojav_environ) return;
-    pojav_environ->isGrabbing = grab;
+    if (!booxin_environ) return;
+    booxin_environ->isGrabbing = grab;
 
     /* HotSpot calls this; UI reads ART's CallbackBridge.isGrabbing.
      * Must notify ART — never call ART jclass with a HotSpot JNIEnv. */
-    JavaVM *dalvik = pojav_environ->dalvikJavaVMPtr;
-    if (!dalvik || !pojav_environ->bridgeClazz || !pojav_environ->method_onGrabStateChanged) {
+    JavaVM *dalvik = booxin_environ->dalvikJavaVMPtr;
+    if (!dalvik || !booxin_environ->bridgeClazz || !booxin_environ->method_onGrabStateChanged) {
         return;
     }
     JNIEnv *artEnv = NULL;
@@ -98,7 +109,7 @@ Java_org_lwjgl_glfw_CallbackBridge_nativeSetGrabbing(JNIEnv *env, jclass cls, jb
         return;
     }
     (*artEnv)->CallStaticVoidMethod(
-        artEnv, pojav_environ->bridgeClazz, pojav_environ->method_onGrabStateChanged, grab);
+        artEnv, booxin_environ->bridgeClazz, booxin_environ->method_onGrabStateChanged, grab);
     if ((*artEnv)->ExceptionCheck(artEnv)) {
         (*artEnv)->ExceptionDescribe(artEnv);
         (*artEnv)->ExceptionClear(artEnv);
@@ -212,68 +223,68 @@ JavaCritical_org_lwjgl_glfw_CallbackBridge_nativeSendScreenSize(jint width, jint
     critical_send_screen_size(width, height);
 }
 
-#define SET_CB(field, value) do { if (pojav_environ) pojav_environ->field = (void *)(intptr_t)(value); } while (0)
+#define SET_CB(field, value) do { if (booxin_environ) booxin_environ->field = (void *)(intptr_t)(value); } while (0)
 
 JNIEXPORT jlong JNICALL
 Java_org_lwjgl_glfw_GLFW_nglfwSetCharCallback(JNIEnv *env, jclass cls, jlong window, jlong cb) {
     (void)env; (void)cls; (void)window;
-    jlong old = pojav_environ ? (jlong)(intptr_t)pojav_environ->GLFW_invoke_Char : 0;
+    jlong old = booxin_environ ? (jlong)(intptr_t)booxin_environ->GLFW_invoke_Char : 0;
     SET_CB(GLFW_invoke_Char, cb);
     return old;
 }
 JNIEXPORT jlong JNICALL
 Java_org_lwjgl_glfw_GLFW_nglfwSetCharModsCallback(JNIEnv *env, jclass cls, jlong window, jlong cb) {
     (void)env; (void)cls; (void)window;
-    jlong old = pojav_environ ? (jlong)(intptr_t)pojav_environ->GLFW_invoke_CharMods : 0;
+    jlong old = booxin_environ ? (jlong)(intptr_t)booxin_environ->GLFW_invoke_CharMods : 0;
     SET_CB(GLFW_invoke_CharMods, cb);
     return old;
 }
 JNIEXPORT jlong JNICALL
 Java_org_lwjgl_glfw_GLFW_nglfwSetCursorEnterCallback(JNIEnv *env, jclass cls, jlong window, jlong cb) {
     (void)env; (void)cls; (void)window;
-    jlong old = pojav_environ ? (jlong)(intptr_t)pojav_environ->GLFW_invoke_CursorEnter : 0;
+    jlong old = booxin_environ ? (jlong)(intptr_t)booxin_environ->GLFW_invoke_CursorEnter : 0;
     SET_CB(GLFW_invoke_CursorEnter, cb);
     return old;
 }
 JNIEXPORT jlong JNICALL
 Java_org_lwjgl_glfw_GLFW_nglfwSetCursorPosCallback(JNIEnv *env, jclass cls, jlong window, jlong cb) {
     (void)env; (void)cls; (void)window;
-    jlong old = pojav_environ ? (jlong)(intptr_t)pojav_environ->GLFW_invoke_CursorPos : 0;
+    jlong old = booxin_environ ? (jlong)(intptr_t)booxin_environ->GLFW_invoke_CursorPos : 0;
     SET_CB(GLFW_invoke_CursorPos, cb);
     return old;
 }
 JNIEXPORT jlong JNICALL
 Java_org_lwjgl_glfw_GLFW_nglfwSetFramebufferSizeCallback(JNIEnv *env, jclass cls, jlong window, jlong cb) {
     (void)env; (void)cls; (void)window;
-    jlong old = pojav_environ ? (jlong)(intptr_t)pojav_environ->GLFW_invoke_FramebufferSize : 0;
+    jlong old = booxin_environ ? (jlong)(intptr_t)booxin_environ->GLFW_invoke_FramebufferSize : 0;
     SET_CB(GLFW_invoke_FramebufferSize, cb);
     return old;
 }
 JNIEXPORT jlong JNICALL
 Java_org_lwjgl_glfw_GLFW_nglfwSetKeyCallback(JNIEnv *env, jclass cls, jlong window, jlong cb) {
     (void)env; (void)cls; (void)window;
-    jlong old = pojav_environ ? (jlong)(intptr_t)pojav_environ->GLFW_invoke_Key : 0;
+    jlong old = booxin_environ ? (jlong)(intptr_t)booxin_environ->GLFW_invoke_Key : 0;
     SET_CB(GLFW_invoke_Key, cb);
     return old;
 }
 JNIEXPORT jlong JNICALL
 Java_org_lwjgl_glfw_GLFW_nglfwSetMouseButtonCallback(JNIEnv *env, jclass cls, jlong window, jlong cb) {
     (void)env; (void)cls; (void)window;
-    jlong old = pojav_environ ? (jlong)(intptr_t)pojav_environ->GLFW_invoke_MouseButton : 0;
+    jlong old = booxin_environ ? (jlong)(intptr_t)booxin_environ->GLFW_invoke_MouseButton : 0;
     SET_CB(GLFW_invoke_MouseButton, cb);
     return old;
 }
 JNIEXPORT jlong JNICALL
 Java_org_lwjgl_glfw_GLFW_nglfwSetScrollCallback(JNIEnv *env, jclass cls, jlong window, jlong cb) {
     (void)env; (void)cls; (void)window;
-    jlong old = pojav_environ ? (jlong)(intptr_t)pojav_environ->GLFW_invoke_Scroll : 0;
+    jlong old = booxin_environ ? (jlong)(intptr_t)booxin_environ->GLFW_invoke_Scroll : 0;
     SET_CB(GLFW_invoke_Scroll, cb);
     return old;
 }
 JNIEXPORT jlong JNICALL
 Java_org_lwjgl_glfw_GLFW_nglfwSetWindowSizeCallback(JNIEnv *env, jclass cls, jlong window, jlong cb) {
     (void)env; (void)cls; (void)window;
-    jlong old = pojav_environ ? (jlong)(intptr_t)pojav_environ->GLFW_invoke_WindowSize : 0;
+    jlong old = booxin_environ ? (jlong)(intptr_t)booxin_environ->GLFW_invoke_WindowSize : 0;
     SET_CB(GLFW_invoke_WindowSize, cb);
     return old;
 }
@@ -281,27 +292,27 @@ Java_org_lwjgl_glfw_GLFW_nglfwSetWindowSizeCallback(JNIEnv *env, jclass cls, jlo
 JNIEXPORT void JNICALL
 Java_org_lwjgl_glfw_GLFW_nglfwSetShowingWindow(JNIEnv *env, jclass cls, jlong window) {
     (void)env; (void)cls;
-    if (pojav_environ) pojav_environ->showingWindow = (long)window;
+    if (booxin_environ) booxin_environ->showingWindow = (long)window;
 }
 
 JNIEXPORT void JNICALL
 Java_org_lwjgl_glfw_GLFW_nglfwGetCursorPos(JNIEnv *env, jclass cls, jlong window, jlong xpos, jlong ypos) {
     (void)env; (void)cls; (void)window;
-    if (!pojav_environ) return;
-    if (xpos) *((double *)(intptr_t)xpos) = pojav_environ->cursorX;
-    if (ypos) *((double *)(intptr_t)ypos) = pojav_environ->cursorY;
+    if (!booxin_environ) return;
+    if (xpos) *((double *)(intptr_t)xpos) = booxin_environ->cursorX;
+    if (ypos) *((double *)(intptr_t)ypos) = booxin_environ->cursorY;
 }
 
 JNIEXPORT void JNICALL
 Java_org_lwjgl_glfw_GLFW_nglfwGetCursorPosA(JNIEnv *env, jclass cls, jlong window, jdoubleArray xpos, jdoubleArray ypos) {
     (void)window;
-    if (!pojav_environ) return;
+    if (!booxin_environ) return;
     if (xpos) {
-        jdouble v = pojav_environ->cursorX;
+        jdouble v = booxin_environ->cursorX;
         (*env)->SetDoubleArrayRegion(env, xpos, 0, 1, &v);
     }
     if (ypos) {
-        jdouble v = pojav_environ->cursorY;
+        jdouble v = booxin_environ->cursorY;
         (*env)->SetDoubleArrayRegion(env, ypos, 0, 1, &v);
     }
 }
@@ -309,9 +320,9 @@ Java_org_lwjgl_glfw_GLFW_nglfwGetCursorPosA(JNIEnv *env, jclass cls, jlong windo
 JNIEXPORT void JNICALL
 JavaCritical_org_lwjgl_glfw_GLFW_nglfwGetCursorPosA(jlong window, jdouble *xpos, jdouble *ypos) {
     (void)window;
-    if (!pojav_environ) return;
-    if (xpos) *xpos = pojav_environ->cursorX;
-    if (ypos) *ypos = pojav_environ->cursorY;
+    if (!booxin_environ) return;
+    if (xpos) *xpos = booxin_environ->cursorX;
+    if (ypos) *ypos = booxin_environ->cursorY;
 }
 
 JNIEXPORT void JNICALL
@@ -351,30 +362,30 @@ Java_com_tungsten_fclauncher_CriticalNativeTest_testCriticalNative(JNIEnv *env, 
 }
 
 static void cache_bridge_methods(JNIEnv *env) {
-    if (!pojav_environ) return;
+    if (!booxin_environ) return;
     jclass cls = (*env)->FindClass(env, "org/lwjgl/glfw/CallbackBridge");
     if (!cls || (*env)->ExceptionCheck(env)) {
         if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
         return;
     }
-    pojav_environ->bridgeClazz = (*env)->NewGlobalRef(env, cls);
-    pojav_environ->method_onGrabStateChanged =
+    booxin_environ->bridgeClazz = (*env)->NewGlobalRef(env, cls);
+    booxin_environ->method_onGrabStateChanged =
         (*env)->GetStaticMethodID(env, cls, "onGrabStateChanged", "(Z)V");
     if ((*env)->ExceptionCheck(env)) {
         (*env)->ExceptionClear(env);
-        pojav_environ->method_onGrabStateChanged = NULL;
+        booxin_environ->method_onGrabStateChanged = NULL;
     }
-    pojav_environ->method_accessAndroidClipboard =
+    booxin_environ->method_accessAndroidClipboard =
         (*env)->GetStaticMethodID(env, cls, "accessAndroidClipboard", "(ILjava/lang/String;)Ljava/lang/String;");
     if ((*env)->ExceptionCheck(env)) {
         (*env)->ExceptionClear(env);
-        pojav_environ->method_accessAndroidClipboard = NULL;
+        booxin_environ->method_accessAndroidClipboard = NULL;
     }
     (*env)->DeleteLocalRef(env, cls);
 }
 
 void booxin_bind_glfw_input_buffers(JNIEnv *env) {
-    if (!env || !pojav_environ) return;
+    if (!env || !booxin_environ) return;
     jclass glfwCls = (*env)->FindClass(env, "org/lwjgl/glfw/GLFW");
     if (!glfwCls || (*env)->ExceptionCheck(env)) {
         if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
@@ -397,7 +408,7 @@ void booxin_bind_glfw_input_buffers(JNIEnv *env) {
         void *addr = (*env)->GetDirectBufferAddress(env, keyBuf);
         jlong cap = (*env)->GetDirectBufferCapacity(env, keyBuf);
         if (addr && cap >= 317) {
-            pojav_environ->keyDownBuffer = (jbyte *)addr;
+            booxin_environ->keyDownBuffer = (jbyte *)addr;
             LOGI("bound keyDownBuffer=%p cap=%lld", addr, (long long)cap);
         }
         (*env)->DeleteLocalRef(env, keyBuf);
@@ -406,7 +417,7 @@ void booxin_bind_glfw_input_buffers(JNIEnv *env) {
         void *addr = (*env)->GetDirectBufferAddress(env, mouseBuf);
         jlong cap = (*env)->GetDirectBufferCapacity(env, mouseBuf);
         if (addr && cap >= 8) {
-            pojav_environ->mouseDownBuffer = (jbyte *)addr;
+            booxin_environ->mouseDownBuffer = (jbyte *)addr;
             LOGI("bound mouseDownBuffer=%p cap=%lld", addr, (long long)cap);
         }
         (*env)->DeleteLocalRef(env, mouseBuf);
@@ -438,22 +449,55 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
     if ((*vm)->GetEnv(vm, (void **)&env, JNI_VERSION_1_6) != JNI_OK) {
         return JNI_VERSION_1_6;
     }
-    /* ART first, then HotSpot. */
-    if (!pojav_environ->dalvikJavaVMPtr) {
-        pojav_environ->dalvikJavaVMPtr = vm;
-        pojav_environ->dalvikJNIEnvPtr_ANDROID = env;
-        LOGI("JNI_OnLoad ART/dalvik");
-        /* Cache ART CallbackBridge only — HotSpot must not overwrite bridgeClazz. */
-        cache_bridge_methods(env);
-    } else if (!pojav_environ->runtimeJavaVMPtr || pojav_environ->runtimeJavaVMPtr != vm) {
-        pojav_environ->runtimeJavaVMPtr = vm;
-        pojav_environ->runtimeJNIEnvPtr_JRE = env;
-        LOGI("JNI_OnLoad HotSpot");
+    /* ART can resolve android.* classes; HotSpot cannot.
+     * Never assume "first JNI_OnLoad == ART" — Forge skips ART preload so the
+     * first load is often HotSpot (mis-labeling broke grab/input). */
+    int is_art = 0;
+    {
+        jclass act = (*env)->FindClass(env, "android/app/Activity");
+        if (act && !(*env)->ExceptionCheck(env)) {
+            is_art = 1;
+            (*env)->DeleteLocalRef(env, act);
+        } else if ((*env)->ExceptionCheck(env)) {
+            (*env)->ExceptionClear(env);
+        }
     }
-    /* HotSpot GLFW buffers are what the game polls — rebind on both VMs safely. */
-    booxin_bind_glfw_input_buffers(env);
+
+    if (is_art) {
+        if (!booxin_environ->dalvikJavaVMPtr) {
+            booxin_environ->dalvikJavaVMPtr = vm;
+            booxin_environ->dalvikJNIEnvPtr_ANDROID = env;
+            LOGI("JNI_OnLoad ART/dalvik");
+            cache_bridge_methods(env);
+        } else if (vm == booxin_environ->dalvikJavaVMPtr) {
+            LOGI("JNI_OnLoad ART (already bound) — skip");
+        }
+    } else {
+        if (!booxin_environ->runtimeJavaVMPtr) {
+            booxin_environ->runtimeJavaVMPtr = vm;
+            booxin_environ->runtimeJNIEnvPtr_JRE = env;
+            LOGI("JNI_OnLoad HotSpot");
+        } else if (vm == booxin_environ->runtimeJavaVMPtr) {
+            LOGI("JNI_OnLoad HotSpot (already bound) — skip");
+        } else {
+            LOGW("JNI_OnLoad ignored unknown vm=%p dalvik=%p runtime=%p",
+                 (void *)vm,
+                 (void *)booxin_environ->dalvikJavaVMPtr,
+                 (void *)booxin_environ->runtimeJavaVMPtr);
+        }
+    }
+    /* Adopt process-global Surface if this mapping missed setupBridgeWindow. */
+    {
+        void **shared = (void **)dlsym(RTLD_DEFAULT, "booxin_shared_native_window");
+        if (shared && *shared) {
+            booxin_retain_native_window((ANativeWindow *)*shared);
+        }
+    }
+    /* Do not FindClass GLFW here: System.load JNI_OnLoad would run
+     * GLFW.<clinit> while the same .so is still loading (LWJGL "Failed to load
+     * a library") and leave glfwInit unwired. Bind buffers after Functions patch. */
     critical_set_stackqueue(JNI_TRUE);
-    pojav_environ->isInputReady = true;
+    booxin_environ->isInputReady = true;
     return JNI_VERSION_1_6;
 }
 

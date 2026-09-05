@@ -12,7 +12,7 @@ import com.booxin.runtime.BooxinBridge
  */
 class GameGyroscope(
     context: Context,
-    sensitivity: Float = 1.15f
+    sensitivity: Float = 3.5f
 ) : SensorEventListener {
 
     private val appContext = context.applicationContext
@@ -61,7 +61,7 @@ class GameGyroscope(
         }
         if (timestampNs != 0L) {
             val dt = (event.timestamp - timestampNs) * NS2S
-            val sens = sensitivity
+            val sens = sensitivity * LOOK_SCALE
             accumX += event.values[0] * dt * sens
             accumY += event.values[1] * dt * sens
             // Apply when we have at least ~0.5px of motion to avoid jitter spam.
@@ -82,7 +82,9 @@ class GameGyroscope(
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
 
     companion object {
-        // Matches common mobile launcher scaling for TYPE_GYROSCOPE rad/s → pixels.
-        private const val NS2S = 1.0f / 40_000_000.0f
+        // Nanoseconds → seconds.
+        private const val NS2S = 1.0f / 1_000_000_000.0f
+        /** Extra gain so mid-slider feels responsive on phone gyros. */
+        private const val LOOK_SCALE = 220f
     }
 }

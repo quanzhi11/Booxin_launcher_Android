@@ -2,6 +2,7 @@ package com.booxin.launcher.core
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.booxin.launcher.core.launch.BooxinLaunchTune
 import com.booxin.launcher.core.launch.GlRendererKind
 import com.booxin.launcher.core.runtime.BooxinGlCompatMode
 import kotlin.math.max
@@ -15,11 +16,15 @@ object LauncherPrefs {
     private const val KEY_MAX_MEMORY_MB = "max_memory_mb"
     private const val KEY_RENDERER = "renderer_kind"
     private const val KEY_RENDERER_LAST_MANUAL = "renderer_kind_last_manual"
+    private const val KEY_RENDERER_MIGRATED_V539 = "renderer_migrated_mobileglues_v539"
+    private const val KEY_GUI_SCALE_AUTO_RESTORED = "options_gui_scale_auto_restored_v1"
     private const val KEY_GL_COMPAT_MODE = "booxin_gl_compat_mode"
     private const val KEY_GAME_DIR_LOCATION = "game_dir_location"
     private const val KEY_GAME_DIR_CUSTOM = "game_dir_custom"
+    private const val KEY_LAUNCH_TUNE_MODE = "launch_tune_mode"
     private const val KEY_RENDER_DISTANCE = "render_distance"
     private const val KEY_VSYNC = "enable_vsync"
+    private const val KEY_FSR1 = "fsr1_enabled"
     private const val KEY_FANCY_GRAPHICS = "fancy_graphics"
     private const val KEY_MASTER_VOLUME = "master_volume_percent"
     private const val KEY_BACKGROUND_THEME = "background_theme"
@@ -28,6 +33,9 @@ object LauncherPrefs {
     private const val KEY_BG_ALIGN_SCALE_Y = "background_align_scale_y"
     private const val KEY_BG_ALIGN_OFFSET_X = "background_align_offset_x"
     private const val KEY_BG_ALIGN_OFFSET_Y = "background_align_offset_y"
+    private const val KEY_AI_PENDING_OUT_TRADE_NO = "ai_pending_out_trade_no"
+    private const val KEY_AI_PENDING_USER_KEY = "ai_pending_user_key"
+    private const val KEY_USER_AGREEMENT_ACCEPTED = "user_agreement_accepted_v1"
     const val RENDERER_AUTO = "auto"
 
     /** Soft floor / ceiling for the settings slider (MB). */
@@ -45,6 +53,20 @@ object LauncherPrefs {
 
     fun init(context: Context) {
         prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        // One-time: old default was Auto→BooxinGlues/GL4ES (often fails to start).
+        // Prefer MobileGlues (manual list #1) unless user already picked another renderer.
+        if (!prefs.contains(KEY_RENDERER_MIGRATED_V539)) {
+            val raw = prefs.getString(KEY_RENDERER, null)
+            if (raw == null || raw == RENDERER_AUTO || raw == GlRendererKind.BOOXIN_GLUES.name) {
+                prefs.edit()
+                    .putString(KEY_RENDERER, GlRendererKind.MOBILE_GLUES.name)
+                    .putString(KEY_RENDERER_LAST_MANUAL, GlRendererKind.MOBILE_GLUES.name)
+                    .putBoolean(KEY_RENDERER_MIGRATED_V539, true)
+                    .apply()
+            } else {
+                prefs.edit().putBoolean(KEY_RENDERER_MIGRATED_V539, true).apply()
+            }
+        }
     }
 
     fun maxMemoryMb(): Int {
@@ -56,6 +78,25 @@ object LauncherPrefs {
     fun setMaxMemoryMb(mb: Int) {
         if (!::prefs.isInitialized) return
         prefs.edit().putInt(KEY_MAX_MEMORY_MB, clampMemory(mb)).apply()
+    }
+
+    fun launchTuneMode(): BooxinLaunchTune.Mode {
+        if (!::prefs.isInitialized) return BooxinLaunchTune.Mode.AUTO
+        return BooxinLaunchTune.Mode.fromPref(prefs.getString(KEY_LAUNCH_TUNE_MODE, null))
+    }
+
+    fun setLaunchTuneMode(mode: BooxinLaunchTune.Mode) {
+        if (!::prefs.isInitialized) return
+        prefs.edit().putString(KEY_LAUNCH_TUNE_MODE, mode.prefValue).apply()
+    }
+
+    /** Mark prefs as user-customized when individual knobs change under a preset. */
+    fun markLaunchTuneCustomIfPreset() {
+        if (!::prefs.isInitialized) return
+        val current = launchTuneMode()
+        if (current != BooxinLaunchTune.Mode.CUSTOM && current != BooxinLaunchTune.Mode.AUTO) {
+            setLaunchTuneMode(BooxinLaunchTune.Mode.CUSTOM)
+        }
     }
 
     fun clampMemory(mb: Int): Int {
@@ -72,10 +113,11 @@ object LauncherPrefs {
         return clampMemory(min(MEMORY_MAX_MB, deviceHint))
     }
 
-    /** Preference key: [RENDERER_AUTO] or [GlRendererKind.name]. */
+    /** Preference key: [RENDERER_AUTO] or [GlRendererKind.name]. Default: MobileGlues. */
     fun rendererPreference(): String {
-        if (!::prefs.isInitialized) return RENDERER_AUTO
-        return prefs.getString(KEY_RENDERER, RENDERER_AUTO) ?: RENDERER_AUTO
+        if (!::prefs.isInitialized) return GlRendererKind.MOBILE_GLUES.name
+        return prefs.getString(KEY_RENDERER, GlRendererKind.MOBILE_GLUES.name)
+            ?: GlRendererKind.MOBILE_GLUES.name
     }
 
     fun isRendererAuto(): Boolean = rendererPreference() == RENDERER_AUTO
@@ -98,6 +140,18 @@ object LauncherPrefs {
 
     fun setRendererKind(kind: GlRendererKind?) {
         setRendererPreference(kind?.name ?: RENDERER_AUTO)
+    }
+
+    /**
+     * One-shot: a prior build forced guiScale=3 into options.txt (menus look tiny
+     * on high-res phones vs Auto). Returns true the first time so the patch can
+     * write guiScale:0; later launches leave the player's in-game choice alone.
+     */
+    fun consumeRestoreGuiScaleToAuto(): Boolean {
+        if (!::prefs.isInitialized) return false
+        if (prefs.getBoolean(KEY_GUI_SCALE_AUTO_RESTORED, false)) return false
+        prefs.edit().putBoolean(KEY_GUI_SCALE_AUTO_RESTORED, true).apply()
+        return true
     }
 
     fun setRendererAuto(enabled: Boolean) {
@@ -186,6 +240,20 @@ object LauncherPrefs {
         prefs.edit().putBoolean(KEY_VSYNC, enabled).apply()
     }
 
+    /**
+     * FSR1 upscale (MobileGlues / REL). Default off: REL FSR remaps FBO0 and can
+     * clip GUI; we scale the SurfaceTexture buffer instead.
+     */
+    fun fsr1Enabled(): Boolean {
+        if (!::prefs.isInitialized) return false
+        return prefs.getBoolean(KEY_FSR1, false)
+    }
+
+    fun setFsr1Enabled(enabled: Boolean) {
+        if (!::prefs.isInitialized) return
+        prefs.edit().putBoolean(KEY_FSR1, enabled).apply()
+    }
+
     fun fancyGraphics(): Boolean {
         if (!::prefs.isInitialized) return true
         return prefs.getBoolean(KEY_FANCY_GRAPHICS, true)
@@ -242,5 +310,40 @@ object LauncherPrefs {
             .putFloat(KEY_BG_ALIGN_OFFSET_X, align.offsetX.coerceIn(-0.5f, 0.5f))
             .putFloat(KEY_BG_ALIGN_OFFSET_Y, align.offsetY.coerceIn(-0.5f, 0.5f))
             .apply()
+    }
+
+    fun aiPendingOutTradeNo(): String? {
+        if (!::prefs.isInitialized) return null
+        return prefs.getString(KEY_AI_PENDING_OUT_TRADE_NO, null)?.takeIf { it.isNotBlank() }
+    }
+
+    fun aiPendingUserKey(): String? {
+        if (!::prefs.isInitialized) return null
+        return prefs.getString(KEY_AI_PENDING_USER_KEY, null)?.takeIf { it.isNotBlank() }
+    }
+
+    fun setAiPendingSubscription(outTradeNo: String?, userKey: String?) {
+        if (!::prefs.isInitialized) return
+        val edit = prefs.edit()
+        if (outTradeNo.isNullOrBlank() || userKey.isNullOrBlank()) {
+            edit.remove(KEY_AI_PENDING_OUT_TRADE_NO).remove(KEY_AI_PENDING_USER_KEY)
+        } else {
+            edit.putString(KEY_AI_PENDING_OUT_TRADE_NO, outTradeNo.trim())
+                .putString(KEY_AI_PENDING_USER_KEY, userKey.trim())
+        }
+        edit.apply()
+    }
+
+    fun clearAiPendingSubscription() = setAiPendingSubscription(null, null)
+
+    fun isUserAgreementAccepted(): Boolean {
+        if (!::prefs.isInitialized) return false
+        return prefs.getBoolean(KEY_USER_AGREEMENT_ACCEPTED, false)
+    }
+
+    fun setUserAgreementAccepted(accepted: Boolean = true) {
+        if (!::prefs.isInitialized) return
+        // commit(): first-launch gate must persist before the next recreate.
+        prefs.edit().putBoolean(KEY_USER_AGREEMENT_ACCEPTED, accepted).commit()
     }
 }

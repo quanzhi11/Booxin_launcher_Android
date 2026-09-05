@@ -79,18 +79,61 @@ object PluginInstaller {
         val id = (embedded?.id ?: preferredId ?: apk.nameWithoutExtension)
             .replace(Regex("[\\\\/:*?\"<>|]"), "_")
             .ifBlank { "plugin-${System.currentTimeMillis()}" }
+        val isRel = id.equals("rel", ignoreCase = true) ||
+            guessedGl.contains("rel", ignoreCase = true) ||
+            preferredId.equals("rel", ignoreCase = true)
+        val isMcRender = id.contains("mcrender", ignoreCase = true) ||
+            guessedGl.contains("mcrender", ignoreCase = true) ||
+            preferredId?.contains("mcrender", ignoreCase = true) == true
+        val disguise = isRel ||
+            guessedGl.contains("gl4es", ignoreCase = true) ||
+            guessedGl.contains("ltw", ignoreCase = true) ||
+            guessedGl.contains("ng_gl4es", ignoreCase = true)
+        // MCrender must NOT disguise as gl4es — self-promote needs real soname.
+        val defaultEgl = when {
+            isRel -> "librel.so"
+            disguise -> "libEGL.so"
+            else -> guessedGl
+        }
         val manifest = embedded?.copy(
             id = id,
-            name = preferredName?.takeIf { it.isNotBlank() } ?: embedded.name
+            name = preferredName?.takeIf { it.isNotBlank() } ?: embedded.name,
+            rendererToken = when {
+                isRel -> "opengles3_rel"
+                embedded.rendererToken.isNotBlank() -> embedded.rendererToken
+                else -> "opengles3"
+            },
+            kindName = when {
+                isRel -> "REL"
+                isMcRender -> "MCRENDER"
+                !embedded.kindName.isNullOrBlank() -> embedded.kindName
+                else -> embedded.kindName
+            },
+            eglLib = if (isRel) "librel.so" else if (isMcRender) "libEGL.so" else embedded.eglLib,
+            glLib = when {
+                isRel -> "librel.so"
+                isMcRender -> "libmcrender.so"
+                else -> embedded.glLib
+            },
+            disguiseAsGl4es = embedded.disguiseAsGl4es || disguise
         ) ?: PluginManifest(
             id = id,
             name = preferredName?.takeIf { it.isNotBlank() } ?: id,
             version = "import",
             type = PluginType.RENDERER,
-            glLib = guessedGl,
-            disguiseAsGl4es = guessedGl.contains("gl4es", ignoreCase = true) ||
-                guessedGl.contains("ltw", ignoreCase = true) ||
-                guessedGl.contains("ng_gl4es", ignoreCase = true)
+            glLib = when {
+                isRel -> "librel.so"
+                isMcRender -> "libmcrender.so"
+                else -> guessedGl
+            },
+            eglLib = defaultEgl,
+            rendererToken = if (isRel) "opengles3_rel" else "opengles3",
+            kindName = when {
+                isRel -> "REL"
+                isMcRender -> "MCRENDER"
+                else -> null
+            },
+            disguiseAsGl4es = disguise
         )
         val dest = installDir(id).also {
             it.deleteRecursively()
@@ -205,7 +248,9 @@ object PluginInstaller {
                         it.contains("ltw", ignoreCase = true) ||
                         it.contains("angle", ignoreCase = true) ||
                         it.contains("gl4es", ignoreCase = true) ||
-                        it.contains("mobileglues", ignoreCase = true)
+                        it.contains("mobileglues", ignoreCase = true) ||
+                        it.contains("mcrender", ignoreCase = true) ||
+                        it.contains("rel", ignoreCase = true)
                 } ?: names.first()
             }
             null

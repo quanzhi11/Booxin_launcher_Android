@@ -7,16 +7,16 @@ import java.lang.reflect.Method;
  * HotSpot-side loader with the correct ClassLoader as {@code @CallerSensitive}
  * {@link System#load} caller. Loading via JNI {@code System.load} directly uses
  * another classloader and fails with "already loaded in another classloader",
- * which can leave LWJGL's SharedLibrary / ART's pojavexec on split copies.
+ * which can leave LWJGL's SharedLibrary / ART's booxin_bridge on split copies.
  */
-public final class BooxinPojavLoader {
-    private BooxinPojavLoader() {}
+public final class BooxinBridgeLoader {
+    private BooxinBridgeLoader() {}
 
     public static void loadAbsolute(String absolutePath) {
         System.load(absolutePath);
     }
 
-    /** Log GLFW.Functions pump pointers for dual-libpojavexec diagnosis. */
+    /** Log GLFW.Functions pump pointers for dual-bridge diagnosis. */
     public static String pumpDiag() {
         try {
             Class<?> fn = Class.forName("org.lwjgl.glfw.GLFW$Functions");

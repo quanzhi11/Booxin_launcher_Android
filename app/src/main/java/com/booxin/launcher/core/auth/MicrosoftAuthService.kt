@@ -29,7 +29,17 @@ object MicrosoftAuthService {
     private const val REFRESH_URL =
         "https://login.microsoftonline.com/consumers/oauth2/v2.0/token"
     private val JSON = "application/json; charset=utf-8".toMediaType()
+    /** Skip refresh when MC token still has ≥10 min left. */
     private const val GRACE_MS = 10 * 60 * 1000L
+    /** Room join: only force-refresh when fewer than 30 min remain. */
+    private const val ROOM_FORCE_REFRESH_IF_LEFT_BELOW_MS = 30 * 60 * 1000L
+    /** On Mojang 429, reuse cached token if it still has ≥2 min left. */
+    private const val RATE_LIMIT_FALLBACK_MIN_LEFT_MS = 2 * 60 * 1000L
+    private const val MC_LOGIN_429_RETRIES = 1
+    private const val MC_LOGIN_429_BASE_DELAY_MS = 5_000L
+
+    @Volatile
+    private var lastMcLogin429AtMs = 0L
 
     data class DeviceCodeSession(
         val userCode: String,
@@ -80,6 +90,10 @@ object MicrosoftAuthService {
     /**
      * Reuse token if still valid (≥10 min left); otherwise refresh; otherwise failure
      * (caller should start device-code again).
+     *
+     * [forceRefresh] (e.g. room join) only forces a full chain when the MC token has
+     * less than 30 min left — avoids hammering Mojang `login_with_xbox` (HTTP 429).
+     * On 429, falls back to a still-usable cached token when possible.
      */
     suspend fun ensureSession(
         account: LauncherAccount,
@@ -92,29 +106,73 @@ object MicrosoftAuthService {
             log.log("account id=${account.id} name=${account.name} forceRefresh=$forceRefresh")
             val now = System.currentTimeMillis()
             val expires = account.accessTokenExpiresAtMs ?: 0L
-            if (!forceRefresh &&
-                !account.accessToken.isNullOrBlank() &&
-                expires - now >= GRACE_MS
-            ) {
-                log.log("session still valid (${(expires - now) / 1000}s left), skip refresh")
+            val leftMs = expires - now
+            val hasToken = !account.accessToken.isNullOrBlank()
+
+            val needRefresh = when {
+                !hasToken -> true
+                forceRefresh && leftMs < ROOM_FORCE_REFRESH_IF_LEFT_BELOW_MS -> true
+                !forceRefresh && leftMs < GRACE_MS -> true
+                else -> false
+            }
+            if (!needRefresh) {
+                log.log(
+                    "session still valid (${leftMs / 1000}s left), " +
+                        "skip refresh (forceRefresh=$forceRefresh)"
+                )
                 return@runCatching account
             }
+
+            // Recent Mojang 429: prefer cached token instead of another login_with_xbox.
+            if (hasToken && leftMs >= RATE_LIMIT_FALLBACK_MIN_LEFT_MS &&
+                now - lastMcLogin429AtMs < 5 * 60 * 1000L
+            ) {
+                log.log(
+                    "skip refresh: Mojang rate-limited recently, " +
+                        "reusing cached MC token (${leftMs / 1000}s left)"
+                )
+                return@runCatching account
+            }
+
             val refresh = account.refreshToken
                 ?: error("微软账号需要重新登录（无 refresh token）")
-            log.log("Step 1/5: refresh Microsoft token")
-            onProgress(Progress("正在刷新微软登录…"))
-            val ms = refreshMicrosoftToken(refresh, log)
-            buildMinecraftAccount(
-                msAccess = ms.first,
-                msRefresh = ms.second,
-                msExpiresIn = ms.third,
-                existingId = account.id,
-                log = log,
-                onProgress = onProgress
+            log.log(
+                "Step 1/5: refresh Microsoft token " +
+                    "(left=${leftMs / 1000}s forceRefresh=$forceRefresh)"
             )
+            onProgress(Progress("正在刷新微软登录…"))
+            try {
+                val ms = refreshMicrosoftToken(refresh, log)
+                buildMinecraftAccount(
+                    msAccess = ms.first,
+                    msRefresh = ms.second,
+                    msExpiresIn = ms.third,
+                    existingId = account.id,
+                    log = log,
+                    onProgress = onProgress
+                )
+            } catch (t: Throwable) {
+                if (isMojangRateLimited(t) &&
+                    hasToken &&
+                    leftMs >= RATE_LIMIT_FALLBACK_MIN_LEFT_MS
+                ) {
+                    log.log(
+                        "Mojang rate-limited; reusing cached MC token " +
+                            "(${leftMs / 1000}s left)"
+                    )
+                    return@runCatching account
+                }
+                throw t
+            }
         }.mapFailure(::normalizeFailure).also { result ->
             MicrosoftAuthLogger.finish(log, result.exceptionOrNull())
         }
+    }
+
+    private fun isMojangRateLimited(t: Throwable): Boolean {
+        val msg = t.message.orEmpty()
+        return msg.contains("HTTP 429") ||
+            msg.contains("Too Many Requests", ignoreCase = true)
     }
 
     private fun normalizeFailure(t: Throwable): Throwable {
@@ -128,6 +186,13 @@ object MicrosoftAuthService {
         if (msg.contains("Unable to resolve host", ignoreCase = true)) {
             return IOException(
                 "网络/DNS 异常：域名解析失败。请检查网络连通性后重试。",
+                t
+            )
+        }
+        if (isMojangRateLimited(t)) {
+            return IOException(
+                "微软/正版登录暂时被限流（HTTP 429）。请等待约 10–30 分钟后再试，" +
+                    "或先退出联机房间再启动。若本地会话仍有效，下次启动会自动复用。",
                 t
             )
         }
@@ -397,20 +462,41 @@ object MicrosoftAuthService {
         // Match PC: only identityToken, use XSTS uhs (not user.auth uhs).
         val payload = JSONObject()
             .put("identityToken", "XBL3.0 x=$uhs;$xsts")
-        val req = Request.Builder()
-            .url("https://api.minecraftservices.com/authentication/login_with_xbox")
-            .header("User-Agent", HttpClients.USER_AGENT)
-            .header("Accept", "application/json")
-            .header("Content-Type", "application/json")
-            .post(payload.toString().toRequestBody(JSON))
-            .build()
-        HttpClients.shared.newCall(req).execute().use { resp ->
-            val text = resp.body?.string().orEmpty()
-            log.logHttp("mc_login", "POST", req.url.toString(), resp.code, text)
-            if (!resp.isSuccessful) throw IOException("MC 登录失败 HTTP ${resp.code}: $text")
-            val json = JSONObject(text)
-            return json.getString("access_token") to json.optInt("expires_in", 86400)
+        var lastError: IOException? = null
+        for (attempt in 0..MC_LOGIN_429_RETRIES) {
+            if (attempt > 0) {
+                val wait = MC_LOGIN_429_BASE_DELAY_MS * attempt
+                log.log("mc_login 429 retry #$attempt after ${wait}ms")
+                try {
+                    Thread.sleep(wait)
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    break
+                }
+            }
+            val req = Request.Builder()
+                .url("https://api.minecraftservices.com/authentication/login_with_xbox")
+                .header("User-Agent", HttpClients.USER_AGENT)
+                .header("Accept", "application/json")
+                .header("Content-Type", "application/json")
+                .post(payload.toString().toRequestBody(JSON))
+                .build()
+            HttpClients.shared.newCall(req).execute().use { resp ->
+                val text = resp.body?.string().orEmpty()
+                log.logHttp("mc_login", "POST", req.url.toString(), resp.code, text)
+                if (resp.isSuccessful) {
+                    val json = JSONObject(text)
+                    return json.getString("access_token") to json.optInt("expires_in", 86400)
+                }
+                if (resp.code == 429) {
+                    lastMcLogin429AtMs = System.currentTimeMillis()
+                    lastError = IOException("MC 登录失败 HTTP 429: $text")
+                    return@use
+                }
+                throw IOException("MC 登录失败 HTTP ${resp.code}: $text")
+            }
         }
+        throw lastError ?: IOException("MC 登录失败 HTTP 429")
     }
 
     private fun minecraftProfile(mcToken: String, log: MicrosoftAuthLogger.Session): JSONObject {

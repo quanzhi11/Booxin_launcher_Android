@@ -45,12 +45,29 @@
         android:orientation="horizontal">
 
         <com.google.android.material.button.MaterialButton
+            android:id="@+id/buttonUiPluginPages"
+            style="@style/Widget.Material3.Button.TextButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:minWidth="0dp"
+            android:text="@string/ui_plugin_action_pages"
+            android:visibility="gone" />
+
+        <com.google.android.material.button.MaterialButton
             android:id="@+id/buttonUiPluginToggle"
             style="@style/Widget.Material3.Button.TextButton"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:minWidth="0dp"
             android:text="@string/plugins_action_disable" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/buttonUiPluginUpdate"
+            style="@style/Widget.Material3.Button.TextButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:minWidth="0dp"
+            android:text="@string/ui_plugin_action_update" />
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/buttonUiPluginDelete"

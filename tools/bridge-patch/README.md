@@ -4,7 +4,8 @@ Self-hosted Android LWJGL patch sources for HotSpot classpath merge.
 
 ## Layout
 
-- `src/org/lwjgl/glfw/CallbackBridge.java` — JNI ABI (transitional; called via `BooxinBridge` from ART)
+- `src/org/lwjgl/glfw/CallbackBridge.java` — JNI ABI (called via `BooxinBridge` from ART)
+- `src/org/lwjgl/glfw/BooxinBridgeLoader.java` — HotSpot `System.load` helper
 - `src/org/lwjgl/glfw/BooxinInputHooks.java` — Booxin input helpers
 - `src/org/lwjgl/opengl/RendererInit.java` — GLES translator init
 
@@ -14,3 +15,9 @@ Produce `lwjgl-bridge-patch.jar` / merge into `assets/app_runtime/lwjgl/lwjgl.ja
 without depending on FoldCraftLauncher prebuilt jars as the source of truth.
 
 Upstream LWJGL is BSD-licensed; Booxin patches are project-owned.
+
+Rebrand ABI strings (legacy → Booxin) with:
+
+```text
+python tools/rebrand_pojav_to_booxin.py
+```

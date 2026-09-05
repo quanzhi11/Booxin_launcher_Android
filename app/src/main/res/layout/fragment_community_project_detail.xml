@@ -151,44 +151,6 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="16dp"
-                android:text="@string/community_section_dependencies"
-                android:textColor="@color/booxin_navy"
-                android:textSize="15sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:id="@+id/textDependenciesHint"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:text="@string/community_dependencies_hint"
-                android:textColor="@color/md_theme_light_outline"
-                android:textSize="12sp" />
-
-            <androidx.recyclerview.widget.RecyclerView
-                android:id="@+id/recyclerDependencies"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:nestedScrollingEnabled="false"
-                tools:itemCount="2"
-                tools:listitem="@layout/item_community_dependency" />
-
-            <TextView
-                android:id="@+id/textDependenciesEmpty"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="@string/community_dependencies_empty"
-                android:textColor="@color/md_theme_light_outline"
-                android:textSize="13sp"
-                android:visibility="gone"
-                tools:visibility="visible" />
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="16dp"
                 android:text="@string/community_section_versions"
                 android:textColor="@color/booxin_navy"
                 android:textSize="15sp"
@@ -212,6 +174,43 @@
                 android:textColor="@color/md_theme_light_outline"
                 android:textSize="13sp"
                 android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/textDependenciesSection"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:text="@string/community_section_dependencies"
+                android:textColor="@color/booxin_navy"
+                android:textSize="15sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/textDependenciesHint"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="@string/community_dependencies_hint"
+                android:textColor="@color/md_theme_light_outline"
+                android:textSize="12sp" />
+
+            <LinearLayout
+                android:id="@+id/layoutDependencies"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:orientation="vertical" />
+
+            <TextView
+                android:id="@+id/textDependenciesEmpty"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/community_dependencies_empty"
+                android:textColor="@color/md_theme_light_outline"
+                android:textSize="13sp"
+                android:visibility="gone"
+                tools:visibility="visible" />
         </LinearLayout>
     </androidx.core.widget.NestedScrollView>
 

@@ -188,6 +188,26 @@ object GameInput {
         sendKeyTap(GlfwKeys.KEY_BACKSPACE)
     }
 
+    /**
+     * Open chat (T), type [text], press Enter.
+     * Used by FCL-style `outputText` control buttons (commands / chat).
+     */
+    fun sendChatText(text: String) {
+        val payload = text.trim()
+        if (payload.isEmpty()) return
+        val main = android.os.Handler(android.os.Looper.getMainLooper())
+        // Open chat; Minecraft needs a short beat before accepting chars.
+        sendKeyTap(GlfwKeys.KEY_T)
+        main.postDelayed({
+            for (ch in payload) {
+                sendChar(ch)
+            }
+            main.postDelayed({
+                sendKeyTap(GlfwKeys.KEY_ENTER)
+            }, 40L)
+        }, 80L)
+    }
+
     fun toggleSoftKeyboard() {
         softKeyboard?.switchKeyboardState()
     }

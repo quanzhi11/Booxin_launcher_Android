@@ -21,9 +21,12 @@ import com.booxin.launcher.AppContainer
 import com.booxin.launcher.R
 import com.booxin.launcher.core.net.FileDownloader
 import com.booxin.launcher.core.plugin.PluginManager
-import com.booxin.launcher.core.pluginstore.PluginStoreApi
-import com.booxin.launcher.core.pluginstore.PluginStoreTypes
 import com.booxin.launcher.core.pluginstore.PluginComment
+import com.booxin.launcher.core.pluginstore.PluginStoreApi
+import com.booxin.launcher.core.pluginstore.PluginStorePlatforms
+import com.booxin.launcher.core.pluginstore.PluginStoreTypes
+import com.booxin.launcher.core.pluginstore.StoreInstallAction
+import com.booxin.launcher.core.pluginstore.StoreInstallState
 import com.booxin.launcher.core.pluginstore.StorePlugin
 import com.booxin.launcher.core.uiplugin.UiPluginFonts
 import com.booxin.launcher.core.uiplugin.UiPluginManager
@@ -164,9 +167,14 @@ class PluginStoreFragment : Fragment() {
         binding.buttonDetailBack.setOnClickListener { closePluginDetail() }
         binding.buttonPageRating.setOnClickListener { showDetailPage(comments = false) }
         binding.buttonPageComments.setOnClickListener { showDetailPage(comments = true) }
-        binding.buttonDetailDownload.setOnClickListener {
-            detailPlugin?.let(::downloadPlugin)
+        binding.buttonWriteComment.setOnClickListener {
+            if (AppContainer.multiplayerAuth.current() == null) {
+                toast(getString(R.string.plugin_store_need_login))
+                return@setOnClickListener
+            }
+            setCommentComposerVisible(true)
         }
+        binding.buttonCancelComment.setOnClickListener { setCommentComposerVisible(false) }
         binding.buttonSubmitComment.setOnClickListener { submitDetailComment() }
         binding.ratingBarMine.setOnRatingBarChangeListener { _, rating, fromUser ->
             if (!fromUser || ratingBusy) return@setOnRatingBarChangeListener
@@ -238,7 +246,21 @@ class PluginStoreFragment : Fragment() {
         binding.panelDetailComments.isVisible = comments
         binding.buttonPageRating.alpha = if (comments) 0.55f else 1f
         binding.buttonPageComments.alpha = if (comments) 1f else 0.55f
-        if (comments) refreshDetailComments()
+        if (comments) {
+            setCommentComposerVisible(false)
+            refreshDetailComments()
+        }
+    }
+
+    private fun setCommentComposerVisible(visible: Boolean) {
+        binding.panelCommentComposer.isVisible = visible
+        binding.buttonWriteComment.isVisible = !visible
+        if (!visible) {
+            binding.inputComment.setText("")
+            binding.inputComment.clearFocus()
+        } else {
+            binding.inputComment.requestFocus()
+        }
     }
 
     private fun bindDetailSidebar(p: StorePlugin) {
@@ -247,6 +269,7 @@ class PluginStoreFragment : Fragment() {
             R.string.plugin_store_developer_label,
             p.developerUsername.ifBlank { p.developerUserId }.ifBlank { "-" }
         )
+        binding.textDetailPlatforms.text = PluginStorePlatforms.label(requireContext(), p.platforms)
         binding.textDetailTypeVertical.text = verticalTypeText(
             PluginStoreTypes.label(requireContext(), p.type)
         )
@@ -258,6 +281,40 @@ class PluginStoreFragment : Fragment() {
         binding.textDetailDesc.text = p.description.ifBlank {
             getString(R.string.plugin_store_no_desc)
         }
+        applyStoreActionButton(binding.buttonDetailDownload, p)
+    }
+
+    private fun applyStoreActionButton(
+        button: com.google.android.material.button.MaterialButton,
+        plugin: StorePlugin
+    ) {
+        when (StoreInstallState.actionFor(plugin)) {
+            StoreInstallAction.DOWNLOAD -> {
+                button.isEnabled = true
+                button.alpha = 1f
+                button.setText(R.string.plugin_store_download)
+                button.setOnClickListener { downloadPlugin(plugin) }
+            }
+            StoreInstallAction.INSTALLED -> {
+                button.isEnabled = false
+                button.alpha = 0.55f
+                button.setText(R.string.plugin_store_downloaded)
+                button.setOnClickListener(null)
+            }
+            StoreInstallAction.UPDATE -> {
+                button.isEnabled = true
+                button.alpha = 1f
+                button.setText(R.string.plugin_store_update)
+                button.setOnClickListener { downloadPlugin(plugin) }
+            }
+        }
+    }
+
+    private fun refreshStoreActionUi() {
+        if (::storeAdapter.isInitialized) {
+            storeAdapter.notifyDataSetChanged()
+        }
+        detailPlugin?.let { applyStoreActionButton(binding.buttonDetailDownload, it) }
     }
 
     private fun refreshDetailComments() {
@@ -324,6 +381,7 @@ class PluginStoreFragment : Fragment() {
             api.submitComment(session, plugin.id, text)
                 .onSuccess {
                     binding.inputComment.setText("")
+                    setCommentComposerVisible(false)
                     detailPlugin = plugin.copy(commentCount = plugin.commentCount + 1)
                     allCatalog = allCatalog.map {
                         if (it.id == plugin.id) it.copy(commentCount = plugin.commentCount + 1)
@@ -374,7 +432,9 @@ class PluginStoreFragment : Fragment() {
     }
 
     private fun applyFilter() {
-        var list = allCatalog
+        var list = allCatalog.filter {
+            PluginStorePlatforms.supportsAndroid(it.platforms)
+        }
         filterTypeId?.let { id ->
             list = list.filter { it.type.equals(id, ignoreCase = true) }
         }
@@ -518,6 +578,12 @@ class PluginStoreFragment : Fragment() {
                 toast(getString(R.string.plugin_store_apply_need_name))
                 return@setOnClickListener
             }
+            if (!dialogBinding.checkPlatformAndroid.isChecked &&
+                !dialogBinding.checkPlatformDesktop.isChecked
+            ) {
+                toast(getString(R.string.plugin_store_platforms_need_one))
+                return@setOnClickListener
+            }
             if (!loggedIn) {
                 toast(getString(R.string.plugin_store_need_login))
                 return@setOnClickListener
@@ -553,9 +619,21 @@ class PluginStoreFragment : Fragment() {
         val url = dialogBinding.inputPluginUrl.text?.toString().orEmpty().trim()
         val desc = dialogBinding.inputPluginDesc.text?.toString().orEmpty().trim()
         val type = PluginStoreTypes.idAt(dialogBinding.spinnerApplyType.selectedItemPosition)
+        val platforms = buildList {
+            if (dialogBinding.checkPlatformAndroid.isChecked) {
+                add(PluginStorePlatforms.ANDROID)
+            }
+            if (dialogBinding.checkPlatformDesktop.isChecked) {
+                add(PluginStorePlatforms.DESKTOP)
+            }
+        }
         val file = pickedFile
         if (name.isEmpty()) {
             toast(getString(R.string.plugin_store_form_incomplete))
+            return
+        }
+        if (platforms.isEmpty()) {
+            toast(getString(R.string.plugin_store_platforms_need_one))
             return
         }
         if (file == null && url.isEmpty()) {
@@ -570,9 +648,9 @@ class PluginStoreFragment : Fragment() {
                     dialogBinding.buttonSubmitApply.isEnabled = true
                     return@launch
                 }
-                api.submitApplicationWithFile(session, name, desc, type, file)
+                api.submitApplicationWithFile(session, name, desc, type, file, platforms)
             } else {
-                api.submitApplication(session, name, url, desc, type)
+                api.submitApplication(session, name, url, desc, type, platforms)
             }
             dialogBinding.buttonSubmitApply.isEnabled = true
             result.onSuccess {
@@ -643,13 +721,14 @@ class PluginStoreFragment : Fragment() {
         val session = AppContainer.multiplayerAuth.current()
         val loggedIn = session != null
         binding.ratingBarMine.isEnabled = loggedIn
+        binding.buttonWriteComment.isEnabled = loggedIn
         binding.buttonSubmitComment.isEnabled = loggedIn
         binding.inputComment.isEnabled = loggedIn
         binding.textRateHint.isVisible = !loggedIn
         ratingBusy = true
         binding.ratingBarMine.rating = 0f
         ratingBusy = false
-        binding.inputComment.setText("")
+        setCommentComposerVisible(false)
 
         viewLifecycleOwner.lifecycleScope.launch {
             if (loggedIn && session != null) {
@@ -716,7 +795,16 @@ class PluginStoreFragment : Fragment() {
             return
         }
         viewLifecycleOwner.lifecycleScope.launch {
-            toast(getString(R.string.plugin_store_downloading, plugin.name))
+            toast(
+                getString(
+                    if (StoreInstallState.actionFor(plugin) == StoreInstallAction.UPDATE) {
+                        R.string.ui_plugin_updating
+                    } else {
+                        R.string.plugin_store_downloading
+                    },
+                    plugin.name
+                )
+            )
             val result = withContext(Dispatchers.IO) {
                 runCatching {
                     val dest = File(requireContext().cacheDir, "store-${plugin.id}.bin")
@@ -745,6 +833,11 @@ class PluginStoreFragment : Fragment() {
                         }
                         StorePackageKind.UI_ZIP -> {
                             val installed = UiPluginManager.installFromZip(downloaded.file).getOrThrow()
+                            UiPluginManager.writeStoreMeta(
+                                pluginId = installed.manifest.id,
+                                storePluginId = plugin.id,
+                                storeVersion = plugin.version.ifBlank { installed.manifest.version }
+                            )
                             StoreInstallOutcome.Ui(installed.manifest.name)
                         }
                     }
@@ -759,11 +852,10 @@ class PluginStoreFragment : Fragment() {
                         toast(getString(R.string.ui_plugin_installed, outcome.name))
                         UiPluginFonts.applyTo(activity)
                         UiPluginTheme.applyTo(activity)
-                        binding.togglePluginSide.check(R.id.tabUiLocal)
-                        ensureUiLocalFragment()
                         refreshUiLocalFragment()
                     }
                 }
+                refreshStoreActionUi()
             }.onFailure {
                 toast(
                     getString(

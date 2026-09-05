@@ -37,13 +37,27 @@
                 android:textColor="@color/md_theme_light_outline"
                 android:textSize="13sp" />
 
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/buttonRefreshUiPlugins"
-                style="@style/Widget.Booxin.SecondaryButton"
-                android:layout_width="wrap_content"
+            <LinearLayout
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="10dp"
-                android:text="@string/plugins_refresh" />
+                android:orientation="horizontal">
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/buttonImportUiPlugin"
+                    style="@style/Widget.Booxin.PrimaryButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginEnd="8dp"
+                    android:text="@string/ui_plugins_import_zip" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/buttonRefreshUiPlugins"
+                    style="@style/Widget.Booxin.SecondaryButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/plugins_refresh" />
+            </LinearLayout>
         </LinearLayout>
     </com.google.android.material.appbar.AppBarLayout>
 

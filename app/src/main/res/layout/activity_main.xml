@@ -88,63 +88,77 @@
             android:layout_weight="1"
             android:scrollbars="none">
 
-            <com.google.android.material.button.MaterialButtonToggleGroup
-                android:id="@+id/top_nav"
+            <LinearLayout
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_gravity="center_vertical"
-                app:selectionRequired="true"
-                app:singleSelection="true">
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
 
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/nav_home"
-                    style="@style/Widget.Booxin.TopNavButton"
+                <com.google.android.material.button.MaterialButtonToggleGroup
+                    android:id="@+id/top_nav"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="@string/nav_home" />
+                    android:layout_gravity="center_vertical"
+                    app:selectionRequired="true"
+                    app:singleSelection="true">
 
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/nav_versions"
-                    style="@style/Widget.Booxin.TopNavButton"
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/nav_home"
+                        style="@style/Widget.Booxin.TopNavButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/nav_home" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/nav_versions"
+                        style="@style/Widget.Booxin.TopNavButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/nav_versions" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/nav_community"
+                        style="@style/Widget.Booxin.TopNavButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/nav_community" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/nav_multiplayer"
+                        style="@style/Widget.Booxin.TopNavButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/nav_multiplayer" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/nav_ai"
+                        style="@style/Widget.Booxin.TopNavButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/nav_ai" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/nav_plugin_store"
+                        style="@style/Widget.Booxin.TopNavButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/nav_plugin_store" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/nav_settings"
+                        style="@style/Widget.Booxin.TopNavButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/nav_settings" />
+                </com.google.android.material.button.MaterialButtonToggleGroup>
+
+                <LinearLayout
+                    android:id="@+id/pluginPageNav"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="@string/nav_versions" />
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/nav_community"
-                    style="@style/Widget.Booxin.TopNavButton"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="@string/nav_community" />
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/nav_multiplayer"
-                    style="@style/Widget.Booxin.TopNavButton"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="@string/nav_multiplayer" />
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/nav_ai"
-                    style="@style/Widget.Booxin.TopNavButton"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="@string/nav_ai" />
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/nav_plugin_store"
-                    style="@style/Widget.Booxin.TopNavButton"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="@string/nav_plugin_store" />
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/nav_settings"
-                    style="@style/Widget.Booxin.TopNavButton"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="@string/nav_settings" />
-            </com.google.android.material.button.MaterialButtonToggleGroup>
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal" />
+            </LinearLayout>
         </HorizontalScrollView>
     </LinearLayout>
 
@@ -154,9 +168,56 @@
         android:layout_width="0dp"
         android:layout_height="0dp"
         app:defaultNavHost="true"
-        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintBottom_toTopOf="@id/globalInstallBar"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toBottomOf="@id/top_chrome"
         app:navGraph="@navigation/nav_graph" />
+
+    <!-- Visible on every page while a game/Java install is running -->
+    <LinearLayout
+        android:id="@+id/globalInstallBar"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:background="#E6111A2A"
+        android:clickable="true"
+        android:elevation="8dp"
+        android:focusable="true"
+        android:orientation="vertical"
+        android:paddingHorizontal="14dp"
+        android:paddingTop="10dp"
+        android:paddingBottom="12dp"
+        android:visibility="gone"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintHeight_default="wrap">
+
+        <TextView
+            android:id="@+id/textGlobalInstallTitle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="@android:color/white"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/textGlobalInstallMessage"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:ellipsize="end"
+            android:maxLines="2"
+            android:textColor="#CCFFFFFF"
+            android:textSize="12sp" />
+
+        <ProgressBar
+            android:id="@+id/progressGlobalInstall"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:indeterminate="true"
+            android:max="100" />
+    </LinearLayout>
 </androidx.constraintlayout.widget.ConstraintLayout>

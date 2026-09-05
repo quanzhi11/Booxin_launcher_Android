@@ -13,6 +13,7 @@
 #include <limits.h>
 #include <pthread.h>
 #include <signal.h>
+#include <stdarg.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -28,6 +29,128 @@
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN,  LOG_TAG, __VA_ARGS__)
 
+static void launch_log_line(int prio, const char *fmt, ...);
+static void log_exception(JNIEnv *env, const char *where);
+
+static void ensure_booxin_renderer_env(void) {
+    const char *booxin_renderer = getenv("BOOXIN_RENDERER");
+    const char *legacy_renderer = getenv("POJAV_RENDERER");
+    if (!booxin_renderer || !booxin_renderer[0]) {
+        if (legacy_renderer && legacy_renderer[0]) {
+            setenv("BOOXIN_RENDERER", legacy_renderer, 1);
+            booxin_renderer = legacy_renderer;
+        } else {
+            booxin_renderer = "opengles3";
+            setenv("BOOXIN_RENDERER", booxin_renderer, 1);
+            LOGW("renderer env unset — defaulted to opengles3");
+        }
+    }
+}
+
+/**
+ * Create/Sodium call System.getenv("POJAV_RENDERER") and brand a third-party launcher name.
+ * Freeze HotSpot's ProcessEnvironment WITHOUT that key, then setenv it for C natives
+ * only (Java's getenv map will not pick up later native setenv).
+ * Patched LWJGL GLFW.booxinRendererToken() reads BOOXIN_RENDERER instead — no NPE.
+ *
+ * Legacy LWJGL2 / lwjglx (LaunchWrapper): mglfwCreateWindow does
+ * System.getenv("POJAV_RENDERER").equals(...) with no null-check — must keep it
+ * visible to Java or Display.create NPEs (black screen).
+ */
+static void freeze_java_env_hide_legacy_renderer(JNIEnv *env) {
+    ensure_booxin_renderer_env();
+    {
+        const char *skip = getenv("BOOXIN_SKIP_GLFW_PREINIT");
+        if (skip && skip[0] && skip[0] != '0') {
+            const char *booxin_renderer = getenv("BOOXIN_RENDERER");
+            if (booxin_renderer && strstr(booxin_renderer, "opengles3_rel")) {
+                setenv("POJAV_RENDERER", "opengles3", 1);
+            } else if (booxin_renderer && booxin_renderer[0]) {
+                setenv("POJAV_RENDERER", booxin_renderer, 1);
+            } else {
+                setenv("POJAV_RENDERER", "opengles3", 1);
+            }
+            /* Touch getenv so ProcessEnvironment snapshots WITH POJAV_RENDERER. */
+            if (env) {
+                jclass systemCls = (*env)->FindClass(env, "java/lang/System");
+                if (systemCls) {
+                    jmethodID getenvMid = (*env)->GetStaticMethodID(
+                        env, systemCls, "getenv", "(Ljava/lang/String;)Ljava/lang/String;");
+                    if (getenvMid) {
+                        jstring key = (*env)->NewStringUTF(env, "POJAV_RENDERER");
+                        if (key) {
+                            jobject v = (*env)->CallStaticObjectMethod(env, systemCls, getenvMid, key);
+                            (void)v;
+                            if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+                            (*env)->DeleteLocalRef(env, key);
+                        }
+                    } else if ((*env)->ExceptionCheck(env)) {
+                        (*env)->ExceptionClear(env);
+                    }
+                    (*env)->DeleteLocalRef(env, systemCls);
+                } else if ((*env)->ExceptionCheck(env)) {
+                    (*env)->ExceptionClear(env);
+                }
+            }
+            LOGI("env freeze SKIPPED (legacy LWJGL2) — Java sees POJAV_RENDERER=%s",
+                 getenv("POJAV_RENDERER"));
+            return;
+        }
+    }
+    unsetenv("POJAV_RENDERER");
+
+    jclass systemCls = (*env)->FindClass(env, "java/lang/System");
+    if (!systemCls) {
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+        LOGE("env freeze: FindClass System failed");
+        goto set_native_only;
+    }
+    jmethodID getenvMid = (*env)->GetStaticMethodID(
+        env, systemCls, "getenv", "(Ljava/lang/String;)Ljava/lang/String;");
+    if (!getenvMid) {
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+        LOGE("env freeze: System.getenv(String) missing");
+        (*env)->DeleteLocalRef(env, systemCls);
+        goto set_native_only;
+    }
+    jstring key = (*env)->NewStringUTF(env, "BOOXIN_RENDERER");
+    if (key) {
+        jobject ignored = (*env)->CallStaticObjectMethod(env, systemCls, getenvMid, key);
+        (void)ignored;
+        if ((*env)->ExceptionCheck(env)) {
+            (*env)->ExceptionClear(env);
+        }
+        (*env)->DeleteLocalRef(env, key);
+    }
+    /* Also touch the full map getter path used by some mods. */
+    jmethodID getenvMapMid = (*env)->GetStaticMethodID(
+        env, systemCls, "getenv", "()Ljava/util/Map;");
+    if (getenvMapMid) {
+        jobject map = (*env)->CallStaticObjectMethod(env, systemCls, getenvMapMid);
+        (void)map;
+        if ((*env)->ExceptionCheck(env)) {
+            (*env)->ExceptionClear(env);
+        }
+    } else if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionClear(env);
+    }
+    (*env)->DeleteLocalRef(env, systemCls);
+
+set_native_only:
+    {
+        const char *booxin_renderer = getenv("BOOXIN_RENDERER");
+        if (booxin_renderer && strstr(booxin_renderer, "opengles3_rel")) {
+            setenv("POJAV_RENDERER", "opengles3", 1);
+        } else if (booxin_renderer && booxin_renderer[0]) {
+            setenv("POJAV_RENDERER", booxin_renderer, 1);
+        } else {
+            setenv("POJAV_RENDERER", "opengles3", 1);
+        }
+    }
+    LOGI("env freeze: Java hides POJAV_RENDERER; native POJAV_RENDERER=%s BOOXIN_RENDERER=%s",
+         getenv("POJAV_RENDERER"), getenv("BOOXIN_RENDERER"));
+}
+
 typedef jint (*JNI_CreateJavaVM_func)(JavaVM **pvm, void **penv, void *args);
 typedef void (*SetupBridgeWindow_fn)(JNIEnv *, jclass, jobject);
 
@@ -36,6 +159,7 @@ static jobject g_bridge_surface = NULL;
 static jobject g_art_class_loader = NULL; /* App ClassLoader global ref */
 static pthread_mutex_t g_bridge_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int g_sdl_jni_onload_done = 0;
+static int g_art_bridge_inited = 0;
 
 typedef void (*HookFn)(JNIEnv *);
 
@@ -306,11 +430,11 @@ static void *stdout_reader(void *arg) {
         for (char *p = buf; *p; p++) {
             if (*p == '\n') {
                 *p = '\0';
-                if (start[0]) LOGI("[jvm] %s", start);
+                if (start[0]) launch_log_line(ANDROID_LOG_INFO, "[jvm] %s", start);
                 start = p + 1;
             }
         }
-        if (start[0]) LOGI("[jvm] %s", start);
+        if (start[0]) launch_log_line(ANDROID_LOG_INFO, "[jvm] %s", start);
     }
     return NULL;
 }
@@ -365,9 +489,12 @@ static void reset_signals(void) {
     memset(&sa, 0, sizeof(sa));
     for (int s = SIGHUP; s < NSIG; s++) {
         if (s == SIGKILL || s == SIGSTOP) continue;
-        /* Ignore SIGSEGV so stray GLES/hook faults don't kill :game.
-         * Still don't pump GLFW from the ART UI thread. */
-        sa.sa_handler = (s == SIGSEGV) ? SIG_IGN : SIG_DFL;
+        /* Ignore SIGSEGV so stray GLES/hook faults don't kill :game — except
+         * ColorOS, where ignored faults become a silent hang after Invoking main. */
+        int keep_segv = 0;
+        const char *ks = getenv("BOOXIN_KEEP_SIGSEGV");
+        if (ks && ks[0] && ks[0] != '0') keep_segv = 1;
+        sa.sa_handler = (s == SIGSEGV && !keep_segv) ? SIG_IGN : SIG_DFL;
         sigaction(s, &sa, NULL);
     }
 }
@@ -435,17 +562,17 @@ static jobject build_url_classloader(JNIEnv *jenv, const char *classpath) {
     return loader;
 }
 
-static SetupBridgeWindow_fn resolve_setup_bridge_window(void *pojav_lib) {
-    if (!pojav_lib) return NULL;
+static SetupBridgeWindow_fn resolve_setup_bridge_window(void *bridge_lib) {
+    if (!bridge_lib) return NULL;
     return (SetupBridgeWindow_fn)dlsym(
-        pojav_lib, "Java_org_lwjgl_glfw_CallbackBridge_setupBridgeWindow");
+        bridge_lib, "Java_org_lwjgl_glfw_CallbackBridge_setupBridgeWindow");
 }
 
-static void *open_pojavexec(void);
+static void *open_booxin_bridge(void);
 
 static void register_callbackbridge_send_natives(JNIEnv *env) {
     if (!env) return;
-    void *lib = open_pojavexec();
+    void *lib = open_booxin_bridge();
     if (!lib) return;
 
     jclass cbCls = (*env)->FindClass(env, "org/lwjgl/glfw/CallbackBridge");
@@ -519,33 +646,73 @@ static void *open_bridge_lib(const char *soname) {
     if (nativeDir && nativeDir[0]) {
         char path[PATH_MAX];
         snprintf(path, sizeof(path), "%s/%s", nativeDir, soname);
+        /* Prefer absolute staged path so ART dlopen and HotSpot System.load share
+         * one mapping (bare soname can resolve to the APK copy → dual environ). */
         lib = dlopen(path, RTLD_LAZY | RTLD_GLOBAL);
         if (lib) return lib;
     }
-    return dlopen(soname, RTLD_LAZY | RTLD_GLOBAL);
+    return NULL;
 }
 
-static void *open_pojavexec(void) {
-    /* Prefer the staged LWJGL bridge soname so ART and HotSpot share one mapping. */
-    void *lib = open_bridge_lib("libpojavexec.so");
-    if (!lib) lib = open_bridge_lib("libbooxin_bridge.so");
+static void *open_booxin_bridge(void) {
+    /* Prefer Booxin soname; fall back to legacy libpojavexec.so alias if present. */
+    void *lib = open_bridge_lib("libbooxin_bridge.so");
+    if (!lib) lib = open_bridge_lib("libpojavexec.so");
     if (lib) {
         static int logged;
         if (!logged) {
             logged = 1;
             void *ensure = dlsym(lib, "booxin_ensure_native_window");
-            LOGI("open_pojavexec handle=%p ensure=%p", lib, ensure);
+            LOGI("open_booxin_bridge handle=%p ensure=%p", lib, ensure);
         }
     }
     return lib;
 }
 
-/* Call JNI_OnLoad for ART and again for HotSpot (we don't use System.loadLibrary). */
-static bool call_pojav_jni_onload(JavaVM *vm, JNIEnv *env, const char *label) {
-    if (!vm) return false;
-    void *lib = open_pojavexec();
+/* Process-global window pointer (lives in libbooxin_jvm — single mapping).
+ * Bridge .so can be loaded twice; glfwInit must still find the Surface. */
+void *booxin_shared_native_window = NULL;
+
+/** Warm EGL/REL and confirm the Surface window before Minecraft.main (ColorOS hang). */
+static void prepare_gl_before_main(void) {
+    void *lib = open_booxin_bridge();
+    typedef void *(*ensure_fn)(void);
+    ensure_fn ensure = lib
+        ? (ensure_fn)dlsym(lib, "booxin_ensure_native_window")
+        : NULL;
+    void *win = ensure ? ensure() : NULL;
+    launch_log_line(ANDROID_LOG_INFO, "pre-main ANativeWindow=%p", win);
+    const char *rel = getenv("BOOXIN_EGL");
+    if (rel && strstr(rel, "librel")) {
+        launch_log_line(ANDROID_LOG_INFO, "pre-main dlopen REL %s", rel);
+        void *h = dlopen(rel, RTLD_LAZY | RTLD_GLOBAL);
+        launch_log_line(
+            h ? ANDROID_LOG_INFO : ANDROID_LOG_ERROR,
+            "pre-main dlopen REL => %p%s%s",
+            h, h ? "" : " ", h ? "" : dlerror());
+    }
     if (!lib) {
-        LOGE("%s: dlopen pojavexec: %s", label, dlerror());
+        launch_log_line(ANDROID_LOG_WARN, "pre-main: booxin_bridge missing — skip booxinInit");
+        return;
+    }
+    typedef int (*init_fn)(void);
+    init_fn init = (init_fn)dlsym(lib, "booxinInit");
+    if (!init) init = (init_fn)dlsym(lib, "booxinInitOpenGL");
+    if (!init) {
+        launch_log_line(ANDROID_LOG_WARN, "pre-main: booxinInit symbol missing");
+        return;
+    }
+    launch_log_line(ANDROID_LOG_INFO, "pre-main booxinInit…");
+    int rc = init();
+    launch_log_line(ANDROID_LOG_INFO, "pre-main booxinInit rc=%d", rc);
+}
+
+/* Call JNI_OnLoad for ART and again for HotSpot (we don't use System.loadLibrary). */
+static bool call_booxin_jni_onload(JavaVM *vm, JNIEnv *env, const char *label) {
+    if (!vm) return false;
+    void *lib = open_booxin_bridge();
+    if (!lib) {
+        LOGE("%s: dlopen booxin_bridge: %s", label, dlerror());
         return false;
     }
     JNI_OnLoad_func onLoad = (JNI_OnLoad_func)dlsym(lib, "JNI_OnLoad");
@@ -558,81 +725,45 @@ static bool call_pojav_jni_onload(JavaVM *vm, JNIEnv *env, const char *label) {
         log_exception(env, label);
         return false;
     }
-    LOGI("%s: pojavexec JNI_OnLoad ok (version 0x%x)", label, (int)ver);
+    LOGI("%s: booxin_bridge JNI_OnLoad ok (version 0x%x)", label, (int)ver);
     return true;
 }
 
-static bool pojavexec_staged_path(char *out, size_t outLen) {
+static bool booxin_bridge_staged_path(char *out, size_t outLen) {
     const char *nativeDir = getenv("BOOXIN_NATIVEDIR");
     if (!nativeDir || !nativeDir[0]) nativeDir = getenv("POJAV_NATIVEDIR");
     if (!nativeDir || !nativeDir[0]) nativeDir = getenv("FCL_NATIVEDIR");
     if (!nativeDir || !nativeDir[0]) return false;
-    snprintf(out, outLen, "%s/libpojavexec.so", nativeDir);
-    if (access(out, R_OK) == 0) return true;
     snprintf(out, outLen, "%s/libbooxin_bridge.so", nativeDir);
+    if (access(out, R_OK) == 0) return true;
+    snprintf(out, outLen, "%s/libpojavexec.so", nativeDir);
     return access(out, R_OK) == 0;
 }
 
+static bool hotspot_system_load_absolute(JNIEnv *env, const char *path);
+
 /**
- * HotSpot System.load(absolutePath) via bridge-patch helper so @CallerSensitive
- * sees AppClassLoader (same as GLFW.System.loadLibrary). Direct JNI System.load
- * uses another classloader → "already loaded in another classloader".
+ * HotSpot System.load(absolutePath) via app-owned helper outside org.lwjgl.*.
+ * Finding org/lwjgl/* before Forge modules pulls fat-jar LWJGL onto AppClassLoader
+ * → "liblwjgl.so already loaded in another classloader".
  */
-static bool hotspot_system_load_pojavexec(JNIEnv *env) {
+static bool hotspot_system_load_booxin_bridge(JNIEnv *env) {
     char path[PATH_MAX];
-    if (!pojavexec_staged_path(path, sizeof(path))) {
-        LOGE("hotspot System.load: staged libpojavexec.so missing");
+    if (!booxin_bridge_staged_path(path, sizeof(path))) {
+        LOGE("hotspot System.load: staged libbooxin_bridge.so missing");
         return false;
     }
-    jclass loaderCls = (*env)->FindClass(env, "org/lwjgl/glfw/BooxinPojavLoader");
-    if (!loaderCls || (*env)->ExceptionCheck(env)) {
-        log_exception(env, "FindClass BooxinPojavLoader");
-        /* Fallback: raw System.load (may hit classloader mismatch). */
-        jclass systemCls = (*env)->FindClass(env, "java/lang/System");
-        if (!systemCls || (*env)->ExceptionCheck(env)) {
-            log_exception(env, "FindClass System");
-            return false;
-        }
-        jmethodID loadMid = (*env)->GetStaticMethodID(env, systemCls, "load", "(Ljava/lang/String;)V");
-        if (!loadMid || (*env)->ExceptionCheck(env)) {
-            log_exception(env, "System.load mid");
-            return false;
-        }
-        jstring jpath = (*env)->NewStringUTF(env, path);
-        (*env)->CallStaticVoidMethod(env, systemCls, loadMid, jpath);
-        (*env)->DeleteLocalRef(env, jpath);
-        if ((*env)->ExceptionCheck(env)) {
-            log_exception(env, "System.load(pojavexec)");
-            return false;
-        }
-        LOGI("HotSpot System.load(%s) ok (fallback)", path);
-        return true;
-    }
-    jmethodID loadMid =
-        (*env)->GetStaticMethodID(env, loaderCls, "loadAbsolute", "(Ljava/lang/String;)V");
-    if (!loadMid || (*env)->ExceptionCheck(env)) {
-        log_exception(env, "BooxinPojavLoader.loadAbsolute mid");
-        return false;
-    }
-    jstring jpath = (*env)->NewStringUTF(env, path);
-    (*env)->CallStaticVoidMethod(env, loaderCls, loadMid, jpath);
-    (*env)->DeleteLocalRef(env, jpath);
-    if ((*env)->ExceptionCheck(env)) {
-        log_exception(env, "BooxinPojavLoader.loadAbsolute");
-        return false;
-    }
-    LOGI("HotSpot BooxinPojavLoader.loadAbsolute(%s) ok", path);
-    return true;
+    return hotspot_system_load_absolute(env, path);
 }
 
-/** HotSpot System.load any absolute .so via BooxinPojavLoader (AppClassLoader). */
+/** HotSpot System.load any absolute .so via com.booxin.runtime.HotSpotNativeLoader. */
 static bool hotspot_system_load_absolute(JNIEnv *env, const char *path) {
     if (!env || !path || !path[0]) return false;
     if (access(path, R_OK) != 0) {
         LOGW("hotspot load missing: %s", path);
         return false;
     }
-    jclass loaderCls = (*env)->FindClass(env, "org/lwjgl/glfw/BooxinPojavLoader");
+    jclass loaderCls = (*env)->FindClass(env, "com/booxin/runtime/HotSpotNativeLoader");
     if (!loaderCls || (*env)->ExceptionCheck(env)) {
         if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
         jclass systemCls = (*env)->FindClass(env, "java/lang/System");
@@ -658,7 +789,7 @@ static bool hotspot_system_load_absolute(JNIEnv *env, const char *path) {
     jmethodID loadMid =
         (*env)->GetStaticMethodID(env, loaderCls, "loadAbsolute", "(Ljava/lang/String;)V");
     if (!loadMid || (*env)->ExceptionCheck(env)) {
-        log_exception(env, "BooxinPojavLoader.loadAbsolute mid");
+        log_exception(env, "HotSpotNativeLoader.loadAbsolute mid");
         return false;
     }
     jstring jpath = (*env)->NewStringUTF(env, path);
@@ -666,16 +797,43 @@ static bool hotspot_system_load_absolute(JNIEnv *env, const char *path) {
     (*env)->DeleteLocalRef(env, jpath);
     (*env)->DeleteLocalRef(env, loaderCls);
     if ((*env)->ExceptionCheck(env)) {
-        log_exception(env, "BooxinPojavLoader.loadAbsolute");
+        log_exception(env, "HotSpotNativeLoader.loadAbsolute");
         return false;
     }
-    LOGI("HotSpot BooxinPojavLoader.loadAbsolute(%s) ok", path);
+    LOGI("HotSpotNativeLoader.loadAbsolute(%s) ok", path);
     return true;
+}
+
+/**
+ * Pre-1.13 / LaunchWrapper: java.awt.Component.initIDs lives in the APK
+ * libawt_xawt stub. dlopen before CreateJavaVM does not bind JNI natives —
+ * HotSpot needs System.load (same as booxin_bridge / GLFW).
+ */
+static void hotspot_load_legacy_awt(JNIEnv *env) {
+    const char *nativeDir = getenv("BOOXIN_NATIVEDIR");
+    if (!nativeDir || !nativeDir[0]) nativeDir = getenv("POJAV_NATIVEDIR");
+    if (!nativeDir || !nativeDir[0]) nativeDir = getenv("FCL_NATIVEDIR");
+    if (!nativeDir || !nativeDir[0]) {
+        LOGW("legacy AWT: NATIVEDIR unset");
+        return;
+    }
+    /* Component.initIDs stub only. CTCToolkit no longer System.loads legacy awt bridge
+     * (patched jar) — loading libfcl / legacy awt bridge crashes HotSpot on Booxin. */
+    char path[PATH_MAX];
+    snprintf(path, sizeof(path), "%s/libawt_xawt.so", nativeDir);
+    launch_log_line(ANDROID_LOG_INFO, "legacy AWT: System.load %s", path);
+    if (access(path, R_OK) != 0) {
+        LOGW("legacy AWT: missing %s", path);
+        return;
+    }
+    if (!hotspot_system_load_absolute(env, path)) {
+        LOGW("legacy AWT: System.load failed %s", path);
+    }
 }
 
 static void log_hotspot_pump_diag(JNIEnv *env) {
     if (!env) return;
-    jclass loaderCls = (*env)->FindClass(env, "org/lwjgl/glfw/BooxinPojavLoader");
+    jclass loaderCls = (*env)->FindClass(env, "com/booxin/runtime/HotSpotNativeLoader");
     if (!loaderCls || (*env)->ExceptionCheck(env)) {
         if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
         return;
@@ -692,16 +850,16 @@ static void log_hotspot_pump_diag(JNIEnv *env) {
         return;
     }
     const char *utf = (*env)->GetStringUTFChars(env, jdiag, NULL);
-    void *lib = open_pojavexec();
-    void *sym = lib ? dlsym(lib, "pojavPumpEvents") : NULL;
-    LOGI("HotSpot %s | dlsym pojavPumpEvents=%p", utf ? utf : "?", sym);
+    void *lib = open_booxin_bridge();
+    void *sym = lib ? dlsym(lib, "booxinPumpEvents") : NULL;
+    LOGI("HotSpot %s | dlsym booxinPumpEvents=%p", utf ? utf : "?", sym);
     if (utf) (*env)->ReleaseStringUTFChars(env, jdiag, utf);
     (*env)->DeleteLocalRef(env, jdiag);
 }
 
 /*
  * Redirect GLFW.Functions.{StartPumping,PumpEvents,StopPumping} to the
- * already-mapped libpojavexec (RTLD_NOLOAD). LWJGL SharedLibrary can resolve
+ * already-mapped libbooxin_bridge (RTLD_NOLOAD). LWJGL SharedLibrary can resolve
  * symbols from a second copy of the .so; ART CriticalNative then fills queue A
  * while HotSpot pumps empty queue B — mouseBtn logs, game never clicks.
  * Replacing the function pointers forces both sides onto the same environ.
@@ -718,8 +876,8 @@ typedef struct {
 
 #define BOOXIN_EVENT_WINDOW_SIZE 8000
 
-struct booxin_pojav_environ_s {
-    void *pojavWindow;
+struct booxin_bridge_environ_s {
+    void *nativeWindow; /* ANativeWindow* — layout matches booxin_environ_t */
     void *mainWindowBundle;
     int config_renderer;
     bool force_vsync;
@@ -764,10 +922,10 @@ struct booxin_pojav_environ_s {
  * We still refresh jreEnv for framebuffer/window-size JNI paths inside pump.
  */
 static void booxin_bind_hotspot_jnienv(void) {
-    void *lib = open_pojavexec();
+    void *lib = open_booxin_bridge();
     if (!lib) return;
-    struct booxin_pojav_environ_s **pp =
-        (struct booxin_pojav_environ_s **)dlsym(lib, "pojav_environ");
+    struct booxin_bridge_environ_s **pp =
+        (struct booxin_bridge_environ_s **)dlsym(lib, "booxin_environ");
     if (!pp || !*pp || !(*pp)->runtimeJavaVMPtr) return;
     JavaVM *hs = (*pp)->runtimeJavaVMPtr;
     JNIEnv *hsEnv = NULL;
@@ -776,7 +934,7 @@ static void booxin_bind_hotspot_jnienv(void) {
     }
 }
 
-static JNIEnv *booxin_get_hotspot_env(struct booxin_pojav_environ_s *e, int *attached) {
+static JNIEnv *booxin_get_hotspot_env(struct booxin_bridge_environ_s *e, int *attached) {
     *attached = 0;
     if (!e || !e->runtimeJavaVMPtr) return NULL;
     JavaVM *hs = e->runtimeJavaVMPtr;
@@ -946,45 +1104,45 @@ static bool cache_input_hooks_deliver(JNIEnv *env) {
 static void resolve_snapshot_publish_syms(void) {
     if (g_snapshot_syms_resolved) return;
     g_snapshot_syms_resolved = true;
-    void *lib = open_pojavexec();
+    void *lib = open_booxin_bridge();
     if (!lib) return;
-    g_set_hit_type = (booxin_set_hit_fn)dlsym(lib, "pojavSetHitResultType");
+    g_set_hit_type = (booxin_set_hit_fn)dlsym(lib, "booxinSetHitResultType");
     g_set_held_kind = (booxin_set_held_fn)dlsym(lib, "booxinSetHeldItemKind");
     LOGI("snapshot publish syms hit=%p held=%p", (void *)g_set_hit_type, (void *)g_set_held_kind);
 }
 
 static void booxin_refresh_game_snapshot(void);
 
-static struct booxin_pojav_environ_s *booxin_get_environ(void) {
-    void *lib = open_pojavexec();
+static struct booxin_bridge_environ_s *booxin_get_environ(void) {
+    void *lib = open_booxin_bridge();
     if (!lib) return NULL;
-    struct booxin_pojav_environ_s **pp =
-        (struct booxin_pojav_environ_s **)dlsym(lib, "pojav_environ");
+    struct booxin_bridge_environ_s **pp =
+        (struct booxin_bridge_environ_s **)dlsym(lib, "booxin_environ");
     return (pp && *pp) ? *pp : NULL;
 }
 
-static jlong booxin_glfw_window_jlong(struct booxin_pojav_environ_s *e, void *window) {
+static jlong booxin_glfw_window_jlong(struct booxin_bridge_environ_s *e, void *window) {
     if (e && e->showingWindow) return (jlong)e->showingWindow;
     if (window) return (jlong)(intptr_t)window;
     if (e && e->mainWindowBundle) return (jlong)(intptr_t)e->mainWindowBundle;
-    if (e && e->pojavWindow) return (jlong)(intptr_t)e->pojavWindow;
+    if (e && e->nativeWindow) return (jlong)(intptr_t)e->nativeWindow;
     return 0;
 }
 
-static void booxin_read_pojav_cursor(struct booxin_pojav_environ_s *e, double *cx, double *cy) {
+static void booxin_read_bridge_cursor(struct booxin_bridge_environ_s *e, double *cx, double *cy) {
     *cx = e ? e->cursorX : 0;
     *cy = e ? e->cursorY : 0;
 }
 
-static void *booxin_resolve_window(struct booxin_pojav_environ_s *e, void *window) {
+static void *booxin_resolve_window(struct booxin_bridge_environ_s *e, void *window) {
     if (e && e->showingWindow) return (void *)(long)e->showingWindow;
     if (window) return window;
     if (e && e->mainWindowBundle) return e->mainWindowBundle;
-    if (e && e->pojavWindow) return e->pojavWindow;
+    if (e && e->nativeWindow) return e->nativeWindow;
     return NULL;
 }
 
-static void booxin_read_mouse_buttons(struct booxin_pojav_environ_s *e,
+static void booxin_read_mouse_buttons(struct booxin_bridge_environ_s *e,
                                       int *b0, int *b1, int *b2) {
     *b0 = *b1 = *b2 = 0;
     jbyte *buf = e ? e->mouseDownBuffer : NULL;
@@ -995,15 +1153,15 @@ static void booxin_read_mouse_buttons(struct booxin_pojav_environ_s *e,
 }
 
 /* Game window handle is showingWindow, not the internal stub. */
-static void *booxin_mc_glfw_window(struct booxin_pojav_environ_s *e, void *window) {
+static void *booxin_mc_glfw_window(struct booxin_bridge_environ_s *e, void *window) {
     if (e && e->showingWindow) return (void *)(long)e->showingWindow;
     if (e && e->mainWindowBundle) return e->mainWindowBundle;
     if (window) return window;
-    if (e && e->pojavWindow) return e->pojavWindow;
+    if (e && e->nativeWindow) return e->nativeWindow;
     return NULL;
 }
 
-static void booxin_deliver_glfw_native(struct booxin_pojav_environ_s *e, void *winPtr,
+static void booxin_deliver_glfw_native(struct booxin_bridge_environ_s *e, void *winPtr,
                                        double cx, double cy, int b0, int b1, int b2) {
     if (!e || !winPtr) return;
     if (!e->isInputReady) return;
@@ -1043,7 +1201,7 @@ static void booxin_deliver_glfw_native(struct booxin_pojav_environ_s *e, void *w
 
 static void booxin_forward_input_callbacks(void *window, double cx, double cy,
                                            int b0, int b1, int b2) {
-    struct booxin_pojav_environ_s *e = booxin_get_environ();
+    struct booxin_bridge_environ_s *e = booxin_get_environ();
     if (!e) return;
     if (!e->isInputReady) return;
 
@@ -1074,46 +1232,46 @@ static void booxin_forward_input_callbacks(void *window, double cx, double cy,
 static void booxin_hook_input_callbacks(void) {
 }
 
-static void (*g_pojav_start_pumping)(void) = NULL;
-static void (*g_pojav_pump_events)(void *) = NULL;
-static void (*g_pojav_stop_pumping)(void) = NULL;
-static struct booxin_pojav_environ_s **g_pojav_environ_pp = NULL;
+static void (*g_booxin_start_pumping)(void) = NULL;
+static void (*g_booxin_pump_events)(void *) = NULL;
+static void (*g_booxin_stop_pumping)(void) = NULL;
+static struct booxin_bridge_environ_s **g_booxin_environ_pp = NULL;
 
-static void resolve_pojav_pump_syms(void) {
-    if (g_pojav_pump_events && g_pojav_environ_pp) return;
-    void *lib = open_pojavexec();
+static void resolve_booxin_pump_syms(void) {
+    if (g_booxin_pump_events && g_booxin_environ_pp) return;
+    void *lib = open_booxin_bridge();
     if (!lib) return;
-    if (!g_pojav_start_pumping)
-        g_pojav_start_pumping = (void (*)(void))dlsym(lib, "pojavStartPumping");
-    if (!g_pojav_pump_events)
-        g_pojav_pump_events = (void (*)(void *))dlsym(lib, "pojavPumpEvents");
-    if (!g_pojav_stop_pumping)
-        g_pojav_stop_pumping = (void (*)(void))dlsym(lib, "pojavStopPumping");
-    if (!g_pojav_environ_pp)
-        g_pojav_environ_pp =
-            (struct booxin_pojav_environ_s **)dlsym(lib, "pojav_environ");
+    if (!g_booxin_start_pumping)
+        g_booxin_start_pumping = (void (*)(void))dlsym(lib, "booxinStartPumping");
+    if (!g_booxin_pump_events)
+        g_booxin_pump_events = (void (*)(void *))dlsym(lib, "booxinPumpEvents");
+    if (!g_booxin_stop_pumping)
+        g_booxin_stop_pumping = (void (*)(void))dlsym(lib, "booxinStopPumping");
+    if (!g_booxin_environ_pp)
+        g_booxin_environ_pp =
+            (struct booxin_bridge_environ_s **)dlsym(lib, "booxin_environ");
 }
 
 /* Cache pump symbols once (dlsym every frame lagged input badly). */
 static void booxin_start_pumping(void) {
-    resolve_pojav_pump_syms();
-    if (g_pojav_start_pumping) g_pojav_start_pumping();
+    resolve_booxin_pump_syms();
+    if (g_booxin_start_pumping) g_booxin_start_pumping();
 }
 
 static void booxin_stop_pumping(void) {
-    resolve_pojav_pump_syms();
-    if (g_pojav_stop_pumping) g_pojav_stop_pumping();
+    resolve_booxin_pump_syms();
+    if (g_booxin_stop_pumping) g_booxin_stop_pumping();
 }
 
 /* Drain the queue; don't force shouldUpdateMouse every frame (CPU melt). */
 static void booxin_pump_events(void *window) {
-    if (!g_pojav_pump_events) resolve_pojav_pump_syms();
-    if (g_pojav_pump_events) g_pojav_pump_events(window);
+    if (!g_booxin_pump_events) resolve_booxin_pump_syms();
+    if (g_booxin_pump_events) g_booxin_pump_events(window);
     booxin_refresh_game_snapshot();
 }
 
 static void booxin_refresh_game_snapshot(void) {
-    struct booxin_pojav_environ_s *e = booxin_get_environ();
+    struct booxin_bridge_environ_s *e = booxin_get_environ();
     if (!e || !e->runtimeJavaVMPtr) return;
 
     int attached = 0;
@@ -1216,14 +1374,82 @@ static jclass find_loaded_in_loader_chain(JNIEnv *env, jobject loader, const cha
     return found;
 }
 
+static atomic_int g_forge_glfw_patch_done = 0;
+/* 1 = Forge/NeoForge: ignore AppClassLoader GLFW; wait for module-layer copy. */
+static atomic_int g_forge_prefer_module_glfw = 0;
+
+/** True if cls was defined by the system / app classloader (not a module layer). */
+static bool glfw_defined_by_system_loader(JNIEnv *env, jclass cls) {
+    if (!env || !cls) return false;
+    jclass classCls = (*env)->FindClass(env, "java/lang/Class");
+    jmethodID getCl = classCls
+        ? (*env)->GetMethodID(env, classCls, "getClassLoader",
+                              "()Ljava/lang/ClassLoader;")
+        : NULL;
+    jobject loader = getCl ? (*env)->CallObjectMethod(env, cls, getCl) : NULL;
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionClear(env);
+        loader = NULL;
+    }
+    jclass clCls = (*env)->FindClass(env, "java/lang/ClassLoader");
+    jmethodID getSys = clCls
+        ? (*env)->GetStaticMethodID(
+            env, clCls, "getSystemClassLoader", "()Ljava/lang/ClassLoader;")
+        : NULL;
+    jobject sys = getSys ? (*env)->CallStaticObjectMethod(env, clCls, getSys) : NULL;
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionClear(env);
+        sys = NULL;
+    }
+    jboolean same = JNI_FALSE;
+    if (loader && sys) {
+        same = (*env)->IsSameObject(env, loader, sys);
+        /* Also walk parents: some setups nest under AppClassLoader. */
+        if (!same) {
+            jmethodID getParent = (*env)->GetMethodID(
+                env, clCls, "getParent", "()Ljava/lang/ClassLoader;");
+            jobject cur = loader;
+            int depth = 0;
+            while (cur && depth < 8 && !same) {
+                if ((*env)->IsSameObject(env, cur, sys)) {
+                    same = JNI_TRUE;
+                    break;
+                }
+                jobject parent = getParent
+                    ? (*env)->CallObjectMethod(env, cur, getParent)
+                    : NULL;
+                if ((*env)->ExceptionCheck(env)) {
+                    (*env)->ExceptionClear(env);
+                    parent = NULL;
+                }
+                if (cur != loader) (*env)->DeleteLocalRef(env, cur);
+                cur = parent;
+                depth++;
+            }
+            if (cur && cur != loader) (*env)->DeleteLocalRef(env, cur);
+        }
+    }
+    /* Bootstrap / unnamed with null loader is not the Android fat-jar path. */
+    if (!loader) same = JNI_FALSE;
+    if (loader) (*env)->DeleteLocalRef(env, loader);
+    if (sys) (*env)->DeleteLocalRef(env, sys);
+    if (clCls) (*env)->DeleteLocalRef(env, clCls);
+    if (classCls) (*env)->DeleteLocalRef(env, classCls);
+    return same == JNI_TRUE;
+}
+
 /**
  * Locate already-loaded org.lwjgl.glfw.GLFW$Functions without loading it.
  * Forge puts LWJGL on a module layer; FindClass here would pull the Android
  * fat-jar copy onto the wrong classloader.
+ *
+ * When g_forge_prefer_module_glfw is set, skip AppClassLoader / system-loader
+ * copies so we do not patch the fat-jar and miss SECURE-BOOTSTRAP.
  */
 static jclass find_loaded_glfw_functions(JNIEnv *env) {
     if (!env) return NULL;
     const char *binary = "org.lwjgl.glfw.GLFW$Functions";
+    const int prefer_module = atomic_load(&g_forge_prefer_module_glfw);
 
     jclass threadCls = (*env)->FindClass(env, "java/lang/Thread");
     if (!threadCls || (*env)->ExceptionCheck(env)) {
@@ -1271,7 +1497,14 @@ static jclass find_loaded_glfw_functions(JNIEnv *env) {
                 loader = NULL;
             }
             if (loader) {
-                found = find_loaded_in_loader_chain(env, loader, binary);
+                jclass cand = find_loaded_in_loader_chain(env, loader, binary);
+                if (cand) {
+                    if (prefer_module && glfw_defined_by_system_loader(env, cand)) {
+                        (*env)->DeleteLocalRef(env, cand);
+                    } else {
+                        found = cand;
+                    }
+                }
                 (*env)->DeleteLocalRef(env, loader);
             }
             (*env)->DeleteLocalRef(env, thr);
@@ -1283,7 +1516,7 @@ static jclass find_loaded_glfw_functions(JNIEnv *env) {
         (*env)->DeleteLocalRef(env, map);
     }
 
-    if (!found) {
+    if (!found && !prefer_module) {
         jclass clCls = (*env)->FindClass(env, "java/lang/ClassLoader");
         jmethodID getSys = clCls
             ? (*env)->GetStaticMethodID(
@@ -1309,24 +1542,24 @@ static bool patch_glfw_functions_class(JNIEnv *env, jclass fnCls) {
     if (!env || !fnCls) return false;
 
     /* Point GLFW$Functions at our bridge so we don't get two environ copies. */
-    void *lib = open_pojavexec();
+    void *lib = open_booxin_bridge();
     int patched = 0;
     if (lib) {
         struct {
             const char *field;
             const char *sym;
         } map[] = {
-            {"Init", "pojavInit"},
-            {"CreateContext", "pojavCreateContext"},
-            {"GetCurrentContext", "pojavGetCurrentContext"},
-            {"MakeContextCurrent", "pojavMakeCurrent"},
-            {"Terminate", "pojavTerminate"},
-            {"SetWindowHint", "pojavSetWindowHint"},
-            {"SwapBuffers", "pojavSwapBuffers"},
-            {"SwapInterval", "pojavSwapInterval"},
-            {"PumpEvents", "pojavPumpEvents"},
-            {"StartPumping", "pojavStartPumping"},
-            {"StopPumping", "pojavStopPumping"},
+            {"Init", "booxinInit"},
+            {"CreateContext", "booxinCreateContext"},
+            {"GetCurrentContext", "booxinGetCurrentContext"},
+            {"MakeContextCurrent", "booxinMakeCurrent"},
+            {"Terminate", "booxinTerminate"},
+            {"SetWindowHint", "booxinSetWindowHint"},
+            {"SwapBuffers", "booxinSwapBuffers"},
+            {"SwapInterval", "booxinSwapInterval"},
+            {"PumpEvents", "booxinPumpEvents"},
+            {"StartPumping", "booxinStartPumping"},
+            {"StopPumping", "booxinStopPumping"},
         };
         for (size_t i = 0; i < sizeof(map) / sizeof(map[0]); i++) {
             void *addr = dlsym(lib, map[i].sym);
@@ -1355,7 +1588,11 @@ static bool patch_glfw_functions_class(JNIEnv *env, jclass fnCls) {
              (void *)(uintptr_t)newPump, (void *)(uintptr_t)checkPump);
         if (checkPump != newPump) {
             LOGW("JNI could not overwrite final PumpEvents — trying Unsafe via Java");
-            jclass loaderCls = (*env)->FindClass(env, "org/lwjgl/glfw/BooxinPojavLoader");
+            jclass loaderCls = (*env)->FindClass(env, "com/booxin/runtime/HotSpotNativeLoader");
+            if ((!loaderCls || (*env)->ExceptionCheck(env)) && (*env)->ExceptionCheck(env)) {
+                (*env)->ExceptionClear(env);
+                loaderCls = NULL;
+            }
             if (loaderCls && !(*env)->ExceptionCheck(env)) {
                 jmethodID mid = (*env)->GetStaticMethodID(
                     env, loaderCls, "forcePumpFunctionPointers", "(JJJ)Z");
@@ -1367,7 +1604,7 @@ static bool patch_glfw_functions_class(JNIEnv *env, jclass fnCls) {
                     log_exception(env, "forcePumpFunctionPointers mid");
                 }
             } else if ((*env)->ExceptionCheck(env)) {
-                log_exception(env, "FindClass BooxinPojavLoader for Unsafe patch");
+                log_exception(env, "FindClass HotSpotNativeLoader for Unsafe patch");
             }
         }
     } else if ((*env)->ExceptionCheck(env)) {
@@ -1390,8 +1627,6 @@ static bool patch_hotspot_pump_function_pointers(JNIEnv *env) {
     return ok;
 }
 
-static atomic_int g_forge_glfw_patch_done = 0;
-
 /** Forge module-layer LWJGL loads after main(); patch as soon as Functions exists. */
 static void *forge_late_glfw_patch_thread(void *arg) {
     JavaVM *jvm = (JavaVM *)arg;
@@ -1402,15 +1637,27 @@ static void *forge_late_glfw_patch_thread(void *arg) {
         return NULL;
     }
     LOGI("Forge late GLFW patch: watching for module-layer GLFW$Functions");
+    launch_log_line(ANDROID_LOG_INFO, "late GLFW patch: watching for GLFW$Functions");
     for (int i = 0; i < 15000 && !atomic_load(&g_forge_glfw_patch_done); i++) {
         jclass fnCls = find_loaded_glfw_functions(env);
         if (fnCls) {
+            if (atomic_load(&g_forge_prefer_module_glfw) &&
+                glfw_defined_by_system_loader(env, fnCls)) {
+                if (i == 0 || i % 500 == 0) {
+                    LOGI("Forge late GLFW patch: ignore AppClassLoader GLFW "
+                         "(wait for SECURE-BOOTSTRAP) t=%dms",
+                         i * 2);
+                }
+                (*env)->DeleteLocalRef(env, fnCls);
+                usleep(2000);
+                continue;
+            }
             LOGI("Forge late GLFW patch: found GLFW$Functions after %dms", i * 2);
             if (patch_glfw_functions_class(env, fnCls)) {
                 atomic_store(&g_forge_glfw_patch_done, 1);
                 force_input_bridge_ready("after Forge late GLFW patch");
                 {
-                    void *lib = open_pojavexec();
+                    void *lib = open_booxin_bridge();
                     typedef void (*bind_fn)(JNIEnv *);
                     bind_fn bind = lib
                         ? (bind_fn)dlsym(lib, "booxin_bind_glfw_input_buffers")
@@ -1421,6 +1668,7 @@ static void *forge_late_glfw_patch_thread(void *arg) {
                     }
                 }
                 LOGI("Forge late GLFW patch: SUCCESS");
+                launch_log_line(ANDROID_LOG_INFO, "late GLFW patch: SUCCESS");
             } else {
                 LOGW("Forge late GLFW patch: class found but patch failed");
             }
@@ -1430,7 +1678,8 @@ static void *forge_late_glfw_patch_thread(void *arg) {
         usleep(2000); /* 2ms — must win race before glfwInit */
     }
     if (!atomic_load(&g_forge_glfw_patch_done)) {
-        LOGW("Forge late GLFW patch: timed out — game may show GFLW Platform x11 / no GL context");
+        launch_log_line(ANDROID_LOG_WARN,
+            "late GLFW patch: timed out — glfwInit may use X11 / hang");
     }
     (*jvm)->DetachCurrentThread(jvm);
     return NULL;
@@ -1438,7 +1687,7 @@ static void *forge_late_glfw_patch_thread(void *arg) {
 
 /* stack-queue + ready=true, or touch gets dropped. */
 static void force_input_bridge_ready(const char *where) {
-    void *lib = open_pojavexec();
+    void *lib = open_booxin_bridge();
     if (!lib) return;
     typedef void (*set_stack_fn)(jboolean);
     typedef jboolean (*set_ready_fn)(jboolean);
@@ -1493,18 +1742,20 @@ static bool preinit_hotspot_glfw(JNIEnv *env) {
     return !(*env)->ExceptionCheck(env);
 }
 
-static void log_pojav_environ(const char *where) {
-    void *lib = open_pojavexec();
+static void log_booxin_environ(const char *where) {
+    void *lib = open_booxin_bridge();
     if (!lib) return;
-    void ***pp = (void ***)dlsym(lib, "pojav_environ");
+    void ***pp = (void ***)dlsym(lib, "booxin_environ");
     if (!pp || !*pp) {
-        LOGW("%s: pojav_environ missing", where);
+        LOGW("%s: booxin_environ missing", where);
         return;
     }
     void *win = **pp;
-    const char *renderer = getenv("POJAV_RENDERER");
-    const char *egl = getenv("POJAVEXEC_EGL");
-    LOGI("%s: pojav_environ=%p window=%p POJAV_RENDERER=%s POJAVEXEC_EGL=%s",
+    const char *renderer = getenv("BOOXIN_RENDERER");
+    if (!renderer || !renderer[0]) renderer = getenv("POJAV_RENDERER");
+    const char *egl = getenv("BOOXIN_EGL");
+    if (!egl || !egl[0]) egl = getenv("POJAVEXEC_EGL");
+    LOGI("%s: booxin_environ=%p window=%p BOOXIN_RENDERER=%s EGL=%s",
          where, (void *)*pp, win,
          renderer ? renderer : "(null)",
          egl ? egl : "(null)");
@@ -1516,9 +1767,9 @@ static bool call_setup_bridge_window(JNIEnv *env, jobject surface) {
         return false;
     }
 
-    void *lib = open_pojavexec();
+    void *lib = open_booxin_bridge();
     if (!lib) {
-        LOGE("setupBridgeWindow dlopen pojavexec: %s", dlerror());
+        LOGE("setupBridgeWindow dlopen booxin_bridge: %s", dlerror());
         return false;
     }
 
@@ -1548,25 +1799,29 @@ static bool call_setup_bridge_window(JNIEnv *env, jobject surface) {
         void *win = ensure ? ensure() : NULL;
         if (!win) {
             LOGW("setupBridgeWindow: ANativeWindow still null after bind");
-            log_pojav_environ("after setupBridgeWindow (null window)");
+            log_booxin_environ("after setupBridgeWindow (null window)");
             return false;
         }
         LOGI("setupBridgeWindow ok window=%p", win);
+        booxin_shared_native_window = win;
+        /* Push into whichever bridge mapping is current. */
+        typedef void (*retain_fn)(void *);
+        retain_fn retain = (retain_fn)dlsym(lib, "booxin_retain_native_window");
+        if (retain) retain(win);
     }
-    log_pojav_environ("after setupBridgeWindow");
+    log_booxin_environ("after setupBridgeWindow");
     return true;
 }
 
-static void init_pojav_hooks(JNIEnv *env);
+static void init_booxin_hooks(JNIEnv *env);
 
-static void preload_pojav_deps(void) {
+static void preload_booxin_deps(void) {
     /* Do NOT preload libgl4es_114.so / MobileGlues here — early MG constructors
      * fight ART, and APK holy-gl4es must not be pulled in before LWJGL libname. */
     const char *libs[] = {
         "libbytehook.so",
         "liblinkerhook.so",
         "libdriver_helper.so",
-        "libfcl.so",
         NULL
     };
     const char *nativeDir = getenv("BOOXIN_NATIVEDIR");
@@ -1629,6 +1884,27 @@ static void preload_jsig(void) {
 }
 
 static atomic_int g_create_vm_heartbeat = 0;
+static pthread_mutex_t g_launch_log_mu = PTHREAD_MUTEX_INITIALIZER;
+
+/* ColorOS/vivo often hide logcat; also append CreateJavaVM progress to latest-launch.log. */
+static void launch_log_line(int prio, const char *fmt, ...) {
+    char buf[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    __android_log_print(prio, LOG_TAG, "%s", buf);
+    const char *path = getenv("BOOXIN_LAUNCH_LOG");
+    if (!path || !path[0]) return;
+    pthread_mutex_lock(&g_launch_log_mu);
+    FILE *f = fopen(path, "a");
+    if (f) {
+        fprintf(f, "%s\n", buf);
+        fflush(f);
+        fclose(f);
+    }
+    pthread_mutex_unlock(&g_launch_log_mu);
+}
 
 static void *create_vm_heartbeat_thread(void *arg) {
     (void)arg;
@@ -1637,15 +1913,128 @@ static void *create_vm_heartbeat_thread(void *arg) {
         sleep(5);
         if (!atomic_load(&g_create_vm_heartbeat)) break;
         sec += 5;
-        LOGI("JNI_CreateJavaVM still running… %ds (Forge module-path can take minutes)", sec);
+        launch_log_line(ANDROID_LOG_INFO,
+            "JNI_CreateJavaVM still running… %ds (Forge module-path can take minutes)", sec);
     }
     return NULL;
 }
 
-static jint launch_embedded(LaunchCtx *ctx, bool with_pojav) {
+/**
+ * Beta/early LaunchWrapper: Minecraft.main starts "Minecraft main thread" then
+ * returns. Block here until that (or similarly named) thread finishes.
+ */
+static void join_legacy_minecraft_threads(JNIEnv *env) {
+    if (!env) return;
+    jclass threadCls = (*env)->FindClass(env, "java/lang/Thread");
+    if (!threadCls || (*env)->ExceptionCheck(env)) {
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+        return;
+    }
+    jmethodID getAll = (*env)->GetStaticMethodID(
+        env, threadCls, "getAllStackTraces", "()Ljava/util/Map;");
+    jmethodID getName = (*env)->GetMethodID(
+        env, threadCls, "getName", "()Ljava/lang/String;");
+    jmethodID isAlive = (*env)->GetMethodID(env, threadCls, "isAlive", "()Z");
+    jmethodID isDaemon = (*env)->GetMethodID(env, threadCls, "isDaemon", "()Z");
+    jmethodID joinMid = (*env)->GetMethodID(env, threadCls, "join", "()V");
+    if (!getAll || !getName || !isAlive || !joinMid) {
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+        return;
+    }
+
+    /* Wait up to ~15s for the game thread to appear after main() returns. */
+    jobject target = NULL;
+    for (int attempt = 0; attempt < 30 && !target; attempt++) {
+        jobject map = (*env)->CallStaticObjectMethod(env, threadCls, getAll);
+        if ((*env)->ExceptionCheck(env)) {
+            (*env)->ExceptionClear(env);
+            map = NULL;
+        }
+        if (map) {
+            jclass mapCls = (*env)->FindClass(env, "java/util/Map");
+            jmethodID keySet = mapCls
+                ? (*env)->GetMethodID(env, mapCls, "keySet", "()Ljava/util/Set;")
+                : NULL;
+            jobject set = keySet ? (*env)->CallObjectMethod(env, map, keySet) : NULL;
+            if ((*env)->ExceptionCheck(env)) {
+                (*env)->ExceptionClear(env);
+                set = NULL;
+            }
+            jclass setCls = (*env)->FindClass(env, "java/util/Set");
+            jmethodID toArray = setCls
+                ? (*env)->GetMethodID(env, setCls, "toArray", "()[Ljava/lang/Object;")
+                : NULL;
+            jobjectArray threads = toArray
+                ? (jobjectArray)(*env)->CallObjectMethod(env, set, toArray)
+                : NULL;
+            if ((*env)->ExceptionCheck(env)) {
+                (*env)->ExceptionClear(env);
+                threads = NULL;
+            }
+            jsize n = threads ? (*env)->GetArrayLength(env, threads) : 0;
+            for (jsize i = 0; i < n; i++) {
+                jobject thr = (*env)->GetObjectArrayElement(env, threads, i);
+                if (!thr) continue;
+                jstring jn = (jstring)(*env)->CallObjectMethod(env, thr, getName);
+                if ((*env)->ExceptionCheck(env)) {
+                    (*env)->ExceptionClear(env);
+                    jn = NULL;
+                }
+                const char *name = jn ? (*env)->GetStringUTFChars(env, jn, NULL) : NULL;
+                int match = 0;
+                if (name) {
+                    /* Exact Beta name, or close variants. */
+                    if (strcmp(name, "Minecraft main thread") == 0 ||
+                        strstr(name, "Minecraft main") != NULL) {
+                        match = 1;
+                    }
+                    (*env)->ReleaseStringUTFChars(env, jn, name);
+                }
+                if (jn) (*env)->DeleteLocalRef(env, jn);
+                if (match) {
+                    jboolean alive = (*env)->CallBooleanMethod(env, thr, isAlive);
+                    if ((*env)->ExceptionCheck(env)) {
+                        (*env)->ExceptionClear(env);
+                        alive = JNI_FALSE;
+                    }
+                    if (alive) {
+                        target = (*env)->NewGlobalRef(env, thr);
+                        (*env)->DeleteLocalRef(env, thr);
+                        break;
+                    }
+                }
+                (*env)->DeleteLocalRef(env, thr);
+            }
+            if (threads) (*env)->DeleteLocalRef(env, threads);
+            if (set) (*env)->DeleteLocalRef(env, set);
+            if (setCls) (*env)->DeleteLocalRef(env, setCls);
+            if (mapCls) (*env)->DeleteLocalRef(env, mapCls);
+            (*env)->DeleteLocalRef(env, map);
+        }
+        if (!target) usleep(500000);
+    }
+
+    if (!target) {
+        launch_log_line(ANDROID_LOG_WARN,
+            "no Minecraft main thread found after LaunchWrapper return — continuing");
+        return;
+    }
+
+    launch_log_line(ANDROID_LOG_INFO, "joining Minecraft main thread (legacy LWJGL2)…");
+    (*env)->CallVoidMethod(env, target, joinMid);
+    if ((*env)->ExceptionCheck(env)) {
+        log_exception(env, "join Minecraft main thread");
+    } else {
+        launch_log_line(ANDROID_LOG_INFO, "Minecraft main thread finished");
+    }
+    (*env)->DeleteGlobalRef(env, target);
+    (void)isDaemon;
+}
+
+static jint launch_embedded(LaunchCtx *ctx, bool with_bridge) {
     reset_signals();
     setenv("_JAVA_VERSION_SET", "true", 1);
-    if (with_pojav) preload_pojav_deps();
+    if (with_bridge) preload_booxin_deps();
     /* Do NOT capture stdio before CreateJavaVM.
      * HotSpot prints heavily during init; a blocking pipe deadlocks the VM thread
      * and the UI freezes on "正在创建虚拟机". Capture starts right after JVM exists. */
@@ -1653,18 +2042,18 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_pojav) {
     preload_jsig();
     void *libjvm = dlopen("libjvm.so", RTLD_LAZY | RTLD_GLOBAL);
     if (!libjvm) {
-        LOGE("dlopen libjvm.so: %s", dlerror());
+        launch_log_line(ANDROID_LOG_ERROR, "dlopen libjvm.so: %s", dlerror());
         return -2;
     }
-    LOGI("libjvm.so loaded");
+    launch_log_line(ANDROID_LOG_INFO, "libjvm.so loaded");
 
     JNI_CreateJavaVM_func createVM =
         (JNI_CreateJavaVM_func)dlsym(libjvm, "JNI_CreateJavaVM");
     if (!createVM) {
-        LOGE("JNI_CreateJavaVM missing: %s", dlerror());
+        launch_log_line(ANDROID_LOG_ERROR, "JNI_CreateJavaVM missing: %s", dlerror());
         return -3;
     }
-    LOGI("JNI_CreateJavaVM symbol ok — parsing argv…");
+    launch_log_line(ANDROID_LOG_INFO, "JNI_CreateJavaVM symbol ok — parsing argv…");
 
     ParsedArgs pa;
     if (!parse_args(ctx->argv, ctx->argc, &pa)) {
@@ -1679,8 +2068,11 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_pojav) {
         optBytes += strlen(s);
         if (strncmp(s, "--module-path=", 14) == 0 || strncmp(s, "-p=", 3) == 0)
             hasModulePath = 1;
+        if (strncmp(s, "-javaagent:", 11) == 0)
+            LOGI("jvm opt: -javaagent present (authlib-injector offline skin)");
     }
-    LOGI("main=%s jvmOpts=%d gameArgs=%d cpLen=%d optBytes=%zu modulePath=%d",
+    launch_log_line(ANDROID_LOG_INFO,
+         "main=%s jvmOpts=%d gameArgs=%d cpLen=%d optBytes=%zu modulePath=%d",
          pa.mainClass, pa.nOpts, pa.nGameArgs,
          pa.classpath ? (int)strlen(pa.classpath) : 0,
          optBytes, hasModulePath);
@@ -1694,7 +2086,25 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_pojav) {
     JavaVM *jvm = NULL;
     JNIEnv *jenv = NULL;
     /* Forge/modpacks: CreateJavaVM can take a while with a huge module-path. */
-    LOGI("JNI_CreateJavaVM starting (nOptions=%d) — please wait…", pa.nOpts);
+    launch_log_line(ANDROID_LOG_INFO,
+        "JNI_CreateJavaVM starting (nOptions=%d) — please wait…", pa.nOpts);
+    /* Non-blocking stderr mirror so HotSpot exit(1) reasons are not lost
+     * (pipe capture before CreateJavaVM can deadlock). */
+    {
+        const char *nd = getenv("BOOXIN_NATIVEDIR");
+        if (!nd || !nd[0]) nd = getenv("POJAV_NATIVEDIR");
+        char errpath[512];
+        if (nd && nd[0])
+            snprintf(errpath, sizeof(errpath), "%s/hs-create-vm.err", nd);
+        else
+            snprintf(errpath, sizeof(errpath), "/data/local/tmp/booxin-hs-create-vm.err");
+        int efd = open(errpath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (efd >= 0) {
+            dup2(efd, STDERR_FILENO);
+            close(efd);
+            LOGI("CreateJavaVM stderr → %s", errpath);
+        }
+    }
     atomic_store(&g_create_vm_heartbeat, 1);
     pthread_t hb;
     int hbOk = pthread_create(&hb, NULL, create_vm_heartbeat_thread, NULL) == 0;
@@ -1707,49 +2117,81 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_pojav) {
     long elapsedMs = (t1.tv_sec - t0.tv_sec) * 1000L +
         (t1.tv_nsec - t0.tv_nsec) / 1000000L;
     if (rc != JNI_OK || !jenv) {
-        LOGE("JNI_CreateJavaVM failed: %d after %ldms", (int)rc, elapsedMs);
+        launch_log_line(ANDROID_LOG_ERROR,
+            "JNI_CreateJavaVM failed: %d after %ldms", (int)rc, elapsedMs);
         free_parsed(&pa);
         return rc != 0 ? rc : -5;
     }
-    LOGI("JVM created in %ldms — attaching stdio capture", elapsedMs);
+    launch_log_line(ANDROID_LOG_INFO,
+        "JVM created in %ldms — attaching stdio capture", elapsedMs);
     start_stdio_capture();
+    launch_log_line(ANDROID_LOG_INFO, "stdio capture attached");
 
-    if (with_pojav) {
+    /* After LaunchWrapper main() returns we join "Minecraft main thread"
+     * (Beta / early LWJGL2) — must outlive the with_bridge preinit block. */
+    int launchwrapper_like = pa.mainClass &&
+        strstr(pa.mainClass, "launchwrapper.Launch");
+
+    if (with_bridge) {
     /*
      * HotSpot needs System.load (not bare dlopen) or GLFW callbacks never link.
      * Init GLFW first so buffers exist, then load the bridge.
-     * Forge: skip preinit — loading liblwjgl on AppClassLoader breaks the module layer.
+     * Forge/Knot: skip preinit — loading liblwjgl on AppClassLoader makes Knot/
+     * module-layer GLFW.<clinit> fail with "already loaded in another classloader".
      */
     int forge_like = pa.mainClass &&
         (strstr(pa.mainClass, "minecraftforge") ||
          strstr(pa.mainClass, "ForgeBootstrap") ||
          strstr(pa.mainClass, "bootstraplauncher") ||
-         strstr(pa.mainClass, "modlauncher"));
+         strstr(pa.mainClass, "modlauncher") ||
+         strstr(pa.mainClass, "neoforged"));
+    int knot_like = pa.mainClass &&
+        (strstr(pa.mainClass, "KnotClient") ||
+         strstr(pa.mainClass, "KnotServer") ||
+         strstr(pa.mainClass, "fabricmc.loader") ||
+         strstr(pa.mainClass, "quiltmc.loader"));
+    int isolated_loader = forge_like || knot_like;
     /* 26.3+ uses SDL3 — skip GLFW preinit (our stub would load the wrong window stack). */
     const char *windowing = getenv("BOOXIN_WINDOWING");
     int sdl_like = windowing && strcmp(windowing, "sdl") == 0;
-    if (!forge_like && !sdl_like) {
+    const char *skipPre = getenv("BOOXIN_SKIP_GLFW_PREINIT");
+    int skip_glfw_preinit = (skipPre && skipPre[0] && skipPre[0] != '0') || launchwrapper_like;
+    if (skip_glfw_preinit && !isolated_loader && !sdl_like) {
+        launch_log_line(ANDROID_LOG_INFO,
+            launchwrapper_like
+                ? "skip GLFW preinit (LaunchWrapper / legacy LWJGL2)"
+                : "skip GLFW preinit (OEM) — renderer unchanged, GLFW loads at glfwInit");
+    } else if (!isolated_loader && !sdl_like) {
+        launch_log_line(ANDROID_LOG_INFO, "GLFW preinit starting…");
         if (!preinit_hotspot_glfw(jenv)) {
-            LOGW("GLFW preinit failed — continuing with System.load anyway");
+            launch_log_line(ANDROID_LOG_WARN,
+                "GLFW preinit failed — continuing with System.load anyway");
+        } else {
+            launch_log_line(ANDROID_LOG_INFO, "GLFW preinit ok");
         }
     } else if (sdl_like) {
         LOGI("SDL windowing — skip GLFW preinit");
     } else {
-        LOGI("Forge-like main=%s — skip GLFW preinit (avoid double-load liblwjgl)",
+        LOGI("%s main=%s — skip GLFW preinit (avoid double-load liblwjgl)",
+             knot_like ? "Knot-like" : "Forge-like",
              pa.mainClass);
     }
-    if (!forge_like && !sdl_like) {
-        if (!hotspot_system_load_pojavexec(jenv)) {
-            LOGW("HotSpot System.load(pojavexec) failed — trying manual JNI_OnLoad");
-            if (!call_pojav_jni_onload(jvm, jenv, "HotSpot")) {
-                LOGW("HotSpot pojavexec JNI_OnLoad failed — input may be dead");
+    if (!isolated_loader && !sdl_like) {
+        launch_log_line(ANDROID_LOG_INFO, "HotSpot System.load(booxin_bridge)…");
+        if (!hotspot_system_load_booxin_bridge(jenv)) {
+            launch_log_line(ANDROID_LOG_WARN,
+                "HotSpot System.load(booxin_bridge) failed — trying manual JNI_OnLoad");
+            if (!call_booxin_jni_onload(jvm, jenv, "HotSpot")) {
+                launch_log_line(ANDROID_LOG_WARN,
+                    "HotSpot booxin_bridge JNI_OnLoad failed — input may be dead");
             }
         } else {
-            log_pojav_environ("after HotSpot System.load(pojavexec)");
+            launch_log_line(ANDROID_LOG_INFO, "HotSpot System.load(booxin_bridge) ok");
+            log_booxin_environ("after HotSpot System.load(booxin_bridge)");
         }
         /* Share GLFW DirectByteBuffers with native click state. */
         {
-            void *lib = open_pojavexec();
+            void *lib = open_booxin_bridge();
             typedef void (*bind_fn)(JNIEnv *);
             bind_fn bind = lib
                 ? (bind_fn)dlsym(lib, "booxin_bind_glfw_input_buffers")
@@ -1761,7 +2203,10 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_pojav) {
                 LOGW("booxin_bind_glfw_input_buffers missing — clicks may not poll");
             }
         }
-        force_input_bridge_ready("after HotSpot pojavexec load");
+        force_input_bridge_ready("after HotSpot booxin_bridge load");
+        if (launchwrapper_like) {
+            hotspot_load_legacy_awt(jenv);
+        }
     } else if (sdl_like) {
         LOGI("SDL windowing — load liblwjgl + bridge (no GLFW preinit)");
         {
@@ -1783,15 +2228,15 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_pojav) {
             } else {
                 LOGW("SDL: *NATIVEDIR unset — cannot preload lwjgl/bridge");
             }
-            void *lib = open_pojavexec();
+            void *lib = open_booxin_bridge();
             typedef void *(*ensure_fn)(void);
             ensure_fn ensure = lib
                 ? (ensure_fn)dlsym(lib, "booxin_ensure_native_window")
                 : NULL;
             void *win = ensure ? ensure() : NULL;
             LOGI("SDL-like ensure native window=%p", win);
-            struct booxin_pojav_environ_s **pp = lib
-                ? (struct booxin_pojav_environ_s **)dlsym(lib, "pojav_environ")
+            struct booxin_bridge_environ_s **pp = lib
+                ? (struct booxin_bridge_environ_s **)dlsym(lib, "booxin_environ")
                 : NULL;
             if (pp && *pp) {
                 (*pp)->runtimeJavaVMPtr = jvm;
@@ -1803,49 +2248,90 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_pojav) {
                 : NULL;
             if (bind) bind(jenv);
         }
-        log_pojav_environ("after SDL HotSpot ensure");
+        log_booxin_environ("after SDL HotSpot ensure");
         force_input_bridge_ready("after SDL HotSpot ensure");
     } else {
-        LOGI("Forge-like — skip HotSpot System.load(pojavexec) to avoid classloader split");
-        /* Skip JNI_OnLoad: it FindClass(GLFW) and can load liblwjgl too early. */
+        /* Forge/Knot: do NOT Java-System.load bridge/LWJGL here — that binds
+         * liblwjgl.so to AppClassLoader and Forge's module layer then dies with
+         * "already loaded in another classloader". Only dlopen + shared window. */
+        LOGI("%s — skip HotSpot System.load(booxin_bridge) (module-layer LWJGL)",
+             knot_like ? "Knot-like" : "Forge-like");
         {
-            void *lib = open_pojavexec();
+            void *lib = open_booxin_bridge();
             typedef void *(*ensure_fn)(void);
+            typedef void (*retain_fn)(void *);
             ensure_fn ensure = lib
                 ? (ensure_fn)dlsym(lib, "booxin_ensure_native_window")
                 : NULL;
-            void *win = ensure ? ensure() : NULL;
-            LOGI("Forge-like ensure native window=%p ensure_sym=%p", win, (void *)ensure);
-            if (!win) {
-                LOGW("Forge-like: no ANativeWindow before main — glfwInit may SIGSEGV");
+            retain_fn retain = lib
+                ? (retain_fn)dlsym(lib, "booxin_retain_native_window")
+                : NULL;
+            if (retain && booxin_shared_native_window) {
+                retain(booxin_shared_native_window);
             }
-            struct booxin_pojav_environ_s **pp = lib
-                ? (struct booxin_pojav_environ_s **)dlsym(lib, "pojav_environ")
+            void *win = ensure ? ensure() : NULL;
+            if (!win && booxin_shared_native_window) {
+                win = booxin_shared_native_window;
+            }
+            LOGI("%s ensure native window=%p ensure_sym=%p shared=%p",
+                 knot_like ? "Knot-like" : "Forge-like",
+                 win, (void *)ensure, booxin_shared_native_window);
+            if (!win) {
+                LOGW("%s: no ANativeWindow before main — glfwInit may fail",
+                     knot_like ? "Knot-like" : "Forge-like");
+            }
+            struct booxin_bridge_environ_s **pp = lib
+                ? (struct booxin_bridge_environ_s **)dlsym(lib, "booxin_environ")
                 : NULL;
             if (pp && *pp) {
                 (*pp)->runtimeJavaVMPtr = jvm;
                 (*pp)->runtimeJNIEnvPtr_JRE = jenv;
+                if (win) (*pp)->nativeWindow = win;
             }
+            /* Do NOT bind_glfw_input_buffers here — FindClass GLFW too early. */
         }
-        log_pojav_environ("after Forge HotSpot ensure");
-        force_input_bridge_ready("after Forge HotSpot ensure");
+        log_booxin_environ(knot_like ? "after Knot HotSpot ensure" : "after Forge HotSpot ensure");
+        force_input_bridge_ready(knot_like ? "after Knot HotSpot ensure" : "after Forge HotSpot ensure");
     }
-    if (!forge_like && !sdl_like) {
-        log_hotspot_pump_diag(jenv);
-        if (!patch_hotspot_pump_function_pointers(jenv)) {
-            LOGW("GLFW pump pointer patch failed — touch may not reach Minecraft");
+    if (!isolated_loader && !sdl_like) {
+        if (skip_glfw_preinit) {
+            /* GLFW is not loaded yet; FindClass here would recreate the ColorOS stall.
+             * Patch Functions on a watcher thread as soon as Minecraft loads GLFW. */
+            launch_log_line(ANDROID_LOG_INFO,
+                "OEM: late GLFW$Functions watcher (patch before glfwInit, REL unchanged)");
+            atomic_store(&g_forge_glfw_patch_done, 0);
+            atomic_store(&g_forge_prefer_module_glfw, 0);
+            pthread_t late_thr;
+            if (pthread_create(&late_thr, NULL, forge_late_glfw_patch_thread, jvm) == 0) {
+                pthread_detach(late_thr);
+            } else {
+                launch_log_line(ANDROID_LOG_WARN, "OEM: failed to spawn late GLFW patch thread");
+            }
+        } else {
+            log_hotspot_pump_diag(jenv);
+            if (!patch_hotspot_pump_function_pointers(jenv)) {
+                launch_log_line(ANDROID_LOG_WARN,
+                    "GLFW pump pointer patch failed — touch may not reach Minecraft");
+            } else {
+                launch_log_line(ANDROID_LOG_INFO, "GLFW$Functions patched");
+            }
+            log_hotspot_pump_diag(jenv);
         }
-        log_hotspot_pump_diag(jenv);
     } else if (sdl_like) {
         LOGI("SDL windowing — defer input pump until SDL/LWJGL loads");
     } else {
-        LOGI("Forge-like — starting late GLFW patch watcher for module-layer LWJGL");
+        LOGI("%s — starting late GLFW patch watcher for isolated-loader LWJGL",
+             knot_like ? "Knot-like" : "Forge-like");
         atomic_store(&g_forge_glfw_patch_done, 0);
+        /* Forge/NeoForge: never patch AppClassLoader fat-jar GLFW.
+         * Knot keeps Android LWJGL on systemLibraries — allow AppClassLoader. */
+        atomic_store(&g_forge_prefer_module_glfw, forge_like ? 1 : 0);
         pthread_t forge_patch_thr;
         if (pthread_create(&forge_patch_thr, NULL, forge_late_glfw_patch_thread, jvm) == 0) {
             pthread_detach(forge_patch_thr);
         } else {
-            LOGW("Forge-like — failed to spawn late GLFW patch thread");
+            LOGW("%s — failed to spawn late GLFW patch thread",
+                 knot_like ? "Knot-like" : "Forge-like");
         }
     }
 
@@ -1853,7 +2339,8 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_pojav) {
     }
 
     /* Prefer system classloader first (uses -Djava.class.path) */
-    LOGI("loading main class via SystemClassLoader: %s", pa.mainClass);
+    launch_log_line(ANDROID_LOG_INFO,
+        "loading main class via SystemClassLoader: %s", pa.mainClass);
     jclass clCls = (*jenv)->FindClass(jenv, "java/lang/ClassLoader");
     jmethodID getSys = (*jenv)->GetStaticMethodID(
         jenv, clCls, "getSystemClassLoader", "()Ljava/lang/ClassLoader;");
@@ -1871,7 +2358,7 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_pojav) {
             log_exception(jenv, "system loadClass");
             mainCls = NULL;
         } else {
-            LOGI("main class loaded (system): %s", pa.mainClass);
+            launch_log_line(ANDROID_LOG_INFO, "main class loaded (system): %s", pa.mainClass);
         }
     }
 
@@ -1906,7 +2393,7 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_pojav) {
                 jenv, sysLoader, "org.lwjgl.system.JNI");
             if (jniCls) {
                 typedef int (*reg_fn)(JNIEnv *, jclass);
-                void *bridge = open_pojavexec();
+                void *bridge = open_booxin_bridge();
                 if (!bridge) {
                     bridge = dlopen("libbooxin_bridge.so", RTLD_NOW | RTLD_NOLOAD);
                     if (!bridge) bridge = dlopen("libbooxin_bridge.so", RTLD_NOW);
@@ -1944,19 +2431,12 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_pojav) {
         (*jenv)->DeleteLocalRef(jenv, js);
     }
 
-    LOGI("Invoking main(%d args)", pa.nGameArgs);
-    if (with_pojav) {
-        const char *renderer = getenv("POJAV_RENDERER");
-        if (!renderer || !renderer[0]) {
-            const char *fallback = getenv("BOOXIN_RENDERER");
-            if (!fallback || !fallback[0]) fallback = "opengles3";
-            setenv("POJAV_RENDERER", fallback, 1);
-            renderer = getenv("POJAV_RENDERER");
-            LOGW("POJAV_RENDERER was unset — defaulted to %s", renderer ? renderer : "?");
-        }
-        LOGI("POJAV_RENDERER=%s",
-             renderer && renderer[0] ? renderer : "(unset)");
-        log_pojav_environ("before Invoking main");
+    launch_log_line(ANDROID_LOG_INFO, "Invoking main(%d args)", pa.nGameArgs);
+    if (with_bridge) {
+        /* Hide POJAV_RENDERER from Java System.getenv (Create brands it as
+         * branding), then setenv for native LWJGL only. */
+        freeze_java_env_hide_legacy_renderer(jenv);
+        log_booxin_environ("before Invoking main");
         /* Minecraft/LWJGL call SDL_Init without SDL_main.
          * ART must System.load SDL on a large-stack Java thread so JNI_OnLoad
          * can FindClass(org.libsdl.app.*). Bare FindClass from this HotSpot
@@ -1982,15 +2462,14 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_pojav) {
                 }
                 if (sdl) {
                     JavaVM *art = NULL;
-                    void *lib = open_pojavexec();
-                    struct booxin_pojav_environ_s **pp = lib
-                        ? (struct booxin_pojav_environ_s **)dlsym(lib, "pojav_environ")
+                    void *lib = open_booxin_bridge();
+                    struct booxin_bridge_environ_s **pp = lib
+                        ? (struct booxin_bridge_environ_s **)dlsym(lib, "booxin_environ")
                         : NULL;
                     if (pp && *pp) art = (*pp)->dalvikJavaVMPtr;
 
-                    /* If ART large-stack load did not complete JNI/setup, finish
-                     * via Java method so FindClass sees App ClassLoader. */
-                    if (art && g_art_class_loader && !g_sdl_jni_onload_done) {
+                    /* Always finish ART SDL init after CreateJavaVM (load deferred). */
+                    if (art && g_art_class_loader) {
                         JNIEnv *artEnv = NULL;
                         int need_detach = 0;
                         jint get = (*art)->GetEnv(art, (void **)&artEnv, JNI_VERSION_1_6);
@@ -2019,7 +2498,7 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_pojav) {
                             }
                         }
                         if (need_detach) (*art)->DetachCurrentThread(art);
-                    } else if (!already && !g_sdl_jni_onload_done) {
+                    } else if (!g_sdl_jni_onload_done) {
                         /* Last resort: JNI_OnLoad without Java frame (may miss classes). */
                         JavaVM *vm = art ? art : jvm;
                         JNI_OnLoad_func sdl_onload =
@@ -2044,7 +2523,7 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_pojav) {
                     {
                         typedef int (*force_gles_fn)(void *);
                         typedef int (*rebind_fn)(JNIEnv *);
-                        void *bridge = open_pojavexec();
+                        void *bridge = open_booxin_bridge();
                         force_gles_fn force = bridge
                             ? (force_gles_fn)dlsym(bridge, "booxin_sdl_force_gles")
                             : NULL;
@@ -2082,16 +2561,71 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_pojav) {
             }
         }
     }
+    if (with_bridge) {
+        /*
+         * SDL (26.3+): do NOT booxinInit / invent a GLFW EGL window surface on the
+         * shared ANativeWindow. That steals the only window surface Android allows,
+         * and SDL then presents off-screen → TextureView stays black (frames=0)
+         * while audio/input still work.
+         */
+        const char *sdl_win = getenv("BOOXIN_WINDOWING");
+        int skip_bridge_gl = sdl_win && strcmp(sdl_win, "sdl") == 0;
+        if (skip_bridge_gl) {
+            launch_log_line(ANDROID_LOG_INFO,
+                "SDL windowing — skip pre-main booxinInit + GLFW patch "
+                "(EGL surface owned by SDL/MobileGlues)");
+        } else {
+            prepare_gl_before_main();
+            /*
+             * Must patch Init→booxinInit BEFORE Minecraft calls glfwInit.
+             * ColorOS / vanilla: FindClass + patch here wins the race when the
+             * late watcher is too slow.
+             *
+             * Forge/NeoForge: NEVER FindClass GLFW on AppClassLoader here.
+             * That System.loads liblwjgl/libbooxin_bridge onto the wrong classloader;
+             * SECURE-BOOTSTRAP GLFW.<clinit> then dies with
+             * "Native Library … already loaded in another classloader".
+             * Rely on forge_late_glfw_patch_thread (find_loaded_*, no FindClass).
+             */
+            int forge_like_premain = pa.mainClass &&
+                (strstr(pa.mainClass, "minecraftforge") ||
+                 strstr(pa.mainClass, "ForgeBootstrap") ||
+                 strstr(pa.mainClass, "bootstraplauncher") ||
+                 strstr(pa.mainClass, "modlauncher") ||
+                 strstr(pa.mainClass, "neoforged"));
+            if (forge_like_premain) {
+                launch_log_line(ANDROID_LOG_INFO,
+                    "Forge-like: skip pre-main GLFW FindClass "
+                    "(await module-layer late patch)");
+            } else {
+                launch_log_line(ANDROID_LOG_INFO, "pre-main patch GLFW$Functions…");
+                if (patch_hotspot_pump_function_pointers(jenv)) {
+                    atomic_store(&g_forge_glfw_patch_done, 1);
+                    launch_log_line(ANDROID_LOG_INFO,
+                        "pre-main GLFW$Functions patched (glfwInit → booxinInit)");
+                    void *lib = open_booxin_bridge();
+                    typedef void (*bind_fn)(JNIEnv *);
+                    bind_fn bind = lib
+                        ? (bind_fn)dlsym(lib, "booxin_bind_glfw_input_buffers")
+                        : NULL;
+                    if (bind) bind(jenv);
+                } else {
+                    launch_log_line(ANDROID_LOG_WARN,
+                        "pre-main GLFW patch failed — glfwInit may throw");
+                }
+            }
+        }
+    }
     (*jenv)->CallStaticVoidMethod(jenv, mainCls, mainMethod, argsArr);
     if ((*jenv)->ExceptionCheck(jenv)) {
         log_exception(jenv, "main()");
         free_parsed(&pa);
-        if (!with_pojav) abandon_stdio_capture();
+        if (!with_bridge) abandon_stdio_capture();
         else stop_stdio_capture();
         return 1;
     }
 
-    if (!with_pojav) {
+    if (!with_bridge) {
         /* Tool JVM: ForgeProcessorService kills this process; DestroyJavaVM hangs on
          * binarypatcher non-daemon threads after main() returns.
          * Also abandon stdio capture — join can hang until user switches apps. */
@@ -2101,10 +2635,23 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_pojav) {
         return 0;
     }
 
+    /*
+     * Beta / early LaunchWrapper: Minecraft.main() starts "Minecraft main thread"
+     * and returns immediately. If we treat that as process exit, :game is torn down
+     * while the real game loop is still running (black screen / instant return home).
+     */
+    if (launchwrapper_like) {
+        launch_log_line(ANDROID_LOG_INFO,
+            "LaunchWrapper main returned — joining Minecraft main thread…");
+        join_legacy_minecraft_threads(jenv);
+    }
+
     /* Game main() normally never returns. If it does, DestroyJavaVM still hangs
      * (ForgeBootstrap / daemon threads) — skip and exit the :game process. */
     LOGI("game main returned — skip DestroyJavaVM");
     free_parsed(&pa);
+    /* Give stdout reader time to flush LaunchWrapper "Caused by" lines. */
+    usleep(250000);
     stop_stdio_capture();
     return 0;
 }
@@ -2167,16 +2714,16 @@ static void *launch_tool_thread(void *arg) {
     return NULL;
 }
 
-static void *ensure_pojavexec(void) {
-    return open_pojavexec();
+static void *ensure_booxin_bridge(void) {
+    return open_booxin_bridge();
 }
 
-typedef jint (*PojavLaunchJvm_fn)(JNIEnv *, jclass, jobjectArray);
+typedef jint (*BooxinLaunchJvm_fn)(JNIEnv *, jclass, jobjectArray);
 
-static void init_pojav_hooks(JNIEnv *env) {
-    void *lib = ensure_pojavexec();
+static void init_booxin_hooks(JNIEnv *env) {
+    void *lib = ensure_booxin_bridge();
     if (!lib) {
-        LOGE("init_pojav_hooks: pojavexec not loaded");
+        LOGE("init_booxin_hooks: booxin_bridge not loaded");
         return;
     }
 
@@ -2207,16 +2754,16 @@ static void init_pojav_hooks(JNIEnv *env) {
     register_callbackbridge_send_natives(env);
 }
 
-static jint launch_via_pojavexec(JNIEnv *env, jobjectArray argsArray) {
-    void *lib = ensure_pojavexec();
+static jint launch_via_booxin_bridge(JNIEnv *env, jobjectArray argsArray) {
+    void *lib = ensure_booxin_bridge();
     if (!lib) {
-        LOGE("launch_via_pojavexec: dlopen pojavexec: %s", dlerror());
+        LOGE("launch_via_booxin_bridge: dlopen booxin_bridge: %s", dlerror());
         return -8;
     }
-    PojavLaunchJvm_fn launch = (PojavLaunchJvm_fn)dlsym(
+    BooxinLaunchJvm_fn launch = (BooxinLaunchJvm_fn)dlsym(
         lib, "Java_com_oracle_dalvik_VMLauncher_launchJVM");
     if (!launch) {
-        LOGE("launch_via_pojavexec: dlsym VMLauncher.launchJVM: %s", dlerror());
+        LOGE("launch_via_booxin_bridge: dlsym VMLauncher.launchJVM: %s", dlerror());
         return -9;
     }
     LOGI("delegating to bridge VMLauncher.launchJVM");
@@ -2233,12 +2780,12 @@ Java_com_booxin_launcher_core_launch_NativeJvmLauncher_nativeInitializeHooks(
     JNIEnv *env, jclass clazz)
 {
     (void)clazz;
-    init_pojav_hooks(env);
+    init_booxin_hooks(env);
     return JNI_TRUE;
 }
 
 /*
- * Dump pojav_environ input gates. Layout: struct booxin_pojav_environ_s above.
+ * Dump booxin_environ input gates. Layout: struct booxin_bridge_environ_s above.
  * Used to diagnose "Java logs mouseBtn but game ignores clicks".
  */
 
@@ -2249,9 +2796,9 @@ Java_com_booxin_launcher_core_launch_NativeJvmLauncher_nativeMarkMousePositionDi
     (void)env;
     (void)clazz;
     /* Cached pointer — never dlopen/dlsym on the touch hot path. */
-    if (!g_pojav_environ_pp) resolve_pojav_pump_syms();
-    if (!g_pojav_environ_pp || !*g_pojav_environ_pp) return;
-    (*g_pojav_environ_pp)->shouldUpdateMouse = true;
+    if (!g_booxin_environ_pp) resolve_booxin_pump_syms();
+    if (!g_booxin_environ_pp || !*g_booxin_environ_pp) return;
+    (*g_booxin_environ_pp)->shouldUpdateMouse = true;
 }
 
 JNIEXPORT jboolean JNICALL
@@ -2260,12 +2807,12 @@ Java_com_booxin_launcher_core_launch_NativeJvmLauncher_nativeForcePumpInput(
 {
     (void)env;
     (void)clazz;
-    void *lib = open_pojavexec();
+    void *lib = open_booxin_bridge();
     if (!lib) return JNI_FALSE;
-    struct booxin_pojav_environ_s **pp =
-        (struct booxin_pojav_environ_s **)dlsym(lib, "pojav_environ");
+    struct booxin_bridge_environ_s **pp =
+        (struct booxin_bridge_environ_s **)dlsym(lib, "booxin_environ");
     if (!pp || !*pp) return JNI_FALSE;
-    struct booxin_pojav_environ_s *e = *pp;
+    struct booxin_bridge_environ_s *e = *pp;
     if (!e->runtimeJavaVMPtr || !e->showingWindow) return JNI_FALSE;
     if (!e->isInputReady) return JNI_FALSE;
 
@@ -2307,12 +2854,12 @@ Java_com_booxin_launcher_core_launch_NativeJvmLauncher_nativeInvokeCursorPosCall
 {
     (void)env;
     (void)clazz;
-    void *lib = open_pojavexec();
+    void *lib = open_booxin_bridge();
     if (!lib) return JNI_FALSE;
-    struct booxin_pojav_environ_s **pp =
-        (struct booxin_pojav_environ_s **)dlsym(lib, "pojav_environ");
+    struct booxin_bridge_environ_s **pp =
+        (struct booxin_bridge_environ_s **)dlsym(lib, "booxin_environ");
     if (!pp || !*pp) return JNI_FALSE;
-    struct booxin_pojav_environ_s *e = *pp;
+    struct booxin_bridge_environ_s *e = *pp;
     void *targetWindow = booxin_mc_glfw_window(e, NULL);
     if (!e->GLFW_invoke_CursorPos || !targetWindow) return JNI_FALSE;
 
@@ -2347,12 +2894,12 @@ Java_com_booxin_launcher_core_launch_NativeJvmLauncher_nativeInvokeMouseButtonCa
 {
     (void)env;
     (void)clazz;
-    void *lib = open_pojavexec();
+    void *lib = open_booxin_bridge();
     if (!lib) return JNI_FALSE;
-    struct booxin_pojav_environ_s **pp =
-        (struct booxin_pojav_environ_s **)dlsym(lib, "pojav_environ");
+    struct booxin_bridge_environ_s **pp =
+        (struct booxin_bridge_environ_s **)dlsym(lib, "booxin_environ");
     if (!pp || !*pp) return JNI_FALSE;
-    struct booxin_pojav_environ_s *e = *pp;
+    struct booxin_bridge_environ_s *e = *pp;
     void *targetWindow = booxin_mc_glfw_window(e, NULL);
     if (!e->GLFW_invoke_MouseButton || !targetWindow) return JNI_FALSE;
 
@@ -2383,16 +2930,16 @@ Java_com_booxin_launcher_core_launch_NativeJvmLauncher_nativeDumpInputBridge(
     JNIEnv *env, jclass clazz)
 {
     (void)clazz;
-    void *lib = open_pojavexec();
+    void *lib = open_booxin_bridge();
     if (!lib) {
-        return (*env)->NewStringUTF(env, "pojavexec=null");
+        return (*env)->NewStringUTF(env, "booxin_bridge=null");
     }
-    struct booxin_pojav_environ_s **pp =
-        (struct booxin_pojav_environ_s **)dlsym(lib, "pojav_environ");
+    struct booxin_bridge_environ_s **pp =
+        (struct booxin_bridge_environ_s **)dlsym(lib, "booxin_environ");
     if (!pp || !*pp) {
-        return (*env)->NewStringUTF(env, "pojav_environ=null");
+        return (*env)->NewStringUTF(env, "booxin_environ=null");
     }
-    struct booxin_pojav_environ_s *e = *pp;
+    struct booxin_bridge_environ_s *e = *pp;
     /* Dump live environ fields. */
     double cursorX = e->cursorX;
     double cursorY = e->cursorY;
@@ -2414,7 +2961,7 @@ Java_com_booxin_launcher_core_launch_NativeJvmLauncher_nativeDumpInputBridge(
              "mouseCb=%p cursorCb=%p keyCb=%p "
              "mouseBuf=%p keyBuf=%p mouseBtn0=%d "
              "events=%zu inIdx=%zu outIdx=%zu "
-             "cursor=%.1f,%.1f win=%dx%d showing=%ld pojavWindow=%p mainBundle=%p dvm=%p jvm=%p jreEnv=%p",
+             "cursor=%.1f,%.1f win=%dx%d showing=%ld bridgeWindow=%p mainBundle=%p dvm=%p jvm=%p jreEnv=%p",
              (void *)e,
              ready,
              stackQ,
@@ -2433,7 +2980,7 @@ Java_com_booxin_launcher_core_launch_NativeJvmLauncher_nativeDumpInputBridge(
              cursorX, cursorY,
              e->savedWidth, e->savedHeight,
              showing,
-             e->pojavWindow,
+             e->nativeWindow,
              e->mainWindowBundle,
              (void *)e->dalvikJavaVMPtr,
              (void *)e->runtimeJavaVMPtr,
@@ -2461,18 +3008,24 @@ Java_com_booxin_launcher_core_launch_NativeJvmLauncher_nativeSetupBridgeWindow(
         return JNI_FALSE;
     }
 
-    JavaVM *artVm = NULL;
-    if ((*env)->GetJavaVM(env, &artVm) != JNI_OK || !artVm) {
-        LOGE("setupBridgeWindow: GetJavaVM failed");
-        return JNI_FALSE;
+    /* ART JNI_OnLoad + RegisterNatives only once. Re-entering on every resume
+     * rebind used to overwrite HotSpot's runtimeJavaVMPtr → SIGSEGV in libart. */
+    if (!g_art_bridge_inited) {
+        JavaVM *artVm = NULL;
+        if ((*env)->GetJavaVM(env, &artVm) != JNI_OK || !artVm) {
+            LOGE("setupBridgeWindow: GetJavaVM failed");
+            return JNI_FALSE;
+        }
+        if (!call_booxin_jni_onload(artVm, env, "ART")) {
+            return JNI_FALSE;
+        }
+        log_booxin_environ("after ART JNI_OnLoad");
+        register_callbackbridge_send_natives(env);
+        force_input_bridge_ready("after ART setupBridgeWindow");
+        g_art_bridge_inited = 1;
+    } else {
+        force_input_bridge_ready("after ART setupBridgeWindow (reuse)");
     }
-    if (!call_pojav_jni_onload(artVm, env, "ART")) {
-        return JNI_FALSE;
-    }
-    log_pojav_environ("after ART JNI_OnLoad");
-    /* Register touch send_* on ART. */
-    register_callbackbridge_send_natives(env);
-    force_input_bridge_ready("after ART setupBridgeWindow");
 
     return call_setup_bridge_window(env, surface) ? JNI_TRUE : JNI_FALSE;
 }
@@ -2548,7 +3101,7 @@ Java_com_booxin_launcher_core_launch_NativeJvmLauncher_nativeClearBridgeWindow(
     }
     pthread_mutex_unlock(&g_bridge_mutex);
 
-    void *lib = open_pojavexec();
+    void *lib = open_booxin_bridge();
     if (!lib) {
         lib = dlopen("libbooxin_bridge.so", RTLD_LAZY | RTLD_NOLOAD);
         if (!lib) lib = dlopen("libbooxin_bridge.so", RTLD_LAZY);
@@ -2562,25 +3115,46 @@ Java_com_booxin_launcher_core_launch_NativeJvmLauncher_nativeClearBridgeWindow(
     detach_fn detach = (detach_fn)dlsym(lib, "booxin_egl_detach_window");
     if (detach) {
         detach();
-        LOGI("clearBridgeWindow: egl window surface detached");
-    }
-    retain_fn retain = (retain_fn)dlsym(lib, "booxin_retain_native_window");
-    if (retain) {
-        retain(NULL);
-        LOGI("clearBridgeWindow: released retained ANativeWindow");
+        LOGI("clearBridgeWindow: egl detach requested (GL thread parks)");
     } else {
-        /* setupBridgeWindow(null) 兜底 */
-        SetupBridgeWindow_fn fn = resolve_setup_bridge_window(lib);
-        jclass cbCls = (*env)->FindClass(env, "org/lwjgl/glfw/CallbackBridge");
-        if (fn && cbCls && !(*env)->ExceptionCheck(env)) {
-            fn(env, cbCls, NULL);
-            (*env)->DeleteLocalRef(env, cbCls);
-            LOGI("clearBridgeWindow: via setupBridgeWindow(null)");
+        /* Fallback: release window immediately if detach symbol missing. */
+        retain_fn retain = (retain_fn)dlsym(lib, "booxin_retain_native_window");
+        if (retain) {
+            retain(NULL);
+            LOGI("clearBridgeWindow: released retained ANativeWindow (no detach sym)");
         } else {
-            if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
-            LOGW("clearBridgeWindow: no release symbol");
+            SetupBridgeWindow_fn fn = resolve_setup_bridge_window(lib);
+            jclass cbCls = (*env)->FindClass(env, "org/lwjgl/glfw/CallbackBridge");
+            if (fn && cbCls && !(*env)->ExceptionCheck(env)) {
+                fn(env, cbCls, NULL);
+                (*env)->DeleteLocalRef(env, cbCls);
+                LOGI("clearBridgeWindow: via setupBridgeWindow(null)");
+            } else {
+                if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+                LOGW("clearBridgeWindow: no release symbol");
+            }
         }
     }
+    /* Do NOT retain(NULL) here when detach exists — GL thread releases the
+     * ANativeWindow after destroying the EGL window surface. Immediate release
+     * races SwapBuffers and kills :game. */
+}
+
+JNIEXPORT jlong JNICALL
+Java_com_booxin_launcher_core_launch_NativeJvmLauncher_nativeGetSdlPresentCount(
+    JNIEnv *env, jclass clazz)
+{
+    (void)env;
+    (void)clazz;
+    void *lib = open_booxin_bridge();
+    if (!lib) {
+        lib = dlopen("libbooxin_bridge.so", RTLD_LAZY | RTLD_NOLOAD);
+        if (!lib) lib = dlopen("libbooxin_bridge.so", RTLD_LAZY);
+    }
+    if (!lib) return 0;
+    typedef unsigned long long (*count_fn)(void);
+    count_fn count = (count_fn)dlsym(lib, "booxin_sdl_present_count");
+    return count ? (jlong)count() : 0;
 }
 
 JNIEXPORT jboolean JNICALL
@@ -2640,7 +3214,7 @@ Java_com_booxin_launcher_core_launch_NativeJvmLauncher_nativeLaunchJvm(
 
     /* Bridge VMLauncher uses JLI_Launch → exec(), which is blocked by SELinux on /data.
      * Always use embedded JNI_CreateJavaVM instead. */
-    (void)launch_via_pojavexec; /* suppress unused-function warning */
+    (void)launch_via_booxin_bridge; /* suppress unused-function warning */
 
     int argc = 0;
     char **argv = to_argv(env, argsArray, &argc);

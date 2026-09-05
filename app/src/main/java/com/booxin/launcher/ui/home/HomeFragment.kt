@@ -5,6 +5,7 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Toast
+import androidx.core.view.isVisible
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
@@ -22,8 +23,10 @@ import com.booxin.launcher.data.model.LauncherAccount
 import com.booxin.launcher.databinding.FragmentHomeBinding
 import com.booxin.launcher.ui.auth.MicrosoftAuthErrorDialog
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
-import java.util.Calendar
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.util.Calendar
 
 class HomeFragment : Fragment() {
 
@@ -44,6 +47,7 @@ class HomeFragment : Fragment() {
         applyHomeGreeting()
         applyCustomLauncherIcon()
         applyHomeThemeLabels()
+        bindHome3d()
         AppContainer.repository.refreshInstalledVersions()
 
         viewLifecycleOwner.lifecycleScope.launch {
@@ -52,13 +56,17 @@ class HomeFragment : Fragment() {
                     AppContainer.repository.session.collect {
                         refreshSelectedVersion()
                         refreshCurrentAccount()
+                        bindHome3d()
                     }
                 }
                 launch {
                     AppContainer.repository.installedVersions.collect { refreshSelectedVersion() }
                 }
                 launch {
-                    AppContainer.repository.accounts.collect { refreshCurrentAccount() }
+                    AppContainer.repository.accounts.collect {
+                        refreshCurrentAccount()
+                        bindHome3d()
+                    }
                 }
             }
         }
@@ -67,6 +75,7 @@ class HomeFragment : Fragment() {
         binding.buttonAccountManage.setOnClickListener {
             findNavController().navigate(R.id.action_home_to_accounts)
         }
+        binding.buttonRefreshSkin.setOnClickListener { refreshHomeSkin() }
 
         binding.buttonLaunch.setOnClickListener {
             val version = AppContainer.repository.selectedVersion()
@@ -99,6 +108,79 @@ class HomeFragment : Fragment() {
         applyHomeGreeting()
         applyCustomLauncherIcon()
         applyHomeThemeLabels()
+        val b = _binding
+        if (b != null) {
+            bindHome3d()
+            Home3dBinder.resume(b.webHome3d)
+        }
+    }
+
+    override fun onPause() {
+        Home3dBinder.pause(_binding?.webHome3d)
+        super.onPause()
+    }
+
+    private fun bindHome3d(forceRefreshSkin: Boolean = false) {
+        val b = _binding ?: return
+        if (!UiPluginManager.isFeatureEnabled("home3dModel")) {
+            b.buttonRefreshSkin.isVisible = false
+            Home3dBinder.bind(b.webHome3d, b.panelHomeWelcome, skinPng = null)
+            return
+        }
+        b.buttonRefreshSkin.isVisible = true
+        viewLifecycleOwner.lifecycleScope.launch {
+            var account = AppContainer.repository.selectedAccount()
+            // Soft-refresh MS token so minecraftservices skin lookup can use a valid Bearer.
+            // Never force — home 3D must not burn Mojang login_with_xbox quota.
+            if (account?.type == AccountType.MICROSOFT) {
+                val refreshed = withContext(Dispatchers.IO) {
+                    MicrosoftAuthService.ensureSession(account!!, forceRefresh = false).getOrNull()
+                }
+                if (refreshed != null) {
+                    account = refreshed
+                    AppContainer.repository.upsertMicrosoftAccount(refreshed)
+                }
+            }
+            val skin = withContext(Dispatchers.IO) {
+                com.booxin.launcher.core.skin.PlayerSkinResolver.resolvePng(
+                    requireContext().applicationContext,
+                    account,
+                    forceRefresh = forceRefreshSkin
+                )
+            }
+            val latest = _binding ?: return@launch
+            latest.buttonRefreshSkin.isVisible = true
+            Home3dBinder.bind(
+                latest.webHome3d,
+                latest.panelHomeWelcome,
+                skin,
+                forceReload = forceRefreshSkin
+            )
+        }
+    }
+
+    private fun refreshHomeSkin() {
+        if (!UiPluginManager.isFeatureEnabled("home3dModel")) return
+        Toast.makeText(requireContext(), R.string.home_refresh_skin_working, Toast.LENGTH_SHORT).show()
+        viewLifecycleOwner.lifecycleScope.launch {
+            // Soft-refresh MC token so minecraftservices skin API can authorize.
+            val account = AppContainer.repository.selectedAccount()
+            if (account?.type == AccountType.MICROSOFT) {
+                val refreshed = withContext(Dispatchers.IO) {
+                    MicrosoftAuthService.ensureSession(account, forceRefresh = false).getOrNull()
+                }
+                if (refreshed != null) {
+                    AppContainer.repository.upsertMicrosoftAccount(refreshed)
+                }
+            }
+            withContext(Dispatchers.IO) {
+                com.booxin.launcher.core.skin.PlayerSkinResolver.clearCache(
+                    requireContext().applicationContext
+                )
+            }
+            bindHome3d(forceRefreshSkin = true)
+            Toast.makeText(requireContext(), R.string.home_refresh_skin_done, Toast.LENGTH_SHORT).show()
+        }
     }
 
     /** UI plugin: theme welcome text and/or homeGreetingByTime */
@@ -173,7 +255,8 @@ class HomeFragment : Fragment() {
             ).show()
         }
         if (account.type == AccountType.MICROSOFT) {
-            // Refresh MSA before launch when in a Booxin room — stale tokens cause「无效会话」.
+            // Prefer fresher MSA in a Booxin room (stale →「无效会话」).
+            // ensureSession softens forceRefresh and falls back on Mojang HTTP 429.
             val refreshed = MicrosoftAuthService.ensureSession(
                 account,
                 forceRefresh = joiningRoom
@@ -242,7 +325,8 @@ class HomeFragment : Fragment() {
     }
 
     override fun onDestroyView() {
-        super.onDestroyView()
+        Home3dBinder.destroy(_binding?.webHome3d)
         _binding = null
+        super.onDestroyView()
     }
 }
