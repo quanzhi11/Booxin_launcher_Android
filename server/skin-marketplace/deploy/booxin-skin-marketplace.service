@@ -1,0 +1,15 @@
+[Unit]
+Description=Booxin Skin Marketplace
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/www/wwwroot/booxin/booxin-skin-marketplace
+EnvironmentFile=-/www/wwwroot/booxin/booxin-skin-marketplace/.env
+ExecStart=/usr/bin/node src/server.js
+Restart=always
+RestartSec=3
+User=root
+
+[Install]
+WantedBy=multi-user.target

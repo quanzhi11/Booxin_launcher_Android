@@ -331,15 +331,37 @@ class RoomHostDependencyService(
         fun extractPureVersion(versionId: String?): String {
             if (versionId.isNullOrBlank()) return ""
             var trimmed = versionId.trim()
+            // Strip uniqueness suffix from PC/Android: "...-2"
+            // but only after loader segment handling below on the full id.
             val underscore = trimmed.indexOf('_')
-            if (underscore > 0) trimmed = trimmed.substring(0, underscore)
+            // Keep Forge_/NeoForge_/OptiFine_ intact — do not cut at first underscore.
             val loaders = listOf(
-                "-fabric-", "-forge-", "-neoforge-", "-quilt-",
-                "-fabric", "-forge", "-neoforge", "-quilt"
+                // PC VersionInstanceNameGenerator style (preferred)
+                "-Fabric ",
+                "-Quilt ",
+                "-Forge_",
+                "-NeoForge_",
+                "-OptiFine_",
+                "-LiteLoader",
+                // Legacy Android / other
+                "-fabric-", "-forge-", "-neoforge-", "-quilt-", "-optifine-",
+                "-fabric", "-forge", "-neoforge", "-quilt", "-optifine"
             )
             for (marker in loaders) {
                 val idx = trimmed.indexOf(marker, ignoreCase = true)
                 if (idx > 0) return trimmed.substring(0, idx)
+            }
+            // Room session: 联机-1.20.1-fabric-...
+            if (trimmed.startsWith("联机-")) {
+                val rest = trimmed.removePrefix("联机-")
+                val parts = rest.split('-')
+                if (parts.isNotEmpty() && parts[0].isNotBlank()) return parts[0]
+            }
+            if (underscore > 0 && !trimmed.contains("-Forge_", ignoreCase = true) &&
+                !trimmed.contains("-NeoForge_", ignoreCase = true) &&
+                !trimmed.contains("-OptiFine_", ignoreCase = true)
+            ) {
+                trimmed = trimmed.substring(0, underscore)
             }
             return trimmed
         }

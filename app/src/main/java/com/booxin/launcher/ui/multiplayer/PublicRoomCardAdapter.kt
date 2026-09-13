@@ -4,6 +4,7 @@ import android.view.LayoutInflater
 import android.view.ViewGroup
 import androidx.recyclerview.widget.RecyclerView
 import com.booxin.launcher.core.multiplayer.PublicRoom
+import com.booxin.launcher.R
 import com.booxin.launcher.databinding.ItemPublicRoomCardBinding
 
 class PublicRoomCardAdapter(
@@ -31,9 +32,15 @@ class PublicRoomCardAdapter(
         val room = rooms[position]
         holder.binding.textHost.text = room.hostName.ifBlank { "房间" }
         holder.binding.textMotd.text = room.motd.ifBlank {
-            room.remark.orEmpty().ifBlank { "公开房间" }
+            room.remark.orEmpty().ifBlank {
+                holder.binding.root.context.getString(R.string.multiplayer_public_rooms)
+            }
         }
         holder.binding.textMeta.text = buildString {
+            if (room.isCloudPublicRoom()) {
+                append("云服")
+                append(" · ")
+            }
             append(room.version?.ifBlank { "?" } ?: "?")
             append(" · ")
             append("${room.currentPlayers}/${room.maxPlayers}")

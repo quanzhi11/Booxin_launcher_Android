@@ -96,10 +96,13 @@ class ControlButtonView(
             else -> 12f
         })
         setTextColor(newSpec.style?.textColor ?: 0xFFFFFFFF.toInt())
-        val needsShadow = iconDrawable != null ||
+        // Transparent stock chrome needs a soft shadow so labels stay readable over the game.
+        val stockTransparent = !hasVisualChrome(newSpec)
+        val needsShadow = stockTransparent ||
+            iconDrawable != null ||
             (styleDrawable != null && isLightFill(newSpec.style))
         if (needsShadow) {
-            setShadowLayer(3f, 0f, 1f, 0xCC000000.toInt())
+            setShadowLayer(3.5f, 0f, 1.2f, 0xCC000000.toInt())
         } else {
             setShadowLayer(0f, 0f, 0f, Color.TRANSPARENT)
         }
@@ -191,6 +194,17 @@ class ControlButtonView(
         }
     }
 
+    private fun stockHollowDrawable(selected: Boolean): GradientDrawable {
+        return GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(Color.TRANSPARENT)
+            // Match「白描边」default: clear fill + brighter white ring.
+            val stroke = if (selected) 0xFF4FC3F7.toInt() else 0xCCFFFFFF.toInt()
+            val width = if (selected) dp(3) else dp(2)
+            setStroke(width.coerceAtLeast(1), stroke)
+        }
+    }
+
     private fun isLightFill(style: ControlButtonStyle?): Boolean {
         if (style == null) return false
         val sample = style.gradientColors.firstOrNull() ?: style.backgroundColor ?: return false
@@ -229,15 +243,13 @@ class ControlButtonView(
                 base
             }
         } else {
-            setBackgroundResource(
-                if (editSelected && editMode) R.drawable.bg_control_round_selected
-                else R.drawable.bg_control_round
-            )
+            // Hollow ring in code — avoids opaque pressed-state drawables.
+            background = stockHollowDrawable(editSelected && editMode)
         }
         val styleOpacity = spec.style?.opacity
         if (!isPressed && !holding) {
             animate().cancel()
-            alpha = styleOpacity ?: if (editMode) 0.95f else 0.92f
+            alpha = styleOpacity ?: idleChromeAlpha()
             scaleX = 1f
             scaleY = 1f
             // Don't clear follow offset here — snapFollowHome owns that animation.
@@ -245,6 +257,28 @@ class ControlButtonView(
                 translationY = 0f
             }
         }
+    }
+
+    /** True when icon/plugin/user color style paints a visible chrome (not hollow stock). */
+    private fun hasVisualChrome(s: ControlButtonSpec = spec): Boolean {
+        if (s.icon.isNotBlank()) return true
+        val st = s.style ?: return false
+        if (st.isEmpty()) return false
+        // Explicit transparent fill + no gradient still counts as "styled" if colors set,
+        // but stock hollow path is only when style is null/empty.
+        return true
+    }
+
+    private fun hasPluginChrome(): Boolean = hasVisualChrome()
+
+    /**
+     * Stock hollow buttons keep view-alpha high (bg is already clear).
+     * Styled / plugin chrome use the previous higher opacity defaults.
+     */
+    private fun idleChromeAlpha(): Float = when {
+        hasPluginChrome() -> if (editMode) 0.95f else 0.92f
+        editMode -> 0.92f
+        else -> 0.88f
     }
 
     private fun setPlayPressed(pressed: Boolean) {
@@ -255,7 +289,7 @@ class ControlButtonView(
         val jelly = style?.pressEffect == ControlButtonStyle.PressEffect.JELLY && !spec.isFollowKind()
         animate().cancel()
         if (pressed) {
-            alpha = 1f
+            alpha = if (hasPluginChrome()) 1f else 1f
             if (jelly) {
                 // Squash wider + shorter, slight drop — jelly compress.
                 animate()
@@ -271,7 +305,7 @@ class ControlButtonView(
                 translationY = 0f
             }
         } else {
-            val idleAlpha = styleOpacity ?: if (editMode) 0.95f else 0.92f
+            val idleAlpha = styleOpacity ?: idleChromeAlpha()
             if (jelly) {
                 animate()
                     .scaleX(1f)
@@ -305,7 +339,7 @@ class ControlButtonView(
         animate().cancel()
         if (latched) {
             val targetScale = (spec.style?.pressScale ?: 0.90f).coerceIn(0.72f, 1f)
-            alpha = 1f
+            alpha = if (hasPluginChrome()) 1f else 0.88f
             scaleX = targetScale
             scaleY = targetScale
             translationY = 0f

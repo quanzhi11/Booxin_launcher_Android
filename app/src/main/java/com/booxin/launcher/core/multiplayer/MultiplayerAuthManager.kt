@@ -244,6 +244,8 @@ class MultiplayerAuthManager(
 
     suspend fun listPublicRooms() = roomApi.listPublicRooms()
 
+    suspend fun getPublicRoom(roomCode: String) = roomApi.getRoom(roomCode)
+
     /**
      * Join Booxin PC room (29-char code, no U/). Full EasyTier + Scaffolding + port-forward.
      */
@@ -261,7 +263,10 @@ class MultiplayerAuthManager(
                     _joinStatus.value = msg
                     DiagEventLog.i("RoomJoin", msg)
                 },
-                onMembersChanged = { members -> _roomMembers.value = members }
+            onMembersChanged = { members ->
+                _roomMembers.value = members
+                ActiveRoomSessionStore.updateMembers(BooxinApp.getAppContext(), members)
+            }
             )
             joinCoordinator?.leave()
             joinCoordinator = coordinator
@@ -277,6 +282,14 @@ class MultiplayerAuthManager(
             _directConnect.value = result.directConnectAddress
             _roomMembers.value = result.members
             _joinStatus.value = RoomJoinCoordinator.JOIN_SUCCESS_STATUS
+            ActiveRoomSessionStore.saveFromLobby(
+                context = BooxinApp.getAppContext(),
+                lobby = result.lobby,
+                isHost = false,
+                directConnect = result.directConnectAddress,
+                members = result.members
+            )
+            LobbyTunnelService.start(BooxinApp.getAppContext(), result.directConnectAddress)
             DiagEventLog.i(
                 "MultiplayerAuth",
                 "joinRoom ok addr=${result.directConnectAddress} " +
@@ -293,8 +306,11 @@ class MultiplayerAuthManager(
     suspend fun leaveActiveRoom() {
         val lobby = _activeLobby.value
         val session = _session.value
-        if (lobby != null && session != null) {
-            runCatching { roomApi.leaveRoom(session, lobby.roomCode) }
+        val code = lobby?.roomCode
+            ?: ActiveRoomSessionStore.load(BooxinApp.getAppContext())?.roomCode
+        LobbyTunnelService.stop(BooxinApp.getAppContext())
+        if (code != null && session != null) {
+            runCatching { roomApi.leaveRoom(session, code) }
         }
         joinCoordinator?.leave()
         joinCoordinator = null
@@ -304,9 +320,11 @@ class MultiplayerAuthManager(
         _directConnect.value = null
         _roomMembers.value = emptyList()
         _joinStatus.value = "已离开房间"
+        ActiveRoomSessionStore.clear(BooxinApp.getAppContext(), code)
     }
 
     fun logout() {
+        LobbyTunnelService.stop(BooxinApp.getAppContext())
         joinCoordinator?.leave()
         joinCoordinator = null
         EasyTierSessionHolder.stop()
@@ -317,6 +335,7 @@ class MultiplayerAuthManager(
         _roomMembers.value = emptyList()
         _joinStatus.value = null
         _rewardProfile.value = null
+        ActiveRoomSessionStore.clear(BooxinApp.getAppContext())
     }
 
     /** Same rule as PC MainWindow.ResolveMultiplayerUserName(). */

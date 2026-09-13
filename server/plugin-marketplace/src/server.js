@@ -21,6 +21,8 @@ import {
   listCommentReports,
   listComments,
   listPublishedPlugins,
+  listPluginsByDeveloper,
+  releasePluginVersion,
   resolveCommentReport,
   setCommentHidden,
   toggleCommentLike,
@@ -41,6 +43,11 @@ import { mailStatus, sendRejectEmail } from './mail.js';
 import { reviewPluginCommentReport } from './moderation.js';
 import { listPluginTypes, normalizePluginType } from './types.js';
 import {
+  listPluginPlatforms,
+  normalizePlatforms,
+  pluginSupportsPlatform,
+} from './platforms.js';
+import {
   MAX_UPLOAD_BYTES,
   contactInfo,
   publicUploadUrl,
@@ -58,6 +65,60 @@ app.use(express.json({ limit: '256kb' }));
 app.use(express.static(path.join(rootDir, 'public')));
 app.use('/uploads', express.static(uploadsDir()));
 
+function deepseekApiBase() {
+  return String(process.env.DEEPSEEK_API_BASE || 'https://api.deepseek.com').replace(/\/+$/, '');
+}
+
+function deepseekModel() {
+  return String(process.env.DEEPSEEK_MODEL || 'deepseek-chat').trim() || 'deepseek-chat';
+}
+
+function deepseekApiKey() {
+  return String(process.env.DEEPSEEK_API_KEY || '').trim();
+}
+
+async function generatePluginDraftWithDeepSeek({ systemPrompt, userPrompt }) {
+  const apiKey = deepseekApiKey();
+  if (!apiKey) {
+    return { ok: false, status: 503, message: '服务器未配置 DEEPSEEK_API_KEY。' };
+  }
+  const response = await fetch(`${deepseekApiBase()}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: deepseekModel(),
+      temperature: 0.4,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ],
+    }),
+  });
+  const text = await response.text().catch(() => '');
+  let payload = null;
+  try {
+    payload = text ? JSON.parse(text) : null;
+  } catch {
+    payload = null;
+  }
+  if (!response.ok) {
+    return {
+      ok: false,
+      status: response.status || 502,
+      message: payload?.error?.message || payload?.message || text || 'DeepSeek 调用失败。',
+    };
+  }
+  const content = payload?.choices?.[0]?.message?.content;
+  if (!content) {
+    return { ok: false, status: 502, message: 'DeepSeek 没有返回内容。' };
+  }
+  return { ok: true, content, model: payload?.model || deepseekModel() };
+}
+
 function publicPlugin(p) {
   const stats = getPluginRatingStats(p.id);
   return {
@@ -66,6 +127,8 @@ function publicPlugin(p) {
     description: p.description,
     downloadUrl: p.downloadUrl,
     type: p.type,
+    platforms: normalizePlatforms(p.platforms),
+    version: p.version || '1.0.0',
     developerUserId: p.developerUserId,
     developerUsername: p.developerUsername,
     publishedAt: p.publishedAt,
@@ -83,6 +146,7 @@ function publicApplication(a) {
     description: a.description,
     downloadUrl: a.downloadUrl,
     type: a.type,
+    platforms: normalizePlatforms(a.platforms),
     status: a.status,
     rejectReason: a.rejectReason || '',
     createdAt: a.createdAt,
@@ -99,16 +163,122 @@ app.get('/api/plugin-types', (_req, res) => {
   res.json({ items: listPluginTypes() });
 });
 
+app.get('/api/plugin-platforms', (_req, res) => {
+  res.json({ items: listPluginPlatforms() });
+});
+
 app.get('/api/contact', (_req, res) => {
   res.json(contactInfo());
+});
+
+app.post('/api/ai/generate-plugin', requireAuthUser, async (req, res) => {
+  const systemPrompt = String(req.body?.systemPrompt || '').trim();
+  const userPrompt = String(req.body?.userPrompt || '').trim();
+  if (!systemPrompt || !userPrompt) {
+    res.status(400).json({ message: '缺少 systemPrompt 或 userPrompt。' });
+    return;
+  }
+  try {
+    const result = await generatePluginDraftWithDeepSeek({ systemPrompt, userPrompt });
+    if (!result.ok) {
+      res.status(result.status || 502).json({ message: result.message });
+      return;
+    }
+    res.json({
+      ok: true,
+      content: result.content,
+      model: result.model,
+    });
+  } catch (err) {
+    res.status(502).json({ message: err?.message || 'AI 生成失败。' });
+  }
 });
 
 /** Public catalog. Hosted uploads are under /uploads; external links also allowed. */
 app.get('/api/plugins', (req, res) => {
   const type = typeof req.query.type === 'string' ? normalizePluginType(req.query.type, '') : '';
+  const platform =
+    typeof req.query.platform === 'string' ? String(req.query.platform).trim().toLowerCase() : '';
   let items = listPublishedPlugins();
   if (type) items = items.filter((p) => p.type === type);
-  res.json({ items: items.map(publicPlugin), types: listPluginTypes() });
+  if (platform) items = items.filter((p) => pluginSupportsPlatform(p, platform));
+  res.json({
+    items: items.map(publicPlugin),
+    types: listPluginTypes(),
+    platforms: listPluginPlatforms(),
+  });
+});
+
+/** Developer's published plugins (must be before /:id). */
+app.get('/api/plugins/mine', requireAuthUser, (req, res) => {
+  const items = listPluginsByDeveloper(req.booxinUser.userId).map(publicPlugin);
+  res.json({ items });
+});
+
+/**
+ * Owner releases a newer version (JSON body: version + downloadUrl + optional description/name/type/platforms).
+ */
+app.post('/api/plugins/:id/release', requireAuthUser, (req, res) => {
+  try {
+    const next = releasePluginVersion(req.params.id, req.booxinUser.userId, {
+      version: req.body?.version,
+      downloadUrl: req.body?.downloadUrl,
+      description: req.body?.description,
+      name: req.body?.name,
+      type: req.body?.type ? normalizePluginType(req.body.type, 'other') : undefined,
+      platforms: req.body?.platforms != null ? normalizePlatforms(req.body.platforms) : undefined,
+    });
+    res.json(publicPlugin(next));
+  } catch (err) {
+    const msg = err?.message || '发版失败';
+    const status = /只能更新|不存在/.test(msg) ? 403 : 400;
+    res.status(status).json({ message: msg });
+  }
+});
+
+/** Owner release with multipart file (fields: version, description?, name?, type?, platforms?). */
+app.post('/api/plugins/:id/release/upload', requireAuthUser, (req, res) => {
+  uploadMiddleware(req, res, (err) => {
+    if (err) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        res.status(413).json({
+          message: `文件超过 ${MAX_UPLOAD_BYTES / 1024 / 1024}MB 上限，请添加 QQ 私聊提交。`,
+          contact: contactInfo(),
+        });
+        return;
+      }
+      res.status(400).json({ message: err.message || '上传失败', contact: contactInfo() });
+      return;
+    }
+    try {
+      if (!req.file) {
+        res.status(400).json({
+          message: '请选择要上传的插件文件（≤250MB）。',
+          contact: contactInfo(),
+        });
+        return;
+      }
+      const downloadUrl = publicUploadUrl(req.file.filename);
+      const next = releasePluginVersion(req.params.id, req.booxinUser.userId, {
+        version: req.body?.version,
+        downloadUrl,
+        description: req.body?.description,
+        name: req.body?.name,
+        type: req.body?.type ? normalizePluginType(req.body.type, 'other') : undefined,
+        platforms: req.body?.platforms != null ? normalizePlatforms(req.body.platforms) : undefined,
+      });
+      res.json({
+        ...publicPlugin(next),
+        hosted: true,
+        size: req.file.size,
+        message: '已发布新版本',
+      });
+    } catch (e) {
+      const msg = e?.message || '发版失败';
+      const status = /只能更新|不存在/.test(msg) ? 403 : 400;
+      res.status(status).json({ message: msg });
+    }
+  });
 });
 
 app.get('/api/plugins/:id', (req, res) => {
@@ -297,6 +467,7 @@ app.post('/api/applications', requireAuthUser, (req, res) => {
       downloadUrl,
       description: req.body?.description,
       type: normalizePluginType(req.body?.type, 'other'),
+      platforms: normalizePlatforms(req.body?.platforms),
     });
     res.status(201).json(publicApplication(appRow));
   } catch (err) {
@@ -335,6 +506,7 @@ app.post('/api/applications/upload', requireAuthUser, (req, res) => {
         downloadUrl,
         description: req.body?.description || '',
         type: normalizePluginType(req.body?.type, 'other'),
+        platforms: normalizePlatforms(req.body?.platforms),
       });
       res.status(201).json({
         ...publicApplication(appRow),
@@ -492,6 +664,8 @@ app.post('/api/admin/plugins', requireAdmin, async (req, res) => {
       description: req.body?.description,
       downloadUrl: req.body?.downloadUrl,
       type: normalizePluginType(req.body?.type, 'other'),
+      platforms: normalizePlatforms(req.body?.platforms),
+      version: req.body?.version || '1.0.0',
       developerUserId,
       developerUsername: developerUsername || developerUserId,
       publishedBy: req.booxinAdmin.username || req.booxinAdmin.userId,
@@ -520,6 +694,82 @@ app.patch('/api/admin/plugins/:id', requireAdmin, async (req, res) => {
   } catch (err) {
     res.status(400).json({ message: err?.message || '更新失败' });
   }
+});
+
+/** Admin: upload a new package (≤250MB) and point the plugin downloadUrl to it. */
+app.post('/api/admin/plugins/:id/upload', requireAdmin, (req, res) => {
+  const cur = getPlugin(req.params.id);
+  if (!cur) {
+    res.status(404).json({ message: '插件不存在。' });
+    return;
+  }
+  uploadMiddleware(req, res, (err) => {
+    if (err) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        res.status(413).json({
+          message: `文件超过 ${MAX_UPLOAD_BYTES / 1024 / 1024}MB 上限，请添加 QQ 私聊提交。`,
+          contact: contactInfo(),
+        });
+        return;
+      }
+      res.status(400).json({ message: err.message || '上传失败', contact: contactInfo() });
+      return;
+    }
+    try {
+      if (!req.file) {
+        res.status(400).json({
+          message: '请选择要上传的插件文件（≤250MB）。',
+          contact: contactInfo(),
+        });
+        return;
+      }
+      const downloadUrl = publicUploadUrl(req.file.filename);
+      const patch = { downloadUrl };
+      if (req.body?.name) patch.name = String(req.body.name);
+      if (req.body?.description != null) patch.description = String(req.body.description);
+      if (req.body?.type) patch.type = normalizePluginType(req.body.type, cur.type);
+      if (req.body?.version) patch.version = String(req.body.version).trim();
+      const next = updatePlugin(req.params.id, patch);
+      res.json({
+        ...next,
+        hosted: true,
+        size: req.file.size,
+        message: '已上传并更新下载地址',
+      });
+    } catch (e) {
+      res.status(400).json({ message: e?.message || '更新失败' });
+    }
+  });
+});
+
+/** Admin: upload file only, returns hosted downloadUrl (for 直接上架 form). */
+app.post('/api/admin/upload', requireAdmin, (req, res) => {
+  uploadMiddleware(req, res, (err) => {
+    if (err) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        res.status(413).json({
+          message: `文件超过 ${MAX_UPLOAD_BYTES / 1024 / 1024}MB 上限，请添加 QQ 私聊提交。`,
+          contact: contactInfo(),
+        });
+        return;
+      }
+      res.status(400).json({ message: err.message || '上传失败', contact: contactInfo() });
+      return;
+    }
+    if (!req.file) {
+      res.status(400).json({
+        message: '请选择要上传的插件文件（≤250MB）。',
+        contact: contactInfo(),
+      });
+      return;
+    }
+    res.status(201).json({
+      downloadUrl: publicUploadUrl(req.file.filename),
+      filename: req.file.filename,
+      size: req.file.size,
+      hosted: true,
+    });
+  });
 });
 
 app.delete('/api/admin/plugins/:id', requireAdmin, (req, res) => {
@@ -554,6 +804,8 @@ app.post('/api/admin/applications/:id/approve', requireAdmin, async (req, res) =
       description: req.body?.description ?? row.description,
       downloadUrl: req.body?.downloadUrl ?? row.downloadUrl,
       type: req.body?.type ?? row.type,
+      platforms: req.body?.platforms ?? row.platforms,
+      version: req.body?.version || '1.0.0',
       developerUserId,
       developerUsername: developerUsername || developerUserId,
       applicationId: row.id,

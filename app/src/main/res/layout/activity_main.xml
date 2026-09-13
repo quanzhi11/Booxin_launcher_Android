@@ -160,6 +160,16 @@
                     android:orientation="horizontal" />
             </LinearLayout>
         </HorizontalScrollView>
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/buttonControllerDevice"
+            style="@style/Widget.Booxin.TopNavButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="6dp"
+            android:minWidth="0dp"
+            android:text="@string/controller_chip_idle"
+            android:textSize="11sp" />
     </LinearLayout>
 
     <androidx.fragment.app.FragmentContainerView

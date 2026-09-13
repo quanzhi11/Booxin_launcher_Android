@@ -25,12 +25,12 @@
             app:elevation="0dp"
             app:liftOnScroll="false">
 
+            <!-- 搜索区：列表下滚后收起，滑回顶部再显示 -->
             <LinearLayout
-                android:id="@+id/filterHeader"
+                android:id="@+id/searchHeader"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="vertical"
-                android:paddingBottom="4dp"
                 app:layout_scrollFlags="scroll|enterAlways|snap">
 
                 <LinearLayout
@@ -83,31 +83,15 @@
                         android:text="@string/community_search" />
                 </LinearLayout>
 
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="2dp"
-                    android:gravity="center_vertical"
-                    android:orientation="horizontal">
+            </LinearLayout>
 
-                    <TextView
-                        android:id="@+id/textSelectedVersion"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="@string/community_selected_version_placeholder"
-                        android:textColor="@color/md_theme_light_outline"
-                        android:textSize="12sp" />
-
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/buttonMultiplayer"
-                        style="@style/Widget.Material3.Button.TextButton"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:minHeight="32dp"
-                        android:text="@string/nav_multiplayer"
-                        android:textColor="@color/booxin_blue" />
-                </LinearLayout>
+            <!-- 分类芯片固定在搜索下方；皮肤页的刷新/申请上架/模型筛选也放在这一行 -->
+            <LinearLayout
+                android:id="@+id/filterHeader"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:paddingBottom="4dp">
 
                 <HorizontalScrollView
                     android:id="@+id/scrollFilters"
@@ -158,59 +142,153 @@
                                 android:layout_width="wrap_content"
                                 android:layout_height="wrap_content"
                                 android:text="@string/community_tab_modpacks" />
+
+                            <com.google.android.material.chip.Chip
+                                android:id="@+id/chipSkins"
+                                style="@style/Widget.Material3.Chip.Filter"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="@string/community_tab_skins" />
                         </com.google.android.material.chip.ChipGroup>
 
-                        <View
-                            android:id="@+id/loaderDivider"
-                            android:layout_width="1dp"
-                            android:layout_height="20dp"
-                            android:layout_marginHorizontal="8dp"
-                            android:background="@color/md_theme_light_outline" />
-
-                        <com.google.android.material.chip.ChipGroup
-                            android:id="@+id/chipLoaders"
+                        <LinearLayout
+                            android:id="@+id/loaderToolbar"
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            app:selectionRequired="true"
-                            app:singleLine="true"
-                            app:singleSelection="true">
+                            android:gravity="center_vertical"
+                            android:orientation="horizontal">
 
-                            <com.google.android.material.chip.Chip
-                                android:id="@+id/chipLoaderAny"
-                                style="@style/Widget.Material3.Chip.Filter"
+                            <View
+                                android:layout_width="1dp"
+                                android:layout_height="20dp"
+                                android:layout_marginHorizontal="8dp"
+                                android:background="@color/md_theme_light_outline" />
+
+                            <com.google.android.material.chip.ChipGroup
+                                android:id="@+id/chipLoaders"
                                 android:layout_width="wrap_content"
                                 android:layout_height="wrap_content"
-                                android:checked="true"
-                                android:text="@string/community_loader_any" />
+                                app:selectionRequired="true"
+                                app:singleLine="true"
+                                app:singleSelection="true">
 
-                            <com.google.android.material.chip.Chip
-                                android:id="@+id/chipLoaderForge"
-                                style="@style/Widget.Material3.Chip.Filter"
+                                <com.google.android.material.chip.Chip
+                                    android:id="@+id/chipLoaderAny"
+                                    style="@style/Widget.Material3.Chip.Filter"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:checked="true"
+                                    android:text="@string/community_loader_any" />
+
+                                <com.google.android.material.chip.Chip
+                                    android:id="@+id/chipLoaderForge"
+                                    style="@style/Widget.Material3.Chip.Filter"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="@string/download_loader_forge" />
+
+                                <com.google.android.material.chip.Chip
+                                    android:id="@+id/chipLoaderNeoForge"
+                                    style="@style/Widget.Material3.Chip.Filter"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="@string/download_loader_neoforge" />
+
+                                <com.google.android.material.chip.Chip
+                                    android:id="@+id/chipLoaderFabric"
+                                    style="@style/Widget.Material3.Chip.Filter"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="@string/download_loader_fabric" />
+
+                                <com.google.android.material.chip.Chip
+                                    android:id="@+id/chipLoaderQuilt"
+                                    style="@style/Widget.Material3.Chip.Filter"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="@string/download_loader_quilt" />
+                            </com.google.android.material.chip.ChipGroup>
+                        </LinearLayout>
+
+                        <LinearLayout
+                            android:id="@+id/skinToolbar"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:gravity="center_vertical"
+                            android:orientation="horizontal"
+                            android:visibility="gone"
+                            tools:visibility="visible">
+
+                            <View
+                                android:layout_width="1dp"
+                                android:layout_height="20dp"
+                                android:layout_marginHorizontal="8dp"
+                                android:background="@color/md_theme_light_outline" />
+
+                            <com.google.android.material.button.MaterialButton
+                                android:id="@+id/buttonSkinRefresh"
+                                style="@style/Widget.Material3.Button.OutlinedButton"
+                                android:layout_width="wrap_content"
+                                android:layout_height="32dp"
+                                android:insetTop="0dp"
+                                android:insetBottom="0dp"
+                                android:minWidth="0dp"
+                                android:minHeight="32dp"
+                                android:paddingHorizontal="10dp"
+                                android:text="@string/skin_store_refresh"
+                                android:textSize="12sp" />
+
+                            <com.google.android.material.button.MaterialButton
+                                android:id="@+id/buttonSkinUpload"
+                                style="@style/Widget.Booxin.PrimaryButton"
+                                android:layout_width="wrap_content"
+                                android:layout_height="32dp"
+                                android:layout_marginStart="6dp"
+                                android:insetTop="0dp"
+                                android:insetBottom="0dp"
+                                android:minWidth="0dp"
+                                android:minHeight="32dp"
+                                android:paddingHorizontal="10dp"
+                                android:text="@string/skin_store_upload"
+                                android:textSize="12sp" />
+
+                            <View
+                                android:layout_width="1dp"
+                                android:layout_height="20dp"
+                                android:layout_marginHorizontal="8dp"
+                                android:background="@color/md_theme_light_outline" />
+
+                            <com.google.android.material.chip.ChipGroup
+                                android:id="@+id/chipSkinFilters"
                                 android:layout_width="wrap_content"
                                 android:layout_height="wrap_content"
-                                android:text="@string/download_loader_forge" />
+                                app:selectionRequired="true"
+                                app:singleLine="true"
+                                app:singleSelection="true">
 
-                            <com.google.android.material.chip.Chip
-                                android:id="@+id/chipLoaderNeoForge"
-                                style="@style/Widget.Material3.Chip.Filter"
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:text="@string/download_loader_neoforge" />
+                                <com.google.android.material.chip.Chip
+                                    android:id="@+id/chipSkinFilterAll"
+                                    style="@style/Widget.Material3.Chip.Filter"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:checked="true"
+                                    android:text="@string/skin_store_filter_all" />
 
-                            <com.google.android.material.chip.Chip
-                                android:id="@+id/chipLoaderFabric"
-                                style="@style/Widget.Material3.Chip.Filter"
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:text="@string/download_loader_fabric" />
+                                <com.google.android.material.chip.Chip
+                                    android:id="@+id/chipSkinFilterClassic"
+                                    style="@style/Widget.Material3.Chip.Filter"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="@string/skin_store_filter_classic" />
 
-                            <com.google.android.material.chip.Chip
-                                android:id="@+id/chipLoaderQuilt"
-                                style="@style/Widget.Material3.Chip.Filter"
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:text="@string/download_loader_quilt" />
-                        </com.google.android.material.chip.ChipGroup>
+                                <com.google.android.material.chip.Chip
+                                    android:id="@+id/chipSkinFilterSlim"
+                                    style="@style/Widget.Material3.Chip.Filter"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="@string/skin_store_filter_slim" />
+                            </com.google.android.material.chip.ChipGroup>
+                        </LinearLayout>
                     </LinearLayout>
                 </HorizontalScrollView>
 
@@ -223,6 +301,7 @@
         </com.google.android.material.appbar.AppBarLayout>
 
         <FrameLayout
+            android:id="@+id/communityContentHost"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
             app:layout_behavior="@string/appbar_scrolling_view_behavior">
@@ -243,6 +322,12 @@
                 android:textColor="@color/md_theme_light_outline"
                 android:visibility="gone"
                 tools:visibility="visible" />
+
+            <FrameLayout
+                android:id="@+id/skinHost"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:visibility="gone" />
         </FrameLayout>
     </androidx.coordinatorlayout.widget.CoordinatorLayout>
 

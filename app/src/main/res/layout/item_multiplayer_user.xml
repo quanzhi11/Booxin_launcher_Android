@@ -47,7 +47,7 @@
             android:ellipsize="end"
             android:maxLines="1"
             android:textColor="@color/booxin_navy"
-            android:textSize="14sp"
+            android:textSize="11.2sp"
             android:textStyle="bold"
             tools:text="friend001" />
 
@@ -58,7 +58,7 @@
             android:ellipsize="end"
             android:maxLines="1"
             android:textColor="@color/md_theme_light_outline"
-            android:textSize="11sp"
+            android:textSize="8.8sp"
             tools:text="在线" />
     </LinearLayout>
 
@@ -80,7 +80,7 @@
             android:insetBottom="0dp"
             android:minWidth="0dp"
             android:paddingHorizontal="8dp"
-            android:textSize="11sp"
+            android:textSize="8.8sp"
             android:visibility="gone"
             tools:text="拒绝"
             tools:visibility="visible" />
@@ -94,7 +94,7 @@
             android:insetBottom="0dp"
             android:minWidth="0dp"
             android:paddingHorizontal="10dp"
-            android:textSize="11sp"
+            android:textSize="8.8sp"
             android:visibility="gone"
             tools:text="接受"
             tools:visibility="visible" />

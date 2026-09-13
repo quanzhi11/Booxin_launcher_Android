@@ -21,8 +21,8 @@ object HttpClients {
     val shared: OkHttpClient by lazy {
         val dispatcher = okhttp3.Dispatcher().apply {
             // Assets are thousands of tiny files; raise pool so concurrency can breathe.
-            maxRequests = 128
-            maxRequestsPerHost = 48
+            maxRequests = 256
+            maxRequestsPerHost = 64
         }
         OkHttpClient.Builder()
             .dispatcher(dispatcher)

@@ -31,10 +31,13 @@ enum class CommunityLoader(val apiValue: String?) {
         fun fromVersionId(versionId: String): CommunityLoader {
             val lowered = versionId.lowercase()
             return when {
-                "-neoforge-" in lowered -> NEOFORGE
-                "-forge-" in lowered -> FORGE
-                "-fabric-" in lowered || lowered.startsWith("fabric-loader-") -> FABRIC
-                "-quilt-" in lowered || lowered.startsWith("quilt-loader-") -> QUILT
+                // PC: 1.20.1-NeoForge_21.x / legacy: 1.20.1-neoforge-21.x
+                "-neoforge" in lowered -> NEOFORGE
+                // PC: 1.20.1-Forge_47.x / legacy: 1.20.1-forge-47.x
+                "-forge_" in lowered || "-forge-" in lowered -> FORGE
+                // PC: 1.20.1-Fabric 0.16.x / legacy: 1.20.1-fabric-0.16.x
+                "-fabric" in lowered || lowered.startsWith("fabric-loader-") -> FABRIC
+                "-quilt" in lowered || lowered.startsWith("quilt-loader-") -> QUILT
                 else -> ANY
             }
         }

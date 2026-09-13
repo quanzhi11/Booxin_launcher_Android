@@ -92,6 +92,6 @@ class ForgeVersionClient {
 
     companion object {
         fun forgeVersionId(mcVersion: String, loaderVersion: String): String =
-            "$mcVersion-forge-$loaderVersion"
+            com.booxin.launcher.core.version.VersionInstanceNameGenerator.forge(mcVersion, loaderVersion)
     }
 }

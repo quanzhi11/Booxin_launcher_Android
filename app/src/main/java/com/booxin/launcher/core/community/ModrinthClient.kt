@@ -190,7 +190,10 @@ class ModrinthClient(
         if (!gameVersion.isNullOrBlank()) {
             outer.put(JSONArray().put("versions:$gameVersion"))
         }
-        if (contentType == CommunityContentType.MOD && loader != CommunityLoader.ANY) {
+        if ((contentType == CommunityContentType.MOD ||
+                contentType == CommunityContentType.MODPACK) &&
+            loader != CommunityLoader.ANY
+        ) {
             outer.put(JSONArray().put("categories:${loader.apiValue}"))
         }
         return outer

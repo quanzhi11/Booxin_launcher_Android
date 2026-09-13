@@ -125,6 +125,7 @@ object GameInput {
 
         val scale = scaleFactor()
         BooxinBridge.sendCursorPos((vx * scale).toFloat(), (vy * scale).toFloat())
+        BooxinSdlInput.mirrorCursor(vx.toFloat(), vy.toFloat())
     }
 
     fun setPointer(x: Float, y: Float) {
@@ -147,10 +148,31 @@ object GameInput {
     fun sendKeyEvent(keycode: Int, press: Boolean) {
         val mouseBtn = MOUSE_MAP[keycode]
         when {
-            mouseBtn != null -> BooxinBridge.sendMouseButton(mouseBtn, press)
-            keycode == MOUSE_SCROLL_UP -> if (press) BooxinBridge.sendScroll(0.0, 1.0)
-            keycode == MOUSE_SCROLL_DOWN -> if (press) BooxinBridge.sendScroll(0.0, -1.0)
-            else -> BooxinBridge.sendKey(keycode, press)
+            mouseBtn != null -> {
+                BooxinBridge.sendMouseButton(mouseBtn, press)
+                BooxinSdlInput.mirrorMouseButton(
+                    mouseBtn,
+                    press,
+                    pointerX.toFloat(),
+                    pointerY.toFloat()
+                )
+            }
+            keycode == MOUSE_SCROLL_UP -> {
+                if (press) {
+                    BooxinBridge.sendScroll(0.0, 1.0)
+                    BooxinSdlInput.mirrorScroll(1.0)
+                }
+            }
+            keycode == MOUSE_SCROLL_DOWN -> {
+                if (press) {
+                    BooxinBridge.sendScroll(0.0, -1.0)
+                    BooxinSdlInput.mirrorScroll(-1.0)
+                }
+            }
+            else -> {
+                BooxinBridge.sendKey(keycode, press)
+                BooxinSdlInput.mirrorKey(keycode, press)
+            }
         }
     }
 
@@ -246,48 +268,48 @@ object GameInput {
      * Physical mouse: HOVER_MOVE -> setPointer; BUTTON/SCROLL below.
      */
     fun handleGenericMotion(event: MotionEvent): Boolean {
-        if (!event.isFromSource(InputDevice.SOURCE_MOUSE) &&
-            !event.isFromSource(InputDevice.SOURCE_MOUSE_RELATIVE)
+        if (event.isFromSource(InputDevice.SOURCE_MOUSE) ||
+            event.isFromSource(InputDevice.SOURCE_MOUSE_RELATIVE)
         ) {
-            return false
-        }
-        when (event.actionMasked) {
-            MotionEvent.ACTION_HOVER_MOVE, MotionEvent.ACTION_HOVER_ENTER -> {
-                if (!BooxinBridge.isGrabbing()) {
-                    setPointer(event.rawX.toInt(), event.rawY.toInt())
+            when (event.actionMasked) {
+                MotionEvent.ACTION_HOVER_MOVE, MotionEvent.ACTION_HOVER_ENTER -> {
+                    if (!BooxinBridge.isGrabbing()) {
+                        setPointer(event.rawX.toInt(), event.rawY.toInt())
+                    }
+                    return true
                 }
-                return true
-            }
-            MotionEvent.ACTION_BUTTON_PRESS,
-            MotionEvent.ACTION_BUTTON_RELEASE,
-            MotionEvent.ACTION_SCROLL -> {
-                handleExternalMouseEvent(event)
-                return true
-            }
-            MotionEvent.ACTION_MOVE -> {
-                if (BooxinBridge.isGrabbing()) {
-                    setPointer(pointerX + event.x.toInt(), pointerY + event.y.toInt())
-                } else {
-                    setPointer(event.x.toInt(), event.y.toInt())
+                MotionEvent.ACTION_BUTTON_PRESS,
+                MotionEvent.ACTION_BUTTON_RELEASE,
+                MotionEvent.ACTION_SCROLL -> {
+                    handleExternalMouseEvent(event)
+                    return true
                 }
-                return true
+                MotionEvent.ACTION_MOVE -> {
+                    if (BooxinBridge.isGrabbing()) {
+                        setPointer(pointerX + event.x.toInt(), pointerY + event.y.toInt())
+                    } else {
+                        setPointer(event.x.toInt(), event.y.toInt())
+                    }
+                    return true
+                }
             }
         }
-        return false
+        return PhysicalInputController.handleMotionEvent(event)
     }
 
     fun handleKeyEvent(event: KeyEvent): Boolean {
-        val device = event.device ?: return false
-        val source = device.sources
-        val fromMouse =
-            (source and InputDevice.SOURCE_MOUSE) == InputDevice.SOURCE_MOUSE ||
-                (source and InputDevice.SOURCE_MOUSE_RELATIVE) == InputDevice.SOURCE_MOUSE_RELATIVE
-        if (!fromMouse) return false
-        if (event.keyCode == KeyEvent.KEYCODE_BACK) {
-            sendKeyEvent(MOUSE_RIGHT, event.action == KeyEvent.ACTION_DOWN)
-            return true
+        val device = event.device
+        if (device != null) {
+            val source = device.sources
+            val fromMouse =
+                (source and InputDevice.SOURCE_MOUSE) == InputDevice.SOURCE_MOUSE ||
+                    (source and InputDevice.SOURCE_MOUSE_RELATIVE) == InputDevice.SOURCE_MOUSE_RELATIVE
+            if (fromMouse && event.keyCode == KeyEvent.KEYCODE_BACK) {
+                sendKeyEvent(MOUSE_RIGHT, event.action == KeyEvent.ACTION_DOWN)
+                return true
+            }
         }
-        return false
+        return PhysicalInputController.handleKeyEvent(event)
     }
 }
 

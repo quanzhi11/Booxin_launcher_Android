@@ -1,0 +1,361 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/rootPeripheral"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/bg_surface_card">
+
+    <!-- Step 0: three tiled entries -->
+    <LinearLayout
+        android:id="@+id/panelPick"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:padding="12dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/bt_pair_title"
+                android:textColor="@color/booxin_navy"
+                android:textSize="16sp"
+                android:textStyle="bold" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/buttonPickClose"
+                style="@style/Widget.Material3.Button.TextButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:minWidth="0dp"
+                android:text="@string/bt_close"
+                android:textSize="13sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_marginTop="10dp"
+            android:layout_weight="1"
+            android:baselineAligned="false"
+            android:gravity="center"
+            android:orientation="horizontal"
+            android:minHeight="120dp">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/buttonPickKeyboard"
+                style="@style/Widget.Booxin.SecondaryButton"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_marginEnd="8dp"
+                android:layout_weight="1"
+                android:gravity="center"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:text="@string/bt_kind_keyboard"
+                android:textSize="18sp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/buttonPickGamepad"
+                style="@style/Widget.Booxin.SecondaryButton"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_marginHorizontal="4dp"
+                android:layout_weight="1"
+                android:gravity="center"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:text="@string/bt_kind_gamepad"
+                android:textSize="18sp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/buttonPickMouse"
+                style="@style/Widget.Booxin.SecondaryButton"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_marginStart="8dp"
+                android:layout_weight="1"
+                android:gravity="center"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:text="@string/bt_kind_mouse"
+                android:textSize="18sp" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- Step 1: dedicated pair page (scrollable for all screen sizes) -->
+    <LinearLayout
+        android:id="@+id/panelPair"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:padding="12dp"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/buttonPairBack"
+                style="@style/Widget.Material3.Button.TextButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:minWidth="0dp"
+                android:text="@string/bt_back"
+                android:textSize="13sp" />
+
+            <TextView
+                android:id="@+id/textPairTitle"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="center"
+                android:textColor="@color/booxin_navy"
+                android:textSize="16sp"
+                android:textStyle="bold"
+                tools:text="配对键盘" />
+
+            <View
+                android:layout_width="64dp"
+                android:layout_height="1dp" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/textPairStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textColor="@color/md_theme_light_outline"
+            android:textSize="12sp"
+            tools:text="蓝牙已开启" />
+
+        <androidx.core.widget.NestedScrollView
+            android:id="@+id/scrollPairList"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_marginTop="6dp"
+            android:layout_weight="1"
+            android:fillViewport="true"
+            android:overScrollMode="ifContentScrolls"
+            android:scrollbars="vertical">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:paddingBottom="8dp">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/bt_section_nearby"
+                    android:textColor="@color/booxin_navy"
+                    android:textSize="12sp"
+                    android:textStyle="bold" />
+
+                <LinearLayout
+                    android:id="@+id/listPairDevices"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:orientation="vertical" />
+
+                <TextView
+                    android:id="@+id/textPairEmpty"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:text="@string/bt_nearby_empty"
+                    android:textColor="@color/md_theme_light_outline"
+                    android:textSize="12sp" />
+            </LinearLayout>
+        </androidx.core.widget.NestedScrollView>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:orientation="horizontal">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/buttonPairScan"
+                style="@style/Widget.Booxin.PrimaryButton"
+                android:layout_width="0dp"
+                android:layout_height="44dp"
+                android:layout_marginEnd="6dp"
+                android:layout_weight="1"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:text="@string/bt_scan" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/buttonPairSystem"
+                style="@style/Widget.Booxin.SecondaryButton"
+                android:layout_width="0dp"
+                android:layout_height="44dp"
+                android:layout_marginStart="6dp"
+                android:layout_weight="1"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:text="@string/bt_open_system" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- Connecting overlay -->
+    <LinearLayout
+        android:id="@+id/panelConnecting"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#E6111A2A"
+        android:clickable="true"
+        android:focusable="true"
+        android:gravity="center"
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <ProgressBar
+            android:id="@+id/progressConnecting"
+            android:layout_width="56dp"
+            android:layout_height="56dp"
+            android:indeterminate="true" />
+
+        <TextView
+            android:id="@+id/textConnecting"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/bt_connecting"
+            android:textColor="@color/booxin_cyan"
+            android:textSize="18sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/textConnectingName"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:gravity="center"
+            android:paddingHorizontal="24dp"
+            android:textColor="@color/booxin_navy"
+            android:textSize="14sp"
+            tools:text="Xbox Controller" />
+    </LinearLayout>
+
+    <!-- Step 2: 3D calibration — NestedScrollView adapts to all screen sizes -->
+    <androidx.core.widget.NestedScrollView
+        android:id="@+id/panelCalibrate"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:fillViewport="true"
+        android:overScrollMode="ifContentScrolls"
+        android:padding="12dp"
+        android:scrollbars="vertical"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/textCalibrateTitle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center"
+                android:text="@string/bt_calibrate_title"
+                android:textColor="@color/booxin_navy"
+                android:textSize="16sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/textCalibrateHint"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:gravity="center"
+                android:text="@string/bt_calibrate_hint"
+                android:textColor="@color/md_theme_light_outline"
+                android:textSize="12sp" />
+
+            <FrameLayout
+                android:id="@+id/frameCalibrate3d"
+                android:layout_width="match_parent"
+                android:layout_height="240dp"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/bg_surface_card"
+                android:minHeight="180dp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/buttonCalibrateDone"
+                style="@style/Widget.Booxin.PrimaryButton"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginTop="10dp"
+                android:layout_marginBottom="8dp"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:text="@string/bt_calibrate_done" />
+        </LinearLayout>
+    </androidx.core.widget.NestedScrollView>
+
+    <!-- Step 3: success -->
+    <androidx.core.widget.NestedScrollView
+        android:id="@+id/panelSuccess"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:fillViewport="true"
+        android:padding="12dp"
+        android:scrollbars="vertical"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_horizontal"
+            android:orientation="vertical"
+            android:paddingTop="32dp"
+            android:paddingBottom="24dp">
+
+            <TextView
+                android:id="@+id/textSuccessTitle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/bt_success_title"
+                android:textColor="@color/booxin_cyan"
+                android:textSize="28sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/textSuccessMessage"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:gravity="center"
+                android:paddingHorizontal="24dp"
+                android:textColor="@color/booxin_navy"
+                android:textSize="15sp"
+                tools:text="键盘「XXX」已配对成功" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/buttonSuccessDone"
+                style="@style/Widget.Booxin.PrimaryButton"
+                android:layout_width="wrap_content"
+                android:layout_height="48dp"
+                android:layout_marginTop="28dp"
+                android:minWidth="160dp"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:text="@string/bt_success_done" />
+        </LinearLayout>
+    </androidx.core.widget.NestedScrollView>
+</FrameLayout>

@@ -43,6 +43,8 @@ object JvmEnvironment {
             env["BOOXIN_SKIP_GLFW_PREINIT"] = "1"
             // Ignored SIGSEGV becomes a silent hang after Invoking main on ColorOS.
             env["BOOXIN_KEEP_SIGSEGV"] = "1"
+            // Native launch thread: raise nice / sched for Render+JVM (see jre_launcher).
+            env["BOOXIN_OEM_BOOST"] = "1"
         }
         env.putAll(extraEnv)
 

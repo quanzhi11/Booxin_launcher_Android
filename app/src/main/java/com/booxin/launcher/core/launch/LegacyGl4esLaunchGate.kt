@@ -48,7 +48,8 @@ object LegacyGl4esLaunchGate {
                         )
                     )
                     .setPositiveButton(R.string.legacy_gl4es_switch) { _, _ ->
-                        LauncherPrefs.setRendererKind(GlRendererKind.GL4ES)
+                        // Temporary only — modern launches restore prior renderer (MobileGlues).
+                        LauncherPrefs.applyLegacyGl4esTemporarily()
                         if (cont.isActive) cont.resume(true)
                     }
                     .setNeutralButton(R.string.legacy_gl4es_anyway) { _, _ ->

@@ -48,6 +48,13 @@ object Home3dBinder {
         prepareWebView(webView, skinPng, forceReload)
     }
 
+    /** Skin library / admin-style preview: always show 3D, no UI-plugin gate. */
+    @SuppressLint("SetJavaScriptEnabled")
+    fun bindForced(webView: WebView, skinPng: File?, forceReload: Boolean = false) {
+        webView.isVisible = true
+        prepareWebView(webView, skinPng, forceReload)
+    }
+
     @SuppressLint("SetJavaScriptEnabled")
     private fun prepareWebView(webView: WebView, skinPng: File?, forceReload: Boolean) {
         if (boundWebView?.get() !== webView) {

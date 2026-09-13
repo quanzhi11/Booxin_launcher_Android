@@ -109,10 +109,15 @@ object BooxinLaunchTune {
         val totalRam = totalRamMb(context)
         val selected = LauncherPrefs.launchTuneMode()
         val effective = when (selected) {
-            Mode.AUTO -> when (tier) {
-                DeviceTier.LOW -> Mode.SMOOTH
-                DeviceTier.MID -> Mode.BALANCED
-                DeviceTier.HIGH -> Mode.QUALITY
+            Mode.AUTO -> when {
+                // ColorOS + MobileGlues: ≥8GB phones still PPT on BALANCED
+                // (RD10 + native res + fancy). Always prefer FPS over visuals.
+                OemLaunchProfile.needsConservativeAutoTune() -> Mode.SMOOTH
+                else -> when (tier) {
+                    DeviceTier.LOW -> Mode.SMOOTH
+                    DeviceTier.MID -> Mode.BALANCED
+                    DeviceTier.HIGH -> Mode.QUALITY
+                }
             }
             else -> selected
         }
@@ -121,7 +126,7 @@ object BooxinLaunchTune {
             customFromPrefs(context, totalRam, tier)
         } else {
             presetFor(effective, context, totalRam, tier)
-        }
+        }.let { softenForColorOs(it) }
 
         Log.i(
             TAG,
@@ -140,7 +145,9 @@ object BooxinLaunchTune {
             LauncherPrefs.setLaunchTuneMode(mode)
             return
         }
-        val resolved = presetFor(mode, context, totalRamMb(context), deviceTier(context))
+        val resolved = softenForColorOs(
+            presetFor(mode, context, totalRamMb(context), deviceTier(context))
+        )
         LauncherPrefs.setLaunchTuneMode(mode)
         LauncherPrefs.setMaxMemoryMb(resolved.maxMemoryMb)
         LauncherPrefs.setRenderDistance(resolved.renderDistance)
@@ -171,6 +178,57 @@ object BooxinLaunchTune {
     }
 
     fun forceVsyncEnv(enableVsync: Boolean): String = if (enableVsync) "true" else "false"
+
+    /**
+     * ColorOS thermal-throttles `:game` hard under GLES translation.
+     * Cap named presets (and CUSTOM) so OPPO/realme/OnePlus stay playable.
+     * AUTO already resolves to SMOOTH; this also softens manual 均衡/画质.
+     */
+    private fun softenForColorOs(resolved: Resolved): Resolved {
+        if (!OemLaunchProfile.needsConservativeAutoTune()) return resolved
+        if (resolved.effective == Mode.SMOOTH) return resolved
+        val rdCap = when (resolved.deviceTier) {
+            DeviceTier.LOW -> 4
+            DeviceTier.MID -> 6
+            DeviceTier.HIGH -> 6
+        }
+        val scaleCap = when (resolved.deviceTier) {
+            DeviceTier.LOW -> 0.5f
+            DeviceTier.MID -> 0.65f
+            DeviceTier.HIGH -> 0.65f
+        }
+        val rd = min(resolved.renderDistance, rdCap)
+        val scale = min(resolved.resolutionScale, scaleCap)
+        val mem = min(resolved.maxMemoryMb, when (resolved.deviceTier) {
+            DeviceTier.LOW -> 1280
+            DeviceTier.MID -> 2048
+            DeviceTier.HIGH -> 2048
+        })
+        if (rd == resolved.renderDistance &&
+            scale == resolved.resolutionScale &&
+            mem == resolved.maxMemoryMb &&
+            !resolved.fancyGraphics &&
+            resolved.mipmapLevels <= 1
+        ) {
+            return resolved
+        }
+        return resolved.copy(
+            maxMemoryMb = mem,
+            renderDistance = rd,
+            simulationDistance = min(resolved.simulationDistance, (rd - 2).coerceAtLeast(2)),
+            fancyGraphics = false,
+            enableVsync = false,
+            maxFps = min(resolved.maxFps, 60),
+            particles = "minimal",
+            clouds = "false",
+            entityShadows = false,
+            ambientOcclusion = false,
+            entityDistanceScaling = min(resolved.entityDistanceScaling, 0.75),
+            mipmapLevels = min(resolved.mipmapLevels, 1),
+            resolutionScale = scale,
+            summaryZh = resolved.summaryZh + " · ColorOS限幅"
+        )
+    }
 
     private fun customFromPrefs(
         context: Context,

@@ -5,16 +5,20 @@ import android.util.Log
 import com.booxin.launcher.core.java.MinecraftJavaRequirement
 import com.booxin.launcher.core.launch.BooxinLaunchTune
 import com.booxin.launcher.core.launch.GlRendererKind
+import com.booxin.launcher.core.launch.OemLaunchProfile
 import org.json.JSONObject
 import java.io.File
 
 /**
  * Writes MobileGlues (official GLES translator) config.json under MG_DIR_PATH.
- * The backend reads this itself at init — same mechanism other Android launchers use
- * so the translator can apply its own performance paths (ANGLE off, GLSL cache, etc.).
  *
- * JSON key [enableNoError] is logged by MG as `ignoreError`. MobileGlues 1.3.5+ requires
- * ignoreError ≥ 1 (prefer 2) for Minecraft 26.3-snapshot-3 and later.
+ * JSON key [enableNoError] is logged by MG as `ignoreError`. MobileGlues 1.3.5+
+ * requires ignore-shader errors for Minecraft 26.3-snapshot-3+.
+ *
+ * Year-based (26.3+) notes:
+ * - customGLVersion must be a number (0 = MG default). String "4.6.0" is ignored.
+ * - Forcing 4.6 on MG 2.0 made terrain shaders hard-fail; keep 0 and disable DSA
+ *   (DSA rewrite was producing `_uniform` / `_instance` GLSL errors).
  */
 object MobileGluesConfig {
     private const val TAG = "MobileGluesConfig"
@@ -23,10 +27,6 @@ object MobileGluesConfig {
     fun mgDir(context: Context): File =
         File(context.filesDir, "MG").also { it.mkdirs() }
 
-    /**
-     * Ensure a device/tune-aware config exists before JVM start.
-     * Does not inject mods; only the translator's own settings file.
-     */
     fun ensureForLaunch(
         context: Context,
         kind: GlRendererKind,
@@ -36,14 +36,11 @@ object MobileGluesConfig {
         if (kind != GlRendererKind.MOBILE_GLUES &&
             kind != GlRendererKind.BOOXIN_GLUES
         ) {
-            // Path A may stage MobileGlues under max-compat; still write MG config
-            // when MG_DIR will be set — caller passes effective gl kind.
             return
         }
         writeProfile(context, tune, mcVersionId)
     }
 
-    /** Always write when MG_DIR_PATH will be used (including max-compat Path A). */
     fun writeProfile(
         context: Context,
         tune: BooxinLaunchTune.Resolved?,
@@ -53,48 +50,78 @@ object MobileGluesConfig {
         val file = File(dir, CONFIG_NAME)
         val tier = tune?.deviceTier ?: BooxinLaunchTune.deviceTier(context)
         val yearBased = mcVersionId?.let { MinecraftJavaRequirement.usesSdlWindowing(it) } == true
+        // ColorOS throttles hard; DSA + large GLSL cache add CPU/GPU spikes under MG.
+        val oplus = OemLaunchProfile.isOplusFamily()
 
-        // Values match MobileGlues config.json schema used by the official translator.
-        // enableNoError → MG log "ignoreError"; 2 = ignore shader/program/FB errors (needed for 26.3+).
         val json = JSONObject().apply {
-            // ANGLE / compute paths often tank FPS on entry-level Mali/Adreno.
             put("enableANGLE", 0)
+            // 2 = full ignore shader/program/FB errors (needed so 26.3 does not hard-crash).
             put("enableNoError", 2)
             put("enableExtComputeShader", if (yearBased) 1 else 0)
-            put("enableExtGL43", if (yearBased || tier == BooxinLaunchTune.DeviceTier.HIGH) 1 else 0)
             put("enableExtTimerQuery", 0)
+            // DSA on + 26.3 terrain instance attrs → MG `_uniform` rewrite crash.
             put(
                 "enableExtDirectStateAccess",
-                if (tier == BooxinLaunchTune.DeviceTier.HIGH || yearBased) 1 else 0
-            )
-            // Default 0 = no shader cache → hitch every world load (PPT stutter).
-            put(
-                "maxGlslCacheSize",
-                when (tier) {
-                    BooxinLaunchTune.DeviceTier.LOW -> 48
-                    BooxinLaunchTune.DeviceTier.MID -> 96
-                    BooxinLaunchTune.DeviceTier.HIGH -> 128
+                when {
+                    yearBased || oplus -> 0
+                    tier == BooxinLaunchTune.DeviceTier.HIGH -> 1
+                    else -> 0
                 }
             )
-            put("multidrawMode", 0) // Auto
+            put(
+                "maxGlslCacheSize",
+                when {
+                    oplus -> when (tier) {
+                        BooxinLaunchTune.DeviceTier.LOW -> 32
+                        BooxinLaunchTune.DeviceTier.MID -> 64
+                        BooxinLaunchTune.DeviceTier.HIGH -> 96
+                    }
+                    else -> when (tier) {
+                        BooxinLaunchTune.DeviceTier.LOW -> 48
+                        BooxinLaunchTune.DeviceTier.MID -> 96
+                        BooxinLaunchTune.DeviceTier.HIGH -> 128
+                    }
+                }
+            )
+            put("multidrawMode", 0)
             put("angleDepthClearFixMode", 0)
-            put("customGLVersion", if (yearBased) "4.6.0" else 0)
+            // 0 = MG default (logs as 4.0.0). Year-based 26.3 terrain uses instance
+            // attrs; advertising 4.x triggers a broken `_uniform`/`_instance` rewrite.
+            // Keep 0 + DSA off; clear glsl_cache so old cheat artifacts are not reused.
+            put("customGLVersion", 0)
             put("fsr1Setting", if (com.booxin.launcher.core.LauncherPrefs.fsr1Enabled()) 1 else 0)
             put("bufferCoherentAsFlush", 1)
+            put("hideMGEnvLevel", 0)
+        }
+
+        // Always wipe GLSL cache for year-based — stale cheats paint black menus/worlds.
+        if (yearBased) {
+            clearGlslCache(dir)
         }
 
         runCatching {
             file.writeText(json.toString(2))
             Log.i(
                 TAG,
-                "wrote ${file.absolutePath} tier=$tier yearBased=$yearBased " +
+                "wrote ${file.absolutePath} tier=$tier yearBased=$yearBased oplus=$oplus " +
                     "ignoreError=${json.optInt("enableNoError")} " +
-                    "gl43=${json.optInt("enableExtGL43")} " +
-                    "glslCache=${json.optInt("maxGlslCacheSize")} " +
-                    "fsr1=${json.optInt("fsr1Setting")}"
+                    "customGL=${json.opt("customGLVersion")} " +
+                    "dsa=${json.optInt("enableExtDirectStateAccess")} " +
+                    "compute=${json.optInt("enableExtComputeShader")} " +
+                    "glslCache=${json.optInt("maxGlslCacheSize")}"
             )
         }.onFailure {
             Log.w(TAG, "config write failed: ${it.message}")
         }
+    }
+
+    private fun clearGlslCache(mgDir: File) {
+        val cache = File(mgDir, "glsl_cache")
+        if (!cache.isDirectory) return
+        var n = 0
+        cache.walkBottomUp().forEach { f ->
+            if (f != cache && f.delete()) n++
+        }
+        Log.i(TAG, "cleared glsl_cache entries=$n under ${cache.absolutePath}")
     }
 }

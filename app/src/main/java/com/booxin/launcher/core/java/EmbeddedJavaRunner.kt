@@ -16,6 +16,9 @@ import java.io.File
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.StandardSocketOptions
+import java.nio.channels.DatagramChannel
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -25,6 +28,15 @@ import java.util.concurrent.atomic.AtomicInteger
 object EmbeddedJavaRunner {
     private const val TAG = "EmbeddedJavaRunner"
     private const val PROCESS_START_GRACE_MS = 8_000L
+    /** After :forge disappears, wait this long for exit-file / UDP before failing. */
+    private const val VANISH_GRACE_MS = 15_000L
+    private const val UDP_BIND_RETRIES = 8
+
+    /**
+     * Once HotSpot has been created in the UI process, further in-process
+     * CreateJavaVM calls return JNI_EEXIST (-5). Prefer :forge only after that.
+     */
+    private val hotSpotInUiProcess = AtomicBoolean(false)
 
     /**
      * @param command `-cp`, classpath, mainClass, then processor args
@@ -82,10 +94,12 @@ object EmbeddedJavaRunner {
         val ready = CountDownLatch(1)
         val done = CountDownLatch(1)
         val socketAlive = AtomicBoolean(false)
+        val socketRef = arrayOfNulls<DatagramSocket>(1)
         val receiver = Thread({
             var socket: DatagramSocket? = null
             try {
-                socket = DatagramSocket(ForgeInstallSocketServer.PORT, InetAddress.getByName("127.0.0.1"))
+                socket = openReuseUdp(ForgeInstallSocketServer.PORT)
+                socketRef[0] = socket
                 socket.soTimeout = 2_000
                 socketAlive.set(true)
                 ready.countDown()
@@ -93,13 +107,15 @@ object EmbeddedJavaRunner {
                 val packet = DatagramPacket(buffer, buffer.size)
                 val deadline = System.nanoTime() +
                     TimeUnit.MINUTES.toNanos(ForgeInstallSocketServer.TIMEOUT_MINUTES)
-                while (System.nanoTime() < deadline && !exitFile.isFile) {
+                while (System.nanoTime() < deadline && !exitFile.isFile && !Thread.interrupted()) {
                     try {
                         socket.receive(packet)
                         exitCode.set(String(packet.data, 0, packet.length).trim().toIntOrNull() ?: 1)
                         break
                     } catch (_: java.net.SocketTimeoutException) {
                         if (exitFile.isFile) break
+                    } catch (_: InterruptedException) {
+                        break
                     }
                 }
             } catch (error: Exception) {
@@ -107,6 +123,7 @@ object EmbeddedJavaRunner {
             } finally {
                 socketAlive.set(false)
                 runCatching { socket?.close() }
+                socketRef[0] = null
                 if (exitFile.isFile) {
                     exitCode.set(exitFile.readText().trim().toIntOrNull() ?: exitCode.get())
                 }
@@ -115,12 +132,22 @@ object EmbeddedJavaRunner {
         }, "forge-exit-udp")
         receiver.isDaemon = true
         receiver.start()
+
+        fun releaseUdp() {
+            runCatching { socketRef[0]?.close() }
+            runCatching { receiver.interrupt() }
+            // Wait until the port is actually freed before the next processor binds.
+            done.await(2, TimeUnit.SECONDS)
+            runCatching { receiver.join(1_500) }
+        }
+
         if (!ready.await(3, TimeUnit.SECONDS) || !socketAlive.get()) {
-            Log.e(TAG, "UDP listener failed to bind — using in-process fallback")
-            return runInProcess(java, workingDir, command, extraJvmArgs, resolvedLog).also {
-                commandFile.delete()
-                exitFile.delete()
-            }
+            Log.e(TAG, "UDP listener failed to bind")
+            releaseUdp()
+            val fallback = tryInProcessFallback(java, workingDir, command, extraJvmArgs, resolvedLog)
+            commandFile.delete()
+            exitFile.delete()
+            return fallback
         }
 
         val context = BooxinApp.getAppContext()
@@ -132,12 +159,12 @@ object EmbeddedJavaRunner {
         try {
             ContextCompat.startForegroundService(context, intent)
         } catch (error: Exception) {
-            Log.e(TAG, "startForegroundService failed — in-process fallback", error)
-            runCatching { receiver.interrupt() }
-            return runInProcess(java, workingDir, command, extraJvmArgs, resolvedLog).also {
-                commandFile.delete()
-                exitFile.delete()
-            }
+            Log.e(TAG, "startForegroundService failed", error)
+            releaseUdp()
+            val fallback = tryInProcessFallback(java, workingDir, command, extraJvmArgs, resolvedLog)
+            commandFile.delete()
+            exitFile.delete()
+            return fallback
         }
 
         val forgeName = "${context.packageName}:forge"
@@ -152,16 +179,17 @@ object EmbeddedJavaRunner {
             Thread.sleep(200)
         }
         if (!sawForge && !exitFile.isFile && done.count != 0L) {
-            Log.e(TAG, ":forge process did not start within ${PROCESS_START_GRACE_MS}ms — in-process fallback")
+            Log.e(TAG, ":forge process did not start within ${PROCESS_START_GRACE_MS}ms")
             killStaleForgeProcesses()
-            runCatching { receiver.interrupt() }
-            return runInProcess(java, workingDir, command, extraJvmArgs, resolvedLog).also {
-                commandFile.delete()
-                exitFile.delete()
-            }
+            releaseUdp()
+            val fallback = tryInProcessFallback(java, workingDir, command, extraJvmArgs, resolvedLog)
+            commandFile.delete()
+            exitFile.delete()
+            return fallback
         }
 
-        // Wait until UDP/exit file arrives, but bail if :forge vanished without reporting.
+        // Wait for UDP / exit-file. Do NOT treat a short process lifetime as failure —
+        // ConsoleTool / fart often finish in <2s; ActivityManager can also flap.
         val deadline = System.nanoTime() +
             TimeUnit.MINUTES.toNanos(ForgeInstallSocketServer.TIMEOUT_MINUTES)
         var vanishedSince = 0L
@@ -173,15 +201,13 @@ object EmbeddedJavaRunner {
             val running = isProcessRunning(forgeName)
             if (!running && sawForge) {
                 if (vanishedSince == 0L) vanishedSince = System.currentTimeMillis()
-                // Give UDP/exit-file a short grace after process death.
-                if (System.currentTimeMillis() - vanishedSince > 3_000L) {
+                if (System.currentTimeMillis() - vanishedSince > VANISH_GRACE_MS) {
                     if (exitFile.isFile) {
                         exitCode.set(exitFile.readText().trim().toIntOrNull() ?: 1)
                     } else {
-                        Log.e(TAG, ":forge exited without exit code — treating as failure")
+                        Log.e(TAG, ":forge exited without exit code after ${VANISH_GRACE_MS}ms")
                         exitCode.set(1)
                     }
-                    runCatching { receiver.interrupt() }
                     break
                 }
             } else {
@@ -192,13 +218,158 @@ object EmbeddedJavaRunner {
         if (done.count != 0L && !exitFile.isFile && System.nanoTime() >= deadline) {
             Log.e(TAG, "processor timed out")
             killStaleForgeProcesses()
-            runCatching { receiver.interrupt() }
+            exitCode.set(1)
         } else if (exitFile.isFile) {
             exitCode.set(exitFile.readText().trim().toIntOrNull() ?: exitCode.get())
         }
+        releaseUdp()
+        val code = exitCode.get()
+        // Keep exit file briefly for debugging if failed; always drop cmd.
         commandFile.delete()
+        if (code == 0) exitFile.delete()
+        return code
+    }
+
+    private fun tryInProcessFallback(
+        java: InstalledJavaRuntime,
+        workingDir: File,
+        command: List<String>,
+        extraJvmArgs: List<String>,
+        logFile: File?
+    ): Int {
+        if (hotSpotInUiProcess.get()) {
+            Log.e(TAG, "skip in-process fallback — HotSpot already in UI process (JNI_EEXIST)")
+            // Last resort: retry :forge once more after freeing UDP / killing stale.
+            killStaleForgeProcesses()
+            Thread.sleep(400)
+            return retryForgeOnly(java, workingDir, command, extraJvmArgs, logFile)
+        }
+        return runInProcess(java, workingDir, command, extraJvmArgs, logFile)
+    }
+
+    /**
+     * One more :forge attempt without falling back to in-process again.
+     * Used when UI-process HotSpot already exists.
+     */
+    private fun retryForgeOnly(
+        java: InstalledJavaRuntime,
+        workingDir: File,
+        command: List<String>,
+        extraJvmArgs: List<String>,
+        logFile: File?
+    ): Int {
+        val jobDir = File(LauncherPaths.rootDir, "cache/forge/jobs").also { it.mkdirs() }
+        val jobId = "retry-${System.currentTimeMillis()}"
+        val commandFile = File(jobDir, "cmd-$jobId.txt")
+        val exitFile = File(jobDir, "exit-$jobId.txt")
         exitFile.delete()
+        val resolvedLog = logFile ?: File(jobDir, "log-$jobId.txt")
+        commandFile.writeText(
+            buildString {
+                appendLine(workingDir.absolutePath)
+                appendLine(java.majorVersion.toString())
+                appendLine(resolvedLog.absolutePath)
+                (defaultJvmArgs() + extraJvmArgs).forEach { appendLine(it) }
+                appendLine("--")
+                command.forEach { appendLine(it) }
+            }
+        )
+        val exitCode = AtomicInteger(1)
+        val ready = CountDownLatch(1)
+        val done = CountDownLatch(1)
+        val socketAlive = AtomicBoolean(false)
+        val socketRef = arrayOfNulls<DatagramSocket>(1)
+        val receiver = Thread({
+            var socket: DatagramSocket? = null
+            try {
+                socket = openReuseUdp(ForgeInstallSocketServer.PORT)
+                socketRef[0] = socket
+                socket.soTimeout = 2_000
+                socketAlive.set(true)
+                ready.countDown()
+                val buffer = ByteArray(64)
+                val packet = DatagramPacket(buffer, buffer.size)
+                val deadline = System.nanoTime() +
+                    TimeUnit.MINUTES.toNanos(ForgeInstallSocketServer.TIMEOUT_MINUTES)
+                while (System.nanoTime() < deadline && !exitFile.isFile && !Thread.interrupted()) {
+                    try {
+                        socket.receive(packet)
+                        exitCode.set(String(packet.data, 0, packet.length).trim().toIntOrNull() ?: 1)
+                        break
+                    } catch (_: java.net.SocketTimeoutException) {
+                        if (exitFile.isFile) break
+                    }
+                }
+            } catch (error: Exception) {
+                Log.e(TAG, "retry UDP failed", error)
+            } finally {
+                socketAlive.set(false)
+                runCatching { socket?.close() }
+                if (exitFile.isFile) {
+                    exitCode.set(exitFile.readText().trim().toIntOrNull() ?: exitCode.get())
+                }
+                done.countDown()
+            }
+        }, "forge-exit-udp-retry")
+        receiver.isDaemon = true
+        receiver.start()
+        if (!ready.await(3, TimeUnit.SECONDS) || !socketAlive.get()) {
+            runCatching { socketRef[0]?.close() }
+            runCatching { receiver.interrupt() }
+            done.await(2, TimeUnit.SECONDS)
+            commandFile.delete()
+            return 1
+        }
+        val context = BooxinApp.getAppContext()
+        val intent = android.content.Intent(context, ForgeProcessorService::class.java).apply {
+            putExtra(ForgeProcessorService.EXTRA_JOB_FILE, commandFile.absolutePath)
+            putExtra(ForgeProcessorService.EXTRA_EXIT_FILE, exitFile.absolutePath)
+        }
+        Log.i(TAG, "retry ForgeProcessorService java=${java.majorVersion} job=$jobId")
+        try {
+            ContextCompat.startForegroundService(context, intent)
+        } catch (error: Exception) {
+            Log.e(TAG, "retry startForegroundService failed", error)
+            runCatching { socketRef[0]?.close() }
+            runCatching { receiver.interrupt() }
+            done.await(2, TimeUnit.SECONDS)
+            commandFile.delete()
+            return 1
+        }
+        if (!done.await(ForgeInstallSocketServer.TIMEOUT_MINUTES, TimeUnit.MINUTES)) {
+            Log.e(TAG, "retry processor timed out")
+            killStaleForgeProcesses()
+            exitCode.set(1)
+        } else if (exitFile.isFile) {
+            exitCode.set(exitFile.readText().trim().toIntOrNull() ?: exitCode.get())
+        }
+        runCatching { socketRef[0]?.close() }
+        runCatching { receiver.interrupt() }
+        done.await(2, TimeUnit.SECONDS)
+        commandFile.delete()
+        if (exitCode.get() == 0) exitFile.delete()
         return exitCode.get()
+    }
+
+    private fun openReuseUdp(port: Int): DatagramSocket {
+        var last: Exception? = null
+        repeat(UDP_BIND_RETRIES) { attempt ->
+            try {
+                // NIO channel so SO_REUSEADDR works reliably on Android before bind.
+                val channel = DatagramChannel.open()
+                channel.setOption(StandardSocketOptions.SO_REUSEADDR, true)
+                channel.bind(InetSocketAddress(InetAddress.getByName("127.0.0.1"), port))
+                val socket = channel.socket()
+                socket.soTimeout = 2_000
+                if (attempt > 0) Log.i(TAG, "UDP bind ok on retry $attempt")
+                return socket
+            } catch (error: Exception) {
+                last = error
+                Log.w(TAG, "UDP bind attempt ${attempt + 1}/$UDP_BIND_RETRIES failed: ${error.message}")
+                Thread.sleep(150L * (attempt + 1))
+            }
+        }
+        throw last ?: IllegalStateException("UDP bind failed")
     }
 
     private fun runInProcess(
@@ -221,9 +392,13 @@ object EmbeddedJavaRunner {
                 addAll(extraJvmArgs)
                 addAll(command)
             }
-            NativeJvmLauncher.launchToolJvm(argv.toTypedArray())
+            val code = NativeJvmLauncher.launchToolJvm(argv.toTypedArray())
+            // Any CreateJavaVM attempt (even -5) means we must not try again in-UI.
+            hotSpotInUiProcess.set(true)
+            code
         } catch (error: Exception) {
             Log.e(TAG, "in-process processor failed", error)
+            hotSpotInUiProcess.set(true)
             1
         }
     }

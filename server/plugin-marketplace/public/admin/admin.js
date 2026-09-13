@@ -194,6 +194,7 @@ async function loadPending() {
     el.innerHTML = `
       <h3>${esc(a.name)} <span class="badge pending">${esc(a.status)}</span></h3>
       <p class="muted">申请人：${esc(a.applicantUsername)} · ${esc(a.applicantEmail || '无邮箱')}</p>
+      <p class="muted">类型：${esc(a.type || '')} · 平台：${esc((a.platforms || []).join(', ') || 'android, desktop')}</p>
       <p>${esc(a.description || '')}</p>
       <p class="muted">直链：${esc(a.downloadUrl)}</p>
       <p class="muted">提交于 ${esc(a.createdAt)}</p>
@@ -223,9 +224,11 @@ async function loadPlugins() {
         p.enabled === false ? '已下架' : '上架中'
       }</span></h3>
       <p class="muted">开发者：${esc(p.developerUsername)} (${esc(p.developerUserId)})</p>
+      <p class="muted">版本：v${esc(p.version || '1.0.0')} · 类型：${esc(p.type || '')} · 平台：${esc((p.platforms || []).join(', ') || 'android, desktop')}</p>
       <p>${esc(p.description || '')}</p>
       <p class="muted">直链：${esc(p.downloadUrl)}</p>
       <div class="row">
+        <button type="button" data-id="${esc(p.id)}" class="btn-edit primary">更新</button>
         <button type="button" data-id="${esc(p.id)}" class="btn-toggle">${
           p.enabled === false ? '重新上架' : '下架'
         }</button>
@@ -233,6 +236,9 @@ async function loadPlugins() {
       </div>`;
     root.appendChild(el);
   }
+  root.querySelectorAll('.btn-edit').forEach((btn) => {
+    btn.onclick = () => openEditPlugin(data.items.find((x) => x.id === btn.dataset.id));
+  });
   root.querySelectorAll('.btn-toggle').forEach((btn) => {
     btn.onclick = async () => {
       const item = data.items.find((x) => x.id === btn.dataset.id);
@@ -298,6 +304,11 @@ function openReview(app) {
   $('reviewDescription').value = app.description || '';
   $('reviewUrl').value = app.downloadUrl || '';
   $('reviewType').value = app.type || 'renderer';
+  const plats = Array.isArray(app.platforms) && app.platforms.length
+    ? app.platforms
+    : ['android', 'desktop'];
+  $('reviewPlatformAndroid').checked = plats.includes('android');
+  $('reviewPlatformDesktop').checked = plats.includes('desktop');
   $('reviewDeveloperUserId').value = app.applicantUserId || '';
   $('reviewDeveloperUsername').value = app.applicantUsername || '';
   $('reviewDevSelected').textContent = app.applicantUserId
@@ -321,6 +332,10 @@ $('btnApprove').onclick = async () => {
         description: $('reviewDescription').value.trim(),
         downloadUrl: $('reviewUrl').value.trim(),
         type: $('reviewType').value,
+        platforms: [
+          $('reviewPlatformAndroid').checked ? 'android' : null,
+          $('reviewPlatformDesktop').checked ? 'desktop' : null,
+        ].filter(Boolean),
         developerUserId: $('reviewDeveloperUserId').value.trim(),
         developerUsername: $('reviewDeveloperUsername').value.trim(),
       }),
@@ -363,22 +378,108 @@ $('publishForm').onsubmit = async (e) => {
   e.preventDefault();
   const fd = new FormData(e.target);
   try {
+    let downloadUrl = String(fd.get('downloadUrl') || '').trim();
+    const fileInput = $('publishFile');
+    if (fileInput?.files?.[0]) {
+      const up = new FormData();
+      up.append('file', fileInput.files[0]);
+      const uploaded = await api('/api/admin/upload', { method: 'POST', body: up });
+      downloadUrl = uploaded.downloadUrl;
+      $('publishDownloadUrl').value = downloadUrl;
+    }
+    if (!downloadUrl) {
+      alert('请填写下载链接，或上传插件包');
+      return;
+    }
     await api('/api/admin/plugins', {
       method: 'POST',
       body: JSON.stringify({
         name: fd.get('name'),
         description: fd.get('description'),
-        downloadUrl: fd.get('downloadUrl'),
+        downloadUrl,
         type: fd.get('type'),
+        version: fd.get('version') || '1.0.0',
         developerUserId: fd.get('developerUserId'),
       }),
     });
     alert('已上架');
     e.target.reset();
     $('devSelected').textContent = '未选择开发者';
+    $('publishUploadHint').textContent = '上传后会写入本站 /uploads/ 并自动填到下载链接。';
     await loadPlugins();
   } catch (err) {
     alert(err.message);
+  }
+};
+
+function openEditPlugin(p) {
+  if (!p) return;
+  $('editPluginId').value = p.id;
+  $('editPluginName').value = p.name || '';
+  $('editPluginDescription').value = p.description || '';
+  $('editPluginVersion').value = p.version || '1.0.0';
+  $('editPluginType').value = p.type || 'other';
+  const plats = Array.isArray(p.platforms) && p.platforms.length
+    ? p.platforms
+    : ['android', 'desktop'];
+  $('editPlatformAndroid').checked = plats.includes('android');
+  $('editPlatformDesktop').checked = plats.includes('desktop');
+  $('editPluginUrl').value = p.downloadUrl || '';
+  $('editPluginFile').value = '';
+  $('editPluginMsg').textContent = '';
+  $('editPluginDialog').showModal();
+}
+
+$('btnCloseEditPlugin').onclick = () => $('editPluginDialog').close();
+
+$('btnSavePlugin').onclick = async () => {
+  const id = $('editPluginId').value;
+  const msg = $('editPluginMsg');
+  try {
+    msg.textContent = '保存中…';
+    const version = $('editPluginVersion').value.trim() || '1.0.0';
+    const file = $('editPluginFile').files?.[0];
+    if (file) {
+      const up = new FormData();
+      up.append('file', file);
+      up.append('name', $('editPluginName').value.trim());
+      up.append('description', $('editPluginDescription').value);
+      up.append('type', $('editPluginType').value);
+      up.append('version', version);
+      const data = await api(`/api/admin/plugins/${id}/upload`, { method: 'POST', body: up });
+      msg.textContent = data.message || '已上传并更新版本';
+      await api(`/api/admin/plugins/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          platforms: [
+            $('editPlatformAndroid').checked ? 'android' : null,
+            $('editPlatformDesktop').checked ? 'desktop' : null,
+          ].filter(Boolean),
+        }),
+      });
+    } else {
+      await api(`/api/admin/plugins/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          name: $('editPluginName').value.trim(),
+          description: $('editPluginDescription').value,
+          type: $('editPluginType').value,
+          version,
+          downloadUrl: $('editPluginUrl').value.trim(),
+          platforms: [
+            $('editPlatformAndroid').checked ? 'android' : null,
+            $('editPlatformDesktop').checked ? 'desktop' : null,
+          ].filter(Boolean),
+        }),
+      });
+      msg.textContent = '已保存版本信息';
+    }
+    setTimeout(async () => {
+      $('editPluginDialog').close();
+      await loadPlugins();
+    }, 400);
+  } catch (e) {
+    msg.textContent = e.message;
   }
 };
 

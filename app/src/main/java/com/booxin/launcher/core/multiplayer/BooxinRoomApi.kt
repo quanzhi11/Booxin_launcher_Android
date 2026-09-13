@@ -218,7 +218,15 @@ class BooxinRoomApi {
             ),
             modsJson = modsJson,
             mods = modsFromArray,
-            status = firstNonBlank(o.optString("status"), o.optString("Status"))
+            status = firstNonBlank(o.optString("status"), o.optString("Status")),
+            dedicatedAddress = firstNonBlank(
+                o.optString("dedicatedAddress"),
+                o.optString("DedicatedAddress")
+            ),
+            serverAddress = firstNonBlank(
+                o.optString("serverAddress"),
+                o.optString("ServerAddress")
+            )
         )
     }
 

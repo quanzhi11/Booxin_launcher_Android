@@ -1,5 +1,6 @@
 package com.booxin.launcher.core.multiplayer
 
+import com.booxin.launcher.core.diag.DiagEventLog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -174,19 +175,24 @@ class ScaffoldingClient(
     }
 }
 
-suspend fun waitForLocalTcp(port: Int, attempts: Int = 40, delayMs: Long = 100L) {
+suspend fun waitForLocalTcp(port: Int, attempts: Int = 60, delayMs: Long = 150L) {
     withContext(Dispatchers.IO) {
-        repeat(attempts) {
+        var last: String? = null
+        repeat(attempts) { i ->
             try {
                 Socket().use { s ->
-                    s.connect(InetSocketAddress("127.0.0.1", port), 300)
+                    s.connect(InetSocketAddress("127.0.0.1", port), 400)
                     return@withContext
                 }
-            } catch (_: Throwable) {
+            } catch (t: Throwable) {
+                last = t.message
             }
             kotlinx.coroutines.delay(delayMs)
+            if (i > 0 && i % 10 == 0) {
+                DiagEventLog.w("RoomJoin", "waitForLocalTcp port=$port still down (${i + 1}/$attempts): $last")
+            }
         }
-        error("本地端口 $port 未就绪")
+        error("本地端口 $port 未就绪" + if (last.isNullOrBlank()) "" else "（$last）")
     }
 }
 

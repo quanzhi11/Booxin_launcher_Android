@@ -75,7 +75,7 @@ class LibraryDownloadHelper(
                 semaphore.withPermit {
                     val destination = File(LauncherPaths.librariesDir, lib.path)
                     try {
-                        if (!Digests.matchesSha1(destination, lib.sha1)) {
+                        if (!libraryAlreadyPresent(destination, lib)) {
                             ensureLibrary(lib, destination)
                         }
                     } catch (error: Exception) {
@@ -90,7 +90,7 @@ class LibraryDownloadHelper(
     }
 
     private suspend fun ensureLibrary(lib: ResolvedLibrary, destination: File) {
-        if (Digests.matchesSha1(destination, lib.sha1)) return
+        if (libraryAlreadyPresent(destination, lib)) return
         if (lib.url.isBlank()) {
             if (destination.isFile && destination.length() > 0L) return
             if (lib.name.startsWith("optifine:", ignoreCase = true)) {
@@ -103,6 +103,16 @@ class LibraryDownloadHelper(
             error("缺少本地库（需安装器生成）: ${lib.name}")
         }
         downloadVerified(lib.url, destination, lib.sha1, lib.name)
+    }
+
+    /**
+     * Skip full SHA-1 when the jar is already on disk with a matching size.
+     * Hashing hundreds of libraries on phone storage is a major wall-time cost vs PC.
+     */
+    private fun libraryAlreadyPresent(file: File, lib: ResolvedLibrary): Boolean {
+        if (!file.isFile || file.length() <= 0L) return false
+        if (lib.size > 0L) return file.length() == lib.size
+        return Digests.matchesSha1(file, lib.sha1)
     }
 
     private suspend fun downloadVerified(
@@ -136,6 +146,6 @@ class LibraryDownloadHelper(
 
     companion object {
         private const val TAG = "LibraryDownload"
-        private const val LIBRARY_CONCURRENCY = 12
+        private const val LIBRARY_CONCURRENCY = 32
     }
 }

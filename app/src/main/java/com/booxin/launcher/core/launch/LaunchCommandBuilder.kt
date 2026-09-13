@@ -473,7 +473,8 @@ class LaunchCommandBuilder(
                 tokens = tokens,
                 androidLwjgl = androidLwjgl,
                 mainClass = mainClass,
-                jnaBootPath = jnaBootPath
+                jnaBootPath = jnaBootPath,
+                sdlWindowing = needsSdl
             )
             isOptiFine -> buildOptiFineJvmArgs(
                 jarFile = jarFile,
@@ -487,7 +488,8 @@ class LaunchCommandBuilder(
                 renderer = glKind,
                 versionRoot = root,
                 tokens = tokens,
-                jnaBootPath = jnaBootPath
+                jnaBootPath = jnaBootPath,
+                sdlWindowing = needsSdl
             )
             isForgeOrLoader -> buildForgeJvmArgs(
                 jarFile = jarFile,
@@ -505,7 +507,8 @@ class LaunchCommandBuilder(
                 mcVersionId = mcVersionId,
                 jnaBootPath = jnaBootPath,
                 legacyClasspathFile = forgeLegacyClasspathFile,
-                legacyClasspathEntryCount = existingClasspath.size
+                legacyClasspathEntryCount = existingClasspath.size,
+                sdlWindowing = needsSdl
             )
             else -> buildVanillaJvmArgs(
                 jarFile = jarFile,
@@ -517,7 +520,8 @@ class LaunchCommandBuilder(
                 javaMajor = java.majorVersion,
                 classpath = launchClasspathString,
                 renderer = glKind,
-                jnaBootPath = jnaBootPath
+                jnaBootPath = jnaBootPath,
+                sdlWindowing = needsSdl
             )
         }
 
@@ -626,12 +630,16 @@ class LaunchCommandBuilder(
             envBase["SDL_EGL_LIBRARY"] = if (glKind == GlRendererKind.REL) glLib.absolutePath else libGlEgl
             // Help SDL Android find the app (official zlib path; still no SDLActivity yet).
             envBase["SDL_ANDROID_APK_EXPANSION_MAIN_FILE_VERSION"] = "1"
+            // ColorOS SKIP_GLFW must not trigger early HotSpot System.load on SDL path either.
+            envBase["BOOXIN_SKIP_GLFW_PREINIT"] = "1"
         }
         if (legacyLwjgl) {
             // LWJGL2 Display path — GLFW.<clinit> is unnecessary and can fail on Java 8.
             envBase["BOOXIN_SKIP_GLFW_PREINIT"] = "1"
             // Keep POJAV_RENDERER visible to Java for lwjglx only (not ColorOS SKIP_GLFW).
             envBase["BOOXIN_KEEP_JAVA_POJAV_RENDERER"] = "1"
+            // jre_launcher: early System.load(bridge)+awt only for true LWJGL2.
+            envBase["BOOXIN_LEGACY_LWJGL2"] = "1"
         }
         val env = RuntimeEnv.withNativeAliases(
             envBase,
@@ -744,7 +752,8 @@ class LaunchCommandBuilder(
         javaMajor: Int,
         classpath: String,
         renderer: GlRendererKind,
-        jnaBootPath: String
+        jnaBootPath: String,
+        sdlWindowing: Boolean = false
     ): List<String> {
         return buildCommonAndroidJvmArgs(
             jarFile = jarFile,
@@ -757,7 +766,8 @@ class LaunchCommandBuilder(
             classpath = classpath,
             renderer = renderer,
             forgeExtras = false,
-            jnaBootPath = jnaBootPath
+            jnaBootPath = jnaBootPath,
+            sdlWindowing = sdlWindowing
         )
     }
 
@@ -865,7 +875,8 @@ class LaunchCommandBuilder(
         tokens: Map<String, String>,
         androidLwjgl: File,
         mainClass: String,
-        jnaBootPath: String
+        jnaBootPath: String,
+        sdlWindowing: Boolean = false
     ): List<String> {
         val nativeDir = AndroidGameRuntime.nativesDir().absolutePath
         val versionJvm = parseVersionJvmArgs(versionRoot, tokens, nativeDir)
@@ -882,7 +893,8 @@ class LaunchCommandBuilder(
                     classpath = classpath,
                     renderer = renderer,
                     forgeExtras = false,
-                    jnaBootPath = jnaBootPath
+                    jnaBootPath = jnaBootPath,
+                    sdlWindowing = sdlWindowing
                 )
             )
             addAll(versionJvm)
@@ -916,7 +928,8 @@ class LaunchCommandBuilder(
         renderer: GlRendererKind,
         versionRoot: JSONObject,
         tokens: Map<String, String>,
-        jnaBootPath: String
+        jnaBootPath: String,
+        sdlWindowing: Boolean = false
     ): List<String> {
         val nativeDir = AndroidGameRuntime.nativesDir().absolutePath
         val versionJvm = parseVersionJvmArgs(versionRoot, tokens, nativeDir)
@@ -933,7 +946,8 @@ class LaunchCommandBuilder(
                     classpath = classpath,
                     renderer = renderer,
                     forgeExtras = false,
-                    jnaBootPath = jnaBootPath
+                    jnaBootPath = jnaBootPath,
+                    sdlWindowing = sdlWindowing
                 )
             )
             addAll(versionJvm)
@@ -984,7 +998,8 @@ class LaunchCommandBuilder(
         mcVersionId: String,
         jnaBootPath: String,
         legacyClasspathFile: File? = null,
-        legacyClasspathEntryCount: Int = 0
+        legacyClasspathEntryCount: Int = 0,
+        sdlWindowing: Boolean = false
     ): List<String> {
         val nativeDir = AndroidGameRuntime.nativesDir().absolutePath
         val versionJvm = parseVersionJvmArgs(versionRoot, tokens, nativeDir)
@@ -1009,7 +1024,8 @@ class LaunchCommandBuilder(
                     classpath = classpath,
                     renderer = renderer,
                     forgeExtras = true,
-                    jnaBootPath = jnaBootPath
+                    jnaBootPath = jnaBootPath,
+                    sdlWindowing = sdlWindowing
                 )
             )
             if (legacyClasspathFile != null) {
@@ -1091,7 +1107,8 @@ class LaunchCommandBuilder(
         classpath: String,
         renderer: GlRendererKind,
         forgeExtras: Boolean,
-        jnaBootPath: String
+        jnaBootPath: String,
+        sdlWindowing: Boolean = false
     ): List<String> {
         val nativeDir = AndroidGameRuntime.nativesDir().absolutePath
         val glLibName = RuntimeEnv.glLibraryFile(
@@ -1159,10 +1176,14 @@ class LaunchCommandBuilder(
             add("-Dorg.lwjgl.opengl.libname=$glLibName")
             // Android LWJGL GLFW$Functions resolves bridge symbols from the GLFW SharedLibrary.
             // Point it at our bridge so Forge/module-layer loads don't fall back to X11.
-            val glfwBridge = File(nativeDir, "libbooxin_bridge.so").takeIf { it.isFile }
-                ?: File(nativeDir, "libpojavexec.so")
-            if (glfwBridge.isFile) {
-                add("-Dorg.lwjgl.glfw.libname=${glfwBridge.absolutePath}")
+            // SDL (26.3+): skip — accidental GLFW SharedLibrary load would System.load
+            // the bridge before org.lwjgl.system.Library on the correct ClassLoader.
+            if (!sdlWindowing) {
+                val glfwBridge = File(nativeDir, "libbooxin_bridge.so").takeIf { it.isFile }
+                    ?: File(nativeDir, "libpojavexec.so")
+                if (glfwBridge.isFile) {
+                    add("-Dorg.lwjgl.glfw.libname=${glfwBridge.absolutePath}")
+                }
             }
             add("-Dorg.lwjgl.freetype.libname=$nativeDir/libfreetype.so")
             add("-Dorg.lwjgl.openal.libname=$nativeDir/libopenal.so")
@@ -1384,7 +1405,9 @@ class LaunchCommandBuilder(
             .ifBlank { "127.0.0.1" }
         val portPart = raw.substringAfter(':', missingDelimiterValue = "25565").trim()
         val port = portPart.toIntOrNull() ?: 25565
-        val useQuickPlay = supportsQuickPlay(mcVersionId)
+        // Mod loaders (Forge/Fabric/…) often mishandle quickPlay feature-gated args
+        // on Android → connect fails with "Invalid argument". Prefer classic --server.
+        val useQuickPlay = supportsQuickPlay(mcVersionId) && !isModdedLoader(mcVersionId)
 
         val cleaned = stripServerArgs(args)
         return cleaned + if (useQuickPlay) {
@@ -1424,6 +1447,12 @@ class LaunchCommandBuilder(
             return major >= 20
         }
         return ver.first > 1 || (ver.first == 1 && ver.second >= 20)
+    }
+
+    private fun isModdedLoader(mcVersionId: String): Boolean {
+        val id = mcVersionId.lowercase(Locale.US)
+        return "forge" in id || "fabric" in id || "quilt" in id ||
+            "neoforge" in id || "optifine" in id || "liteloader" in id
     }
 
     private fun substitute(raw: String, tokens: Map<String, String>): String {

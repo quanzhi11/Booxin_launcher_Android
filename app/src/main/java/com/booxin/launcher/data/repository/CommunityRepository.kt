@@ -9,7 +9,9 @@ import com.booxin.launcher.core.download.game.Digests
 import com.booxin.launcher.core.download.game.VersionJsonMerger
 import com.booxin.launcher.core.java.JavaEnvironmentManager
 import com.booxin.launcher.core.net.FileDownloader
+import com.booxin.launcher.core.multiplayer.RoomSessionVersionService
 import com.booxin.launcher.core.version.AndroidIncompatibleMods
+import com.booxin.launcher.core.version.VersionInstanceNameGenerator
 import com.booxin.launcher.core.version.VersionModsManager
 import com.booxin.launcher.data.model.CommunityContentType
 import com.booxin.launcher.data.model.CommunityLoader
@@ -56,14 +58,11 @@ class CommunityRepository(
         loader: CommunityLoader,
         offset: Int = 0,
         limit: Int = ModrinthClient.PAGE_SIZE,
-        targetVersionId: String? = null,
+        @Suppress("UNUSED_PARAMETER") targetVersionId: String? = null,
         source: CommunitySource = CommunitySource.MODRINTH
     ): Result<ModrinthSearchPage> {
-        val mcSource = targetVersionId ?: launcherRepository.session.value.selectedVersionId
-        val selectedMc = mcSource?.let { resolveMinecraftVersionId(it) }
-        // Modpacks: do not lock search to the currently selected MC — users need
-        // older pack builds. Mods/shaders/resource packs still follow current MC.
-        val searchMc = if (contentType == CommunityContentType.MODPACK) null else selectedMc
+        // Browse all MC versions; install flow asks for a local target first.
+        val searchMc: String? = null
         // Modrinth is English-indexed; expand Chinese keywords before searching.
         val resolved = CommunitySearchQuery.resolve(query)
         if (resolved.usedChinese) {
@@ -366,7 +365,8 @@ class CommunityRepository(
                             )
                         )
                     },
-                    accelerate = false
+                    // Single-file installs benefit from multipart on large jars/shaders.
+                    accelerate = true
                 ).getOrThrow()
                 if (file.sha1 != null && !Digests.matchesSha1(output, file.sha1)) {
                     output.delete()
@@ -445,6 +445,8 @@ class CommunityRepository(
     suspend fun installModpack(
         requestedTargetVersionId: String?,
         version: ModrinthProjectVersion,
+        instanceDisplayName: String? = null,
+        forceNewInstance: Boolean = true,
         onProgress: (ModpackInstallProgress) -> Unit = {}
     ): Result<String> = withContext(Dispatchers.IO) {
         runCatching {
@@ -456,7 +458,13 @@ class CommunityRepository(
                 expectedSha1 = file.sha1,
                 onProgress = onProgress
             )
-            installModpackArchive(archive, requestedTargetVersionId, onProgress)
+            installModpackArchive(
+                archive = archive,
+                requestedTargetVersionId = requestedTargetVersionId,
+                instanceDisplayName = instanceDisplayName,
+                forceNewInstance = forceNewInstance,
+                onProgress = onProgress
+            )
         }
     }
 
@@ -464,15 +472,27 @@ class CommunityRepository(
     suspend fun installModpackFromArchive(
         archive: File,
         requestedTargetVersionId: String? = null,
+        instanceDisplayName: String? = null,
+        forceNewInstance: Boolean = true,
         onProgress: (ModpackInstallProgress) -> Unit = {}
     ): Result<String> = withContext(Dispatchers.IO) {
-        runCatching { installModpackArchive(archive, requestedTargetVersionId, onProgress) }
+        runCatching {
+            installModpackArchive(
+                archive = archive,
+                requestedTargetVersionId = requestedTargetVersionId,
+                instanceDisplayName = instanceDisplayName,
+                forceNewInstance = forceNewInstance,
+                onProgress = onProgress
+            )
+        }
     }
 
     /** Download a pack from a direct URL, then install. */
     suspend fun installModpackFromUrl(
         url: String,
         requestedTargetVersionId: String? = null,
+        instanceDisplayName: String? = null,
+        forceNewInstance: Boolean = true,
         onProgress: (ModpackInstallProgress) -> Unit = {}
     ): Result<String> = withContext(Dispatchers.IO) {
         runCatching {
@@ -488,7 +508,13 @@ class CommunityRepository(
                 expectedSha1 = null,
                 onProgress = onProgress
             )
-            installModpackArchive(archive, requestedTargetVersionId, onProgress)
+            installModpackArchive(
+                archive = archive,
+                requestedTargetVersionId = requestedTargetVersionId,
+                instanceDisplayName = instanceDisplayName,
+                forceNewInstance = forceNewInstance,
+                onProgress = onProgress
+            )
         }
     }
 
@@ -556,6 +582,8 @@ class CommunityRepository(
     private suspend fun installModpackArchive(
         archive: File,
         requestedTargetVersionId: String?,
+        instanceDisplayName: String? = null,
+        forceNewInstance: Boolean = true,
         onProgress: (ModpackInstallProgress) -> Unit
     ): String {
         require(archive.isFile && archive.length() > 0L) { "整合包文件无效或不存在" }
@@ -571,11 +599,21 @@ class CommunityRepository(
         if (pack.packageType == ModpackPackageType.MODRINTH && pack.files.isEmpty()) {
             error("整合包清单 files 为空，无法下载模组（请确认是有效的 .mrpack）")
         }
-        val targetVersionId = resolveOrCreateModpackTarget(
-            requestedTargetVersionId = requestedTargetVersionId,
+        val loaderBaseId = resolveOrCreateModpackTarget(
+            requestedTargetVersionId = if (forceNewInstance) null else requestedTargetVersionId,
             deps = pack.deps,
             onProgress = onProgress
         )
+        val targetVersionId = if (forceNewInstance) {
+            allocateModpackInstance(
+                loaderBaseId = loaderBaseId,
+                deps = pack.deps,
+                preferredDisplayName = instanceDisplayName,
+                onProgress = onProgress
+            )
+        } else {
+            requestedTargetVersionId?.takeIf { it.isNotBlank() } ?: loaderBaseId
+        }
         val root = File(LauncherPaths.versionsDir, targetVersionId).also { it.mkdirs() }
         onProgress(
             ModpackInstallProgress(
@@ -609,6 +647,10 @@ class CommunityRepository(
                 )
             )
         }
+        val alias = instanceDisplayName?.trim()?.takeIf { it.isNotBlank() }
+        if (alias != null) {
+            launcherRepository.setVersionDisplayName(targetVersionId, alias)
+        }
         onProgress(ModpackInstallProgress(stage = "正在刷新已安装版本"))
         launcherRepository.refreshInstalledVersions()
         launcherRepository.selectVersion(targetVersionId)
@@ -619,6 +661,51 @@ class CommunityRepository(
             )
         )
         return targetVersionId
+    }
+
+    /**
+     * Always fork a dedicated instance from the loader base so each modpack install
+     * gets its own mods/ folder (never write into the bare Forge/Fabric profile).
+     */
+    private fun allocateModpackInstance(
+        loaderBaseId: String,
+        deps: ModpackDependencies,
+        preferredDisplayName: String?,
+        onProgress: (ModpackInstallProgress) -> Unit
+    ): String {
+        val preferred = sanitizeInstanceFolderName(
+            preferredDisplayName?.trim()?.takeIf { it.isNotBlank() }
+                ?: "modpack-${deps.minecraft}"
+        )
+        val uniqueId = VersionInstanceNameGenerator.ensureUnique(preferred)
+        if (uniqueId == loaderBaseId) {
+            // Brand-new empty loader folder — safe to install pack content here.
+            return loaderBaseId
+        }
+        onProgress(
+            ModpackInstallProgress(
+                stage = "正在创建整合包实例",
+                detail = uniqueId
+            )
+        )
+        val cloned = RoomSessionVersionService.cloneInstanceKeepSource(
+            sourceInstanceName = loaderBaseId,
+            targetInstanceName = uniqueId,
+            clientVersion = deps.minecraft
+        )
+        if (!cloned) {
+            error("无法创建整合包实例目录：$uniqueId")
+        }
+        return uniqueId
+    }
+
+    private fun sanitizeInstanceFolderName(raw: String): String {
+        val cleaned = raw
+            .replace(Regex("[\\\\/:*?\"<>|\\s]+"), "-")
+            .replace(Regex("-+"), "-")
+            .trim('-')
+            .take(64)
+        return cleaned.ifBlank { "modpack" }
     }
 
     private suspend fun resolveOrCreateModpackTarget(
@@ -1106,6 +1193,8 @@ class CommunityRepository(
                         Digests.matchesSha1(out, job.sha1)
                     if (!canReuse) {
                         if (out.exists()) out.delete()
+                        // Prefer mirror-first URL order; keep accelerate off for many small jars
+                        // (Range probe per file would add more latency than it saves).
                         downloader.download(
                             urls = job.urls,
                             destination = out,
@@ -1201,7 +1290,7 @@ class CommunityRepository(
 
     companion object {
         private const val CACHE_TTL_MS = 5 * 60 * 1000L
-        /** Parallel Modrinth file downloads (OkHttp maxRequestsPerHost=16). */
-        private const val MODPACK_FILE_CONCURRENCY = 8
+        /** Parallel Modrinth file downloads (OkHttp maxRequestsPerHost=64). */
+        private const val MODPACK_FILE_CONCURRENCY = 24
     }
 }

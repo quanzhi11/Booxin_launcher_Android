@@ -18,9 +18,18 @@ object RendererBackend {
     fun kindForLaunch(instanceVersionId: String, mcVersionId: String): GlRendererKind {
         // ADB/QA: write e.g. "REL" to external files/force_renderer.txt (optional).
         forceRendererSidecar()?.let { return it }
-        val preferred = LauncherPrefs.rendererKind()
         val legacyNeedsGl4es =
             com.booxin.launcher.core.java.MinecraftJavaRequirement.needsGl4esRenderer(mcVersionId)
+
+        // Legacy gate may temporarily pin GL4ES; unpin before resolving modern launches.
+        if (!legacyNeedsGl4es && LauncherPrefs.restoreRendererAfterLegacyIfNeeded()) {
+            android.util.Log.i(
+                "RendererBackend",
+                "restored renderer after legacy GL4ES pin → ${LauncherPrefs.rendererPreference()}"
+            )
+        }
+
+        val preferred = LauncherPrefs.rendererKind()
         var auto = GlRendererProfile.forVersion(mcVersionId)
         val profile = ModRenderProfiler.probe(instanceVersionId)
 

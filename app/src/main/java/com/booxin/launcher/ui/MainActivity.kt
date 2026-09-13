@@ -5,14 +5,20 @@ import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
+import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
+import android.widget.LinearLayout
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.core.view.isVisible
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
@@ -21,29 +27,33 @@ import androidx.navigation.NavOptions
 import androidx.navigation.fragment.NavHostFragment
 import com.booxin.launcher.AppContainer
 import com.booxin.launcher.R
+import com.booxin.launcher.core.LauncherPrefs
 import com.booxin.launcher.core.download.game.InstallProgressHub
+import com.booxin.launcher.core.launch.GameCrashReportStore
+import com.booxin.launcher.core.launch.GameSessionLease
+import com.booxin.launcher.core.multiplayer.HostedRoomCleanup
 import com.booxin.launcher.core.multiplayer.RoomInvite
 import com.booxin.launcher.core.multiplayer.RoomInviteCoordinator
 import com.booxin.launcher.core.multiplayer.RoomInviteNotifier
-import com.booxin.launcher.core.multiplayer.HostedRoomCleanup
-import com.booxin.launcher.core.launch.GameCrashReportStore
-import com.booxin.launcher.core.launch.GameSessionLease
-import com.booxin.launcher.ui.crash.GameCrashDialog
 import com.booxin.launcher.core.uiplugin.UiPluginFonts
 import com.booxin.launcher.core.uiplugin.UiPluginManager
 import com.booxin.launcher.core.uiplugin.UiPluginTheme
 import com.booxin.launcher.databinding.ActivityMainBinding
 import com.booxin.launcher.ui.agreement.UserAgreementUi
+import com.booxin.launcher.ui.controller.BluetoothPairDialog
+import com.booxin.launcher.ui.controller.ControllerDeviceMonitor
+import com.booxin.launcher.ui.controller.ControllerFocus
+import com.booxin.launcher.ui.controller.ControllerFocusAnim
+import com.booxin.launcher.ui.controller.ControllerInput
+import com.booxin.launcher.ui.controller.ControllerNavBinder
+import com.booxin.launcher.ui.crash.GameCrashDialog
+import com.booxin.launcher.ui.pluginpage.PluginPageFragment
 import com.booxin.launcher.ui.update.LauncherUpdateUi
-import android.widget.LinearLayout
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.button.MaterialButtonToggleGroup
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
-import com.booxin.launcher.ui.pluginpage.PluginPageFragment
-import kotlinx.coroutines.launch
-import androidx.core.view.isVisible
-import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.launch
 
 class MainActivity : AppCompatActivity() {
 
@@ -57,6 +67,21 @@ class MainActivity : AppCompatActivity() {
     /** Latest install snapshot; used to hide global bar on pages that already show progress. */
     private var lastInstallSnapshot: InstallProgressHub.Snapshot? = null
     private var currentDestId: Int = 0
+    private var deviceMonitor: ControllerDeviceMonitor? = null
+    private var lastAxisAction: ControllerInput.Action? = null
+    private var lastAxisAt = 0L
+    private var lastDeviceToastAt = 0L
+    private var bluetoothPairDialog: BluetoothPairDialog? = null
+
+    private val btPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
+            bluetoothPairDialog?.onPermissionsResult(result.values.all { it })
+        }
+
+    private val enableBtLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+            bluetoothPairDialog?.onBluetoothEnabled()
+        }
 
     private val topDestinations = listOf(
         R.id.nav_home,
@@ -114,6 +139,8 @@ class MainActivity : AppCompatActivity() {
         val navController = navHost.navController
         setupTopNav(navController)
         refreshPluginPageNav()
+        ControllerNavBinder.bindTopNavButtons(binding.topNav)
+        setupControllerDevices()
 
         navController.addOnDestinationChangedListener { _, destination, _ ->
             currentDestId = destination.id
@@ -194,8 +221,16 @@ class MainActivity : AppCompatActivity() {
                 supportFragmentManager.findFragmentById(R.id.nav_host_fragment) as? NavHostFragment
                     ?: return@setOnClickListener
             val nav = navHost.navController
-            if (nav.currentDestination?.id != R.id.nav_download) {
-                runCatching { nav.navigate(R.id.nav_download) }
+            // Community jobs → community; game installs → download.
+            val dest = if (
+                com.booxin.launcher.core.community.CommunityInstallHub.job.value?.active == true
+            ) {
+                R.id.nav_community
+            } else {
+                R.id.nav_download
+            }
+            if (nav.currentDestination?.id != dest) {
+                runCatching { nav.navigate(dest) }
             }
         }
     }
@@ -231,6 +266,158 @@ class MainActivity : AppCompatActivity() {
             intent.removeExtra(EXTRA_USER_EXITED_GAME)
         }
         maybeShowCrashDialog()
+        deviceMonitor?.start()
+        refreshControllerUi()
+    }
+
+    override fun onPause() {
+        deviceMonitor?.stop()
+        super.onPause()
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (!LauncherPrefs.controllerNavEnabled()) {
+            return super.dispatchKeyEvent(event)
+        }
+        if (ControllerInput.isTextEditing(currentFocus)) {
+            return super.dispatchKeyEvent(event)
+        }
+        val action = ControllerInput.actionFor(event) ?: return super.dispatchKeyEvent(event)
+        if (handleControllerAction(action)) return true
+        return super.dispatchKeyEvent(event)
+    }
+
+    override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
+        if (!LauncherPrefs.controllerNavEnabled()) {
+            return super.dispatchGenericMotionEvent(event)
+        }
+        if (ControllerInput.isTextEditing(currentFocus)) {
+            return super.dispatchGenericMotionEvent(event)
+        }
+        val action = ControllerInput.axisAction(event)
+        if (action == null) {
+            lastAxisAction = null
+            return super.dispatchGenericMotionEvent(event)
+        }
+        val now = SystemClock.uptimeMillis()
+        if (action == lastAxisAction && now - lastAxisAt < 220L) {
+            return true
+        }
+        lastAxisAction = action
+        lastAxisAt = now
+        if (handleControllerAction(action)) return true
+        return super.dispatchGenericMotionEvent(event)
+    }
+
+    private fun handleControllerAction(action: ControllerInput.Action): Boolean {
+        return when (action) {
+            ControllerInput.Action.TAB_PREV -> switchTopTab(-1)
+            ControllerInput.Action.TAB_NEXT -> switchTopTab(+1)
+            ControllerInput.Action.BACK -> navigateControllerBack()
+            ControllerInput.Action.CONFIRM -> ControllerFocus.activateFocused(binding.root)
+            ControllerInput.Action.DPAD_UP,
+            ControllerInput.Action.DPAD_DOWN,
+            ControllerInput.Action.DPAD_LEFT,
+            ControllerInput.Action.DPAD_RIGHT -> {
+                val dir = ControllerFocus.directionFor(action) ?: return false
+                ControllerFocus.moveFocus(binding.root, dir)
+            }
+        }
+    }
+
+    private fun switchTopTab(delta: Int): Boolean {
+        if (binding.topChrome.visibility != View.VISIBLE) return false
+        val navHost =
+            supportFragmentManager.findFragmentById(R.id.nav_host_fragment) as? NavHostFragment
+                ?: return false
+        val navController = navHost.navController
+        val currentId = navController.currentDestination?.id ?: return false
+        val idx = topDestinations.indexOf(currentId)
+        if (idx < 0) return false
+        val nextIdx = (idx + delta).coerceIn(0, topDestinations.lastIndex)
+        if (nextIdx == idx) return true
+        val dest = topDestinations[nextIdx]
+        val btn = binding.topNav.findViewById<View>(dest)
+        if (btn != null) ControllerFocusAnim.tabPulse(btn)
+        syncingNav = true
+        binding.topNav.check(dest)
+        syncingNav = false
+        navigateTopDestination(navController, dest)
+        binding.root.post {
+            ControllerFocus.focusFirst(binding.navHostFragment)
+        }
+        return true
+    }
+
+    private fun navigateControllerBack(): Boolean {
+        val navHost =
+            supportFragmentManager.findFragmentById(R.id.nav_host_fragment) as? NavHostFragment
+                ?: return false
+        val nav = navHost.navController
+        if (nav.previousBackStackEntry != null) {
+            return nav.navigateUp()
+        }
+        // At top-level: move focus to top nav when possible.
+        if (binding.topChrome.isVisible) {
+            val checked = binding.topNav.checkedButtonId
+            val btn = binding.topNav.findViewById<View>(checked)
+            if (btn != null) return btn.requestFocus()
+        }
+        return false
+    }
+
+    private fun setupControllerDevices() {
+        binding.buttonControllerDevice.setOnClickListener { showBluetoothPairDialog() }
+        binding.buttonControllerDevice.isVisible = true
+        refreshControllerChip(deviceMonitor?.currentDevices().orEmpty())
+        deviceMonitor = ControllerDeviceMonitor(this) { devices, added, _ ->
+            refreshControllerChip(devices)
+            bluetoothPairDialog?.refreshConnected()
+            if (added == null) return@ControllerDeviceMonitor
+            if (!LauncherPrefs.controllerNavEnabled()) return@ControllerDeviceMonitor
+            val now = SystemClock.uptimeMillis()
+            if (now - lastDeviceToastAt < 1500L) return@ControllerDeviceMonitor
+            lastDeviceToastAt = now
+            val kind = ControllerInput.deviceKindLabel(added)
+            val label = when (kind) {
+                ControllerInput.DeviceKind.GAMEPAD ->
+                    getString(R.string.controller_connected_gamepad, added.name)
+                ControllerInput.DeviceKind.KEYBOARD ->
+                    getString(R.string.controller_connected_keyboard, added.name)
+                ControllerInput.DeviceKind.MOUSE ->
+                    getString(R.string.controller_connected_combo, added.name)
+                ControllerInput.DeviceKind.COMBO ->
+                    getString(R.string.controller_connected_combo, added.name)
+                ControllerInput.DeviceKind.OTHER -> return@ControllerDeviceMonitor
+            }
+            Toast.makeText(this, label, Toast.LENGTH_SHORT).show()
+            if (currentFocus == null || currentFocus === binding.root) {
+                binding.root.post { ControllerFocus.focusFirst(binding.root) }
+            }
+        }
+    }
+
+    fun refreshControllerUi() {
+        if (!::binding.isInitialized) return
+        refreshControllerChip(deviceMonitor?.currentDevices().orEmpty())
+    }
+
+    fun showBluetoothPairDialog() {
+        val dlg = bluetoothPairDialog
+            ?: BluetoothPairDialog(this, btPermissionLauncher, enableBtLauncher).also {
+                bluetoothPairDialog = it
+            }
+        dlg.show()
+    }
+
+    private fun refreshControllerChip(devices: List<android.view.InputDevice>) {
+        if (!::binding.isInitialized) return
+        binding.buttonControllerDevice.isVisible = true
+        binding.buttonControllerDevice.text = if (devices.isEmpty()) {
+            getString(R.string.controller_chip_idle)
+        } else {
+            getString(R.string.controller_chip_connected, devices.size)
+        }
     }
 
     private fun maybeShowCrashDialog() {

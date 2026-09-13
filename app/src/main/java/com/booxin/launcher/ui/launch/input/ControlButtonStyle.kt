@@ -87,6 +87,34 @@ data class ControlButtonStyle(
     }
 
     companion object {
+        /** Hollow white outline — stock default look (no fill). */
+        fun transparentOutline(
+            borderColor: Int = 0xCCFFFFFF.toInt(),
+            textColor: Int = 0xFFFFFFFF.toInt(),
+            borderWidthDp: Float = 2f
+        ): ControlButtonStyle = ControlButtonStyle(
+            backgroundColor = Color.TRANSPARENT,
+            borderColor = borderColor,
+            borderWidthDp = borderWidthDp,
+            shape = Shape.OVAL,
+            textColor = textColor,
+            opacity = 1f
+        )
+
+        fun solidFill(
+            fill: Int,
+            borderColor: Int = 0xAAFFFFFF.toInt(),
+            textColor: Int = 0xFFFFFFFF.toInt(),
+            opacity: Float = 0.92f
+        ): ControlButtonStyle = ControlButtonStyle(
+            backgroundColor = fill,
+            borderColor = borderColor,
+            borderWidthDp = 2f,
+            shape = Shape.OVAL,
+            textColor = textColor,
+            opacity = opacity.coerceIn(0.15f, 1f)
+        )
+
         fun fromJson(o: JSONObject?): ControlButtonStyle? {
             if (o == null || o.length() == 0) return null
             val bg = parseColor(firstString(o, "backgroundColor", "background", "bg", "background-color"))

@@ -89,6 +89,6 @@ class OptiFineVersionClient {
 
     companion object {
         fun optiFineVersionId(mcVersion: String, type: String, patch: String): String =
-            "$mcVersion-optifine-${type}_$patch"
+            com.booxin.launcher.core.version.VersionInstanceNameGenerator.optiFine(mcVersion, type, patch)
     }
 }

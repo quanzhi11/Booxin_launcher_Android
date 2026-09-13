@@ -57,7 +57,7 @@ class GameTouchPad @JvmOverloads constructor(
     private val choreographer: Choreographer get() = BooxinBridge.sChoreographer
 
     private val longPressRunnable = Runnable {
-        if (!shouldBeDown || tapCancelled || disableGesture || pointerId < 0) return@Runnable
+        if (!shouldBeDown || tapCancelled || disableGesture || gestureMode.lookOnly || pointerId < 0) return@Runnable
         cancelGrabbedTap(releaseIfHeld = true)
         grabbedLongPressLmb = true
         GameInput.sendKeyEvent(GameInput.MOUSE_LEFT, true)
@@ -347,7 +347,7 @@ class GameTouchPad @JvmOverloads constructor(
         downTime = System.currentTimeMillis()
         initialX = GameInput.pointerX
         initialY = GameInput.pointerY
-        if (!disableGesture) {
+        if (!disableGesture && !gestureMode.lookOnly) {
             removeCallbacks(longPressRunnable)
             postDelayed(longPressRunnable, LONG_PRESS_MS)
         }
@@ -363,13 +363,13 @@ class GameTouchPad @JvmOverloads constructor(
             tapCancelled = false
             return
         }
-        if (allowTap && !tapCancelled && !disableGesture) {
-            // 综合：短按=右键；战斗：短按=左键。长按均为按住左键。
-            val button = when (gestureMode) {
-                GestureMode.COMBINED -> GameInput.MOUSE_RIGHT
-                GestureMode.FIGHT -> GameInput.MOUSE_LEFT
+        if (allowTap && !tapCancelled && !disableGesture && !gestureMode.lookOnly) {
+            // 综合：短按=右键；战斗：短按=左键。长按均为按住左键。AA 由 lookOnly 排除。
+            when (gestureMode) {
+                GestureMode.COMBINED -> scheduleGrabbedTap(GameInput.MOUSE_RIGHT)
+                GestureMode.FIGHT -> scheduleGrabbedTap(GameInput.MOUSE_LEFT)
+                GestureMode.AA -> Unit
             }
-            scheduleGrabbedTap(button)
         }
         pointerId = -1
         tapCancelled = false

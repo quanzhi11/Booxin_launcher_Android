@@ -40,6 +40,7 @@ object PlayerSkinResolver {
             when {
                 account == null -> false
                 account.type == AccountType.OFFLINE -> copyOffline(account, dest)
+                account.type == AccountType.THIRD_PARTY -> downloadThirdPartyTo(account, dest)
                 else -> downloadMicrosoftTo(account, dest)
             }
         }.onFailure {
@@ -87,6 +88,7 @@ object PlayerSkinResolver {
             when (account.type) {
                 AccountType.OFFLINE -> copyOffline(account, dest)
                 AccountType.MICROSOFT -> downloadMicrosoftTo(account, dest)
+                AccountType.THIRD_PARTY -> downloadThirdPartyTo(account, dest)
             }
         }.onFailure {
             Log.e(TAG, "account skin resolve crashed id=${account.id} name=${account.name}", it)
@@ -118,6 +120,24 @@ object PlayerSkinResolver {
         }
         src.copyTo(dest, overwrite = true)
         return dest.isFile && dest.length() > 64L
+    }
+
+    private fun downloadThirdPartyTo(account: LauncherAccount, dest: File): Boolean {
+        val server = account.thirdPartyServerUrl
+            ?.takeIf { it.isNotBlank() }
+            ?.let { com.booxin.launcher.core.auth.ThirdPartyAuthService.normalizeServerUrl(it) }
+            ?: return false
+        val uuid = account.uuid?.replace("-", "")?.trim()?.lowercase().orEmpty()
+        if (uuid.length != 32) return false
+        val profileUrl = "$server/sessionserver/session/minecraft/profile/$uuid"
+        Log.i(TAG, "resolve third-party skin name=${account.name} server=$server")
+        val skinUrl = runCatching { fetchSkinUrlFromProfileJson(profileUrl) }
+            .onFailure { Log.w(TAG, "third-party profile failed: $profileUrl", it) }
+            .getOrNull()
+            ?: return false
+        return downloadPngCandidates(dest, textureUrlCandidates(skinUrl)).also { ok ->
+            if (ok) Log.i(TAG, "skin via third-party profile for ${account.name}")
+        }
     }
 
     private fun downloadMicrosoftTo(account: LauncherAccount, dest: File): Boolean {

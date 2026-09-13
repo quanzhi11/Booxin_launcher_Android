@@ -14,6 +14,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
+import com.booxin.launcher.core.uiplugin.UiPluginManager
 import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.hypot
@@ -151,15 +152,27 @@ class VirtualJoystick @JvmOverloads constructor(
         val cx = width / 2f
         val cy = height / 2f
         val radius = min(cx, cy) * 0.92f
-        fillPaint.color = if (active) 0x661B6CA8 else 0x33000000
-        ringPaint.color = if (active) 0xCCFFFFFF.toInt() else 0x88FFFFFF.toInt()
+        val pluginChrome = UiPluginManager.resolveControlLayoutDir() != null
+        if (pluginChrome) {
+            fillPaint.color = if (active) 0x661B6CA8 else 0x33000000
+            ringPaint.color = if (active) 0xCCFFFFFF.toInt() else 0x88FFFFFF.toInt()
+            crossPaint.color = 0x44FFFFFF.toInt()
+            knobPaint.color = if (active) 0xFFFFFFFF.toInt() else 0xCCFFFFFF.toInt()
+            knobRing.color = 0xAA1B6CA8.toInt()
+        } else {
+            // Stock: hollow pad — fill clear, light ring only.
+            fillPaint.color = if (active) 0x22000000 else 0x00000000
+            ringPaint.color = if (active) 0xAAFFFFFF.toInt() else 0x55FFFFFF.toInt()
+            crossPaint.color = 0x33FFFFFF.toInt()
+            knobPaint.color = if (active) 0xDDFFFFFF.toInt() else 0x77FFFFFF.toInt()
+            knobRing.color = 0x551B6CA8.toInt()
+        }
         canvas.drawCircle(cx, cy, radius, fillPaint)
         canvas.drawCircle(cx, cy, radius, ringPaint)
         canvas.drawCircle(cx, cy, radius * 0.42f, crossPaint)
         canvas.drawLine(cx - radius * 0.72f, cy, cx + radius * 0.72f, cy, crossPaint)
         canvas.drawLine(cx, cy - radius * 0.72f, cx, cy + radius * 0.72f, crossPaint)
         val kr = if (active) radius * 0.38f else radius * 0.32f
-        knobPaint.color = if (active) 0xFFFFFFFF.toInt() else 0xCCFFFFFF.toInt()
         canvas.drawCircle(knob.x, knob.y, kr, knobPaint)
         canvas.drawCircle(knob.x, knob.y, kr, knobRing)
         if (editMode && editSelected) {

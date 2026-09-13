@@ -10,4 +10,5 @@
     <item name="tag_ui_plugin_theme_hook" type="id" />
     <item name="tag_ui_plugin_color_applied" type="id" />
     <item name="tag_ui_plugin_keep_color" type="id" />
+    <item name="focus_ring_layer" type="id" />
 </resources>

@@ -36,11 +36,26 @@ object ControlLayoutStore {
             null
         }
         return when {
-            pluginData != null && localData != null -> mergePluginWithUser(pluginData, localData)
-            pluginData != null -> ensureSoftKeyboardLayout(pluginData)
-            localData != null -> localData
+            pluginData != null && localData != null ->
+                migrateStockLabels(mergePluginWithUser(pluginData, localData))
+            pluginData != null -> migrateStockLabels(ensureSoftKeyboardLayout(pluginData))
+            localData != null -> migrateStockLabels(localData)
             else -> default()
         }
+    }
+
+    private fun migrateStockLabels(data: ControlLayoutData): ControlLayoutData {
+        var changed = false
+        val buttons = data.buttons.map { b ->
+            val next = ControlCatalog.migratedStockLabel(b.id, b.label)
+            if (next != b.label) {
+                changed = true
+                b.copy(label = next)
+            } else {
+                b
+            }
+        }
+        return if (changed) data.copy(buttons = buttons) else data
     }
 
     fun save(context: Context, data: ControlLayoutData) {
@@ -136,6 +151,68 @@ object ControlLayoutStore {
     )
 
     /**
+     * Look up chrome (icon / style / label) from the active controlLayout plugin
+     * for a newly added key. Matches by id-less kind+code (HOLD/FOLLOW treated alike).
+     */
+    fun findPluginChrome(
+        context: Context,
+        kind: ControlButtonSpec.Kind,
+        code: Int,
+        codes: List<Int> = emptyList(),
+        outputText: String = ""
+    ): ControlButtonSpec? {
+        val layoutId = activeLayoutId(context)
+        val plugin = UiPluginManager.resolveControlLayoutFile(layoutId)
+            ?.let { parseFile(it, requireMinVersion = false) }
+            ?: return null
+        return matchPluginButton(plugin.buttons, kind, code, codes, outputText)
+            ?.let { pb ->
+                pb.copy(
+                    // Don't reuse plugin id — caller assigns a fresh user id.
+                    style = pb.style ?: plugin.buttonStyle
+                )
+            }
+            ?: plugin.buttonStyle?.let { style ->
+                // No per-key match; still return a stub so caller can apply layout style.
+                ControlButtonSpec(
+                    id = "",
+                    label = "",
+                    kind = kind,
+                    code = code,
+                    x = 0.5f,
+                    y = 0.5f,
+                    style = style
+                )
+            }
+    }
+
+    private fun matchPluginButton(
+        pluginButtons: List<ControlButtonSpec>,
+        kind: ControlButtonSpec.Kind,
+        code: Int,
+        codes: List<Int>,
+        outputText: String
+    ): ControlButtonSpec? {
+        val exact = kindCodeKey(kind, code, codes, outputText)
+        pluginButtons.firstOrNull { kindCodeKey(it) == exact }?.let { return it }
+        val baseKind = chromeBaseKind(kind)
+        return pluginButtons.firstOrNull {
+            chromeBaseKind(it.kind) == baseKind &&
+                it.code == code &&
+                (codes.isEmpty() || it.codes == codes || it.codes.isEmpty())
+        }
+    }
+
+    /** FOLLOW/TOGGLE share chrome with the corresponding HOLD kind. */
+    private fun chromeBaseKind(kind: ControlButtonSpec.Kind): ControlButtonSpec.Kind = when (kind) {
+        ControlButtonSpec.Kind.KEY_FOLLOW, ControlButtonSpec.Kind.KEY_TOGGLE ->
+            ControlButtonSpec.Kind.KEY_HOLD
+        ControlButtonSpec.Kind.MOUSE_FOLLOW, ControlButtonSpec.Kind.MOUSE_TOGGLE ->
+            ControlButtonSpec.Kind.MOUSE_HOLD
+        else -> kind
+    }
+
+    /**
      * User file is authoritative for *which* buttons exist (add/delete).
      * Plugin supplies chrome (icon / default style / labels) for matching keys.
      */
@@ -144,10 +221,10 @@ object ControlLayoutStore {
         user: ControlLayoutData
     ): ControlLayoutData {
         val pluginById = plugin.buttons.associateBy { it.id }
-        val pluginByKindCode = plugin.buttons.associateBy { kindCodeKey(it) }
 
         val merged = user.buttons.map { ub ->
-            val pb = pluginById[ub.id] ?: pluginByKindCode[kindCodeKey(ub)]
+            val pb = pluginById[ub.id]
+                ?: matchPluginButton(plugin.buttons, ub.kind, ub.code, ub.codes, ub.outputText)
             if (pb != null) {
                 pb.copy(
                     // Keep user's stable id so the next save still matches this row.
@@ -164,12 +241,12 @@ object ControlLayoutStore {
                         pb.label.isNotBlank() -> pb.label
                         else -> ub.label
                     },
-                    icon = pb.icon.ifBlank { ub.icon },
-                    style = pb.style ?: ub.style ?: plugin.buttonStyle,
+                    icon = ub.icon.ifBlank { pb.icon },
+                    style = ub.style ?: pb.style ?: plugin.buttonStyle,
                     outputText = ub.outputText.ifBlank { pb.outputText }
                 )
             } else {
-                // User-added key (or deleted-from-plugin and re-created).
+                // User-added key with no plugin twin — still inherit layout buttonStyle.
                 ub.copy(style = ub.style ?: plugin.buttonStyle)
             }
         }.toMutableList()
@@ -191,7 +268,14 @@ object ControlLayoutStore {
     }
 
     private fun kindCodeKey(b: ControlButtonSpec): String =
-        "${b.kind.name}:${b.code}:${b.codes.joinToString(",")}:${b.outputText}"
+        kindCodeKey(b.kind, b.code, b.codes, b.outputText)
+
+    private fun kindCodeKey(
+        kind: ControlButtonSpec.Kind,
+        code: Int,
+        codes: List<Int>,
+        outputText: String
+    ): String = "${kind.name}:$code:${codes.joinToString(",")}:$outputText"
 
     private fun ensureSoftKeyboardLayout(data: ControlLayoutData): ControlLayoutData {
         val buttons = ensureSoftKeyboard(data.buttons)
@@ -233,7 +317,7 @@ object ControlLayoutStore {
                     x = joy?.optDouble("x", 0.13)?.toFloat()?.coerceIn(0.08f, 0.92f) ?: 0.13f,
                     y = joy?.optDouble("y", 0.84)?.toFloat()?.coerceIn(0.12f, 0.92f) ?: 0.84f,
                     sizeDp = joy?.optInt("sizeDp", 150)?.coerceIn(120, 220) ?: 150,
-                    follow = joy?.optBoolean("follow", true) ?: true
+                    follow = joy?.optBoolean("follow", false) ?: false
                 ),
                 floatingBall = ControlLayoutData.FloatingBallSpec(
                     x = ball?.optDouble("x", 0.96)?.toFloat()?.coerceIn(0.05f, 0.95f) ?: 0.96f,

@@ -3,6 +3,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { normalizePluginType } from './types.js';
+import { normalizePlatforms } from './platforms.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const dataDir = path.resolve(__dirname, '../data');
@@ -48,6 +49,66 @@ export function listPublishedPlugins() {
     .sort((a, b) => String(b.publishedAt || '').localeCompare(String(a.publishedAt || '')));
 }
 
+/** Dotted version compare; >0 if a newer than b. */
+export function compareVersions(a, b) {
+  const parts = (v) =>
+    String(v || '')
+      .trim()
+      .replace(/^[vV]/, '')
+      .split(/[.\-_]/)
+      .map((x) => {
+        const n = parseInt(String(x).replace(/\D/g, ''), 10);
+        return Number.isFinite(n) ? n : 0;
+      });
+  const pa = parts(a);
+  const pb = parts(b);
+  const n = Math.max(pa.length, pb.length);
+  for (let i = 0; i < n; i++) {
+    const x = pa[i] || 0;
+    const y = pb[i] || 0;
+    if (x !== y) return x - y;
+  }
+  return 0;
+}
+
+export function listPluginsByDeveloper(userId) {
+  const uid = String(userId || '').trim();
+  if (!uid) return [];
+  return readDb()
+    .plugins.filter((p) => String(p.developerUserId || '') === uid)
+    .sort((a, b) => String(b.updatedAt || b.publishedAt || '').localeCompare(String(a.updatedAt || a.publishedAt || '')));
+}
+
+/**
+ * Owner release: bump version + downloadUrl (+ optional meta).
+ * Requires version strictly newer than current.
+ */
+export function releasePluginVersion(id, developerUserId, patch) {
+  const cur = getPlugin(id);
+  if (!cur || cur.enabled === false) throw new Error('插件不存在或未上架。');
+  if (String(cur.developerUserId || '') !== String(developerUserId || '')) {
+    throw new Error('只能更新自己上架的插件。');
+  }
+  const nextVersion = String(patch?.version || '').trim() || '';
+  if (!nextVersion) throw new Error('请填写新版本号。');
+  const curVersion = String(cur.version || '1.0.0').trim() || '1.0.0';
+  if (compareVersions(nextVersion, curVersion) <= 0) {
+    throw new Error(`新版本号须高于当前版本（当前 v${curVersion}）。`);
+  }
+  const downloadUrl = String(patch?.downloadUrl || '').trim();
+  if (!downloadUrl) throw new Error('请上传插件文件或填写下载直链。');
+
+  const payload = {
+    version: nextVersion,
+    downloadUrl,
+  };
+  if (patch?.description != null) payload.description = String(patch.description);
+  if (patch?.name != null && String(patch.name).trim()) payload.name = String(patch.name).trim();
+  if (patch?.type != null) payload.type = patch.type;
+  if (patch?.platforms != null) payload.platforms = patch.platforms;
+  return updatePlugin(id, payload);
+}
+
 export function listAllPlugins() {
   return readDb().plugins.sort((a, b) =>
     String(b.publishedAt || '').localeCompare(String(a.publishedAt || '')),
@@ -67,6 +128,8 @@ export function createPlugin(input) {
     description: String(input.description || '').trim(),
     downloadUrl: String(input.downloadUrl || '').trim(),
     type: normalizePluginType(input.type, 'other'),
+    platforms: normalizePlatforms(input.platforms),
+    version: String(input.version || '1.0.0').trim() || '1.0.0',
     developerUserId: String(input.developerUserId || '').trim(),
     developerUsername: String(input.developerUsername || '').trim(),
     applicationId: input.applicationId || null,
@@ -98,6 +161,11 @@ export function updatePlugin(id, patch) {
   if (patch.description != null) next.description = String(patch.description).trim();
   if (patch.downloadUrl != null) next.downloadUrl = String(patch.downloadUrl).trim();
   if (patch.type != null) next.type = normalizePluginType(patch.type, cur.type || 'other');
+  if (patch.platforms != null) next.platforms = normalizePlatforms(patch.platforms);
+  if (patch.version != null) {
+    const v = String(patch.version).trim();
+    next.version = v || cur.version || '1.0.0';
+  }
   if (patch.developerUserId != null) next.developerUserId = String(patch.developerUserId).trim();
   if (patch.developerUsername != null) {
     next.developerUsername = String(patch.developerUsername).trim();
@@ -367,6 +435,7 @@ export function createApplication(input) {
     downloadUrl: String(input.downloadUrl || '').trim(),
     description: String(input.description || '').trim(),
     type: normalizePluginType(input.type, 'other'),
+    platforms: normalizePlatforms(input.platforms),
     status: 'pending',
     rejectReason: '',
     reviewedAt: null,

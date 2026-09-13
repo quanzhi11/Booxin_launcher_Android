@@ -147,23 +147,14 @@
                 android:visibility="gone"
                 tools:visibility="visible" />
 
-            <TextView
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/buttonDownload"
+                style="@style/Widget.Material3.Button.TonalButton"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="16dp"
-                android:text="@string/community_section_versions"
-                android:textColor="@color/booxin_navy"
-                android:textSize="15sp"
-                android:textStyle="bold" />
-
-            <androidx.recyclerview.widget.RecyclerView
-                android:id="@+id/recyclerVersions"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:nestedScrollingEnabled="false"
-                tools:itemCount="3"
-                tools:listitem="@layout/item_community_version" />
+                android:enabled="false"
+                android:text="@string/community_download_mod" />
 
             <TextView
                 android:id="@+id/textVersionsEmpty"

@@ -130,7 +130,8 @@
       <p class="brand">booxin</p>
       <h1>插件开发者文档</h1>
       <p class="lead">
-        按当前手机版启动器真实行为编写：字段怎么填、包怎么打、装到哪、怎样自测、商店点下载后走哪条安装路径。
+        面向作者：每个字段写清「在启动器/游戏里具体改什么」。
+        含主题配色、操控按键、<code>extraLayouts</code>、自定义页面、<code>BooxinPlugin</code> 桥等。
       </p>
       <div class="hero-actions">
         <a class="btn primary" href="#quickstart">从问候语插件开始</a>
@@ -148,6 +149,9 @@
       <a href="#reality">1. 能力边界</a>
       <a href="#quickstart">2. 问候语插件手把手</a>
       <a href="#ui-fields">3. UI 清单与目录</a>
+      <a href="#theme-fields">3.4 主题字段说明</a>
+      <a href="#control-fields">3.5 操控字段说明</a>
+      <a href="#pages-fields">3.6 自定义页面 / JS 桥</a>
       <a href="#greeting">4. 问候语 / 图标 / 字体</a>
       <a href="#test">5. 本地自测</a>
       <a href="#renderer">6. 渲染器 / 驱动</a>
@@ -174,6 +178,31 @@
                 <td>UI zip 开启 <code>homeGreetingByTime</code> 后，主页标题变为早上好/中午好/晚上好</td>
               </tr>
               <tr>
+                <td>左右滑动过渡</td>
+                <td><span class="tag now">可用</span></td>
+                <td>开启 <code>pageSlideTransitions</code> 后，顶部导航切页与进入/返回游戏使用左右滑动动画</td>
+              </tr>
+              <tr>
+                <td>首页 3D 模型</td>
+                <td><span class="tag now">可用</span></td>
+                <td>开启 <code>home3dModel</code> 后，首页欢迎区显示<strong>当前账号玩家 3D 皮肤</strong>（微软拉正版皮肤 / 离线用导入皮肤；逻辑在启动器内）</td>
+              </tr>
+              <tr>
+                <td>操控布局 controlLayout</td>
+                <td><span class="tag now">可用</span></td>
+                <td>开启 <code>controlLayout</code> 并附带布局 JSON；支持贴图/<code>style</code>、<code>extraLayouts</code> 多面板、<code>outputText</code>、TOGGLE；无 chrome 时默认近透明</td>
+              </tr>
+              <tr>
+                <td>JS 命令权限 jsCommands</td>
+                <td><span class="tag now">可用</span></td>
+                <td>插件声明 <code>features.jsCommands</code>；启用时需用户授权。页面内可调用白名单 <code>BooxinPlugin.*</code>（toast / openUrl / navigate / close / getInfo）。无 shell、无任意文件、无游戏底层控制</td>
+              </tr>
+              <tr>
+                <td>自定义页面 customPages</td>
+                <td><span class="tag now">可用</span></td>
+                <td>清单 <code>pages[]</code>（id/title/entry 或 https <code>url</code>；可选 <code>orientation</code>/<code>fullscreen</code>）；启动器 WebView 托管</td>
+              </tr>
+              <tr>
                 <td>主页品牌图标</td>
                 <td><span class="tag now">可用</span></td>
                 <td>开启 <code>customLauncherIcon</code> 并附带图片后，替换主页左侧品牌圆标（不改系统桌面图标）</td>
@@ -189,9 +218,9 @@
                 <td>品牌名、欢迎语、配色、顶栏导航文案、壁纸图/视频；并解锁同包图标与字体</td>
               </tr>
               <tr>
-                <td>本机插件启用/禁用/卸载</td>
+                <td>本机插件启用/禁用/卸载/导入</td>
                 <td><span class="tag now">可用</span></td>
-                <td>侧边栏「本机插件」列表操作；禁用不删文件，写 <code>.disabled</code></td>
+                <td>侧边栏「本机插件」；支持商店安装与「导入 zip」；禁用写 <code>.disabled</code></td>
               </tr>
               <tr>
                 <td>渲染器/驱动 so 安装</td>
@@ -204,9 +233,9 @@
                 <td>不能替换布局文件或注入任意页面</td>
               </tr>
               <tr>
-                <td>虚拟按键自动导入</td>
+                <td>input / overlay / pack 独立钩子</td>
                 <td><span class="tag soon">未接线</span></td>
-                <td>可先按 zip 规范上架，简介写手动用法</td>
+                <td>可安装到「本机插件」管理，暂无独立运行时行为</td>
               </tr>
             </tbody>
           </table>
@@ -260,8 +289,8 @@ Compress-Archive -Path .\booxin-plugin.json -DestinationPath ..\my-greeting.zip 
         <p class="note">
           也可用官方工具一键打包：文末
           <a href="#studio">附录 · Booxin Studio</a>
-          （<a href="https://www.coze.cn/s/HE-KO21qqfk/" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">前往下载</a>）。
-          推荐双击 <code>BooxinStudio.exe</code> 点「打包 zip」；命令行则用
+          （<a href="https://www.coze.cn/s/DNg7gP2QbZg/" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">前往下载</a>）。
+          推荐双击 <code>BooxinStudio.exe</code> 用微型 IDE「一键打包」；命令行则用
           <code>BooxinStudio-CLI.exe pack 插件目录</code>。
         </p>
         <p class="bad">不要用加密 zip、7z、rar、分卷包。客户端只按 zip 解。</p>
@@ -298,89 +327,150 @@ Compress-Archive -Path .\booxin-plugin.json -DestinationPath ..\my-greeting.zip 
         </ul>
 
         <h3>3.2 客户端实际读取的字段</h3>
+        <p class="muted">「用途」一列写的是<strong>用户在启动器里会看到什么变化</strong>，不是抽象分类。</p>
         <div class="table-wrap">
           <table>
             <thead>
-              <tr><th>JSON 字段</th><th>要求</th><th>默认值</th><th>用途</th></tr>
+              <tr><th>JSON 字段</th><th>要求</th><th>默认值</th><th>具体干什么用</th></tr>
             </thead>
             <tbody>
               <tr>
                 <td><code>id</code></td>
                 <td><span class="tag req">必需</span></td>
                 <td>—</td>
-                <td>空字符串 → 安装报错「plugin id 为空」</td>
+                <td>插件唯一 ID，也是本机安装目录名。空 → 安装失败「plugin id 为空」。更新版本时必须保持同一 <code>id</code>。</td>
               </tr>
               <tr>
                 <td><code>name</code></td>
                 <td>建议</td>
                 <td>等于 <code>id</code></td>
-                <td>本机插件列表标题</td>
+                <td>「本机插件」列表里显示的标题（用户看到的名字）。</td>
               </tr>
               <tr>
                 <td><code>version</code></td>
                 <td>建议</td>
                 <td><code>1.0.0</code></td>
-                <td>列表显示 <code>v…</code></td>
+                <td>列表显示 <code>v1.0.0</code>；商店更新对照用。</td>
               </tr>
               <tr>
                 <td><code>type</code></td>
                 <td>建议</td>
                 <td><code>ui</code></td>
-                <td>仅展示；商店筛选另看申请类型</td>
+                <td>列表里的类型标签（ui / control / utility…）。真正开不开能力看 <code>features</code>，不看这个字。</td>
               </tr>
               <tr>
                 <td><code>description</code></td>
                 <td>建议</td>
                 <td>空</td>
-                <td>列表下方灰色简介</td>
+                <td>列表标题下方的灰色简介文案。</td>
+              </tr>
+              <tr>
+                <td><code>schema</code></td>
+                <td>可选</td>
+                <td><code>1</code></td>
+                <td>清单格式版本号；目前写 <code>1</code> 即可，方便以后兼容。</td>
+              </tr>
+              <tr>
+                <td><code>minLauncher</code></td>
+                <td>可选</td>
+                <td>空</td>
+                <td>建议最低启动器版本（展示/自检用），例如 <code>"5.3.6"</code>。</td>
               </tr>
               <tr>
                 <td><code>features.homeGreetingByTime</code></td>
                 <td>可选</td>
                 <td><code>false</code></td>
-                <td>主页按时段问候</td>
+                <td>主页大标题按时段变成「早上好 / 中午好 / 晚上好」。若主题写了 <code>welcomeMorning</code> 等，优先用主题自定义文案。</td>
+              </tr>
+              <tr>
+                <td><code>features.pageSlideTransitions</code></td>
+                <td>可选</td>
+                <td><code>false</code></td>
+                <td>底部/顶部切页、进入游戏、从游戏返回时，用左右滑动动画代替生硬切换。</td>
+              </tr>
+              <tr>
+                <td><code>features.home3dModel</code></td>
+                <td>可选</td>
+                <td><code>false</code></td>
+                <td>主页欢迎区改为显示<strong>当前账号玩家 3D 皮肤</strong>（正版皮肤 / 离线导入皮肤），替代纯文字欢迎块。</td>
+              </tr>
+              <tr>
+                <td><code>features.controlLayout</code></td>
+                <td>可选</td>
+                <td><code>false</code></td>
+                <td>进游戏后虚拟按键改用本包布局（见 <code>layoutFile</code>）。多个操控插件同时启用时，只取扫描到的第一个。</td>
+              </tr>
+              <tr>
+                <td><code>layoutFile</code></td>
+                <td>操控建议</td>
+                <td><code>control_layout.json</code></td>
+                <td>主操控面板的 JSON 路径（相对插件目录）。里面写按键位置、键码、贴图、样式。</td>
+              </tr>
+              <tr>
+                <td><code>extraLayouts</code></td>
+                <td>可选</td>
+                <td><code>[]</code></td>
+                <td>额外操控面板。例：战斗 / 建造两套键位。游戏里点悬浮球 → 操控菜单右侧「插件面板」可切换；每个面板单独记住用户拖动位置。</td>
               </tr>
               <tr>
                 <td><code>features.customLauncherIcon</code></td>
                 <td>可选</td>
                 <td><code>false</code></td>
-                <td>主页左侧品牌图标换成插件图片</td>
+                <td>把<strong>主页左侧圆形品牌图标</strong>换成插件图片。不改 Android 桌面应用图标。</td>
               </tr>
               <tr>
                 <td><code>features.customFont</code></td>
                 <td>可选</td>
                 <td><code>false</code></td>
-                <td>启动器界面文字使用插件字体</td>
+                <td>启动器 App 内文字换用插件字体（主页、商店、设置等）。不改系统字体、不改游戏内字体。</td>
               </tr>
               <tr>
                 <td><code>features.customTheme</code></td>
                 <td>可选</td>
                 <td><code>false</code></td>
-                <td>完整主题包；写了 <code>theme</code> 对象也会自动开启</td>
+                <td>打开完整主题：品牌名、配色、导航文案、壁纸等。清单里只要写了 <code>theme</code> 对象也会自动开启。</td>
               </tr>
               <tr>
                 <td><code>theme</code></td>
                 <td>可选</td>
                 <td>空对象</td>
-                <td>品牌 / 欢迎语 / 配色 / 导航 / 壁纸，见第 4.4 节</td>
+                <td>主题细节对象，字段见 <a href="#theme-fields">3.4</a>。</td>
               </tr>
               <tr>
                 <td><code>launcherIcon</code> / <code>icon</code></td>
                 <td>可选</td>
-                <td>见下方候选名</td>
-                <td>相对安装目录的图片路径，如 <code>icon.png</code></td>
+                <td>见候选文件名</td>
+                <td>品牌图标图片路径，如 <code>icon.png</code>。配合 <code>customLauncherIcon</code> 或主题包使用。</td>
               </tr>
               <tr>
                 <td><code>font</code> / <code>fontFile</code></td>
                 <td>可选</td>
-                <td>见下方候选名</td>
-                <td>相对安装目录的字体路径，如 <code>fonts/MyFont.ttf</code></td>
+                <td>见候选文件名</td>
+                <td>字体文件路径，如 <code>fonts/MyFont.ttf</code>（.ttf / .otf / .ttc）。</td>
+              </tr>
+              <tr>
+                <td><code>features.customPages</code></td>
+                <td>可选</td>
+                <td><code>false</code></td>
+                <td>允许插件贡献自定义页面；清单里 <code>pages</code> 非空时也会自动开启。顶栏会出现页面入口。</td>
+              </tr>
+              <tr>
+                <td><code>pages</code></td>
+                <td>可选</td>
+                <td><code>[]</code></td>
+                <td>自定义页面列表，字段见 <a href="#pages-fields">3.6</a>。可本地 HTML，也可 https 远程页。</td>
+              </tr>
+              <tr>
+                <td><code>features.jsCommands</code></td>
+                <td>可选</td>
+                <td><code>false</code></td>
+                <td>声明页面要用 JS 桥。启用插件时会弹权限；用户同意后，页面里才能调用 <code>BooxinPlugin.*</code>。</td>
               </tr>
               <tr>
                 <td>根级同名布尔字段</td>
                 <td>可选</td>
                 <td><code>false</code></td>
-                <td><code>homeGreetingByTime</code> / <code>customLauncherIcon</code> / <code>customFont</code> 可写在根级</td>
+                <td><code>homeGreetingByTime</code> 等也可写在根级（不放进 <code>features</code>），效果相同。</td>
               </tr>
             </tbody>
           </table>
@@ -393,7 +483,8 @@ Compress-Archive -Path .\booxin-plugin.json -DestinationPath ..\my-greeting.zip 
           <li>若清单在 <code>pkg/</code> 下，解压时会去掉 <code>pkg/</code> 前缀，使文件落到安装根目录。</li>
         </ul>
 
-        <h3>3.4 完整主题包示例（推荐）</h3>
+        <h3 id="theme-fields">3.4 完整主题包：示例 + 每个字段干什么</h3>
+        <p class="muted">开 <code>customTheme</code>（或写了 <code>theme</code>）后，下列字段会改<strong>启动器界面</strong>上看得见的东西。多个主题同时启用时，按插件名排序取第一个。</p>
         <pre><code>{
   "id": "demo-full-theme",
   "name": "Full Theme Pack",
@@ -412,6 +503,13 @@ Compress-Archive -Path .\booxin-plugin.json -DestinationPath ..\my-greeting.zip 
     "welcomeMorning": "早上好",
     "welcomeNoon": "中午好",
     "welcomeEvening": "晚上好",
+    "homeLaunchText": "开始游戏",
+    "homeSwitchVersionText": "切换版本",
+    "homeAccountText": "账号",
+    "homeStatusText": "准备就绪",
+    "homeSelectedVersionLabel": "当前版本",
+    "hideOrbs": true,
+    "applyAllText": true,
     "backgroundImage": "backgrounds/bg.png",
     "backgroundVideo": "backgrounds/loop.mp4",
     "backgroundAlpha": 0.85,
@@ -444,6 +542,316 @@ Compress-Archive -Path .\booxin-plugin.json -DestinationPath ..\my-greeting.zip 
 └── backgrounds/
     ├── bg.png
     └── loop.mp4</code></pre>
+
+        <h4>theme 文案 / 壁纸</h4>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>字段</th><th>具体干什么用</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><code>brandName</code></td><td>顶栏左侧品牌文字（默认「Booxin」那一块）。</td></tr>
+              <tr><td><code>welcome</code></td><td>主页欢迎语兜底文案；未开按时段问候、或时段文案为空时用它。</td></tr>
+              <tr><td><code>welcomeMorning</code> / <code>welcomeNoon</code> / <code>welcomeEvening</code></td><td>开了 <code>homeGreetingByTime</code> 时，早/中/晚三个时段主页大标题分别显示什么。</td></tr>
+              <tr><td><code>homeLaunchText</code></td><td>主页「开始游戏」大按钮上的字。</td></tr>
+              <tr><td><code>homeSwitchVersionText</code></td><td>主页「切换版本」按钮文案。</td></tr>
+              <tr><td><code>homeAccountText</code></td><td>主页账号相关入口文案。</td></tr>
+              <tr><td><code>homeStatusText</code></td><td>主页状态提示一行（如准备就绪之类）。</td></tr>
+              <tr><td><code>homeSelectedVersionLabel</code></td><td>「当前版本」标签文字。</td></tr>
+              <tr><td><code>hideOrbs</code></td><td><code>true</code> 时隐藏背景里的装饰光斑/玻璃球，画面更干净。</td></tr>
+              <tr><td><code>applyAllText</code></td><td>默认 <code>true</code>：把主题文字色铺到界面大多数 TextView；<code>false</code> 时只改已单独接线的控件。</td></tr>
+              <tr><td><code>backgroundImage</code></td><td>启动器全局壁纸图片（相对插件目录）。有视频时通常作封面/回退。</td></tr>
+              <tr><td><code>backgroundVideo</code></td><td>循环播放的壁纸视频（如 mp4）。会覆盖设置里的内置壁纸。</td></tr>
+              <tr><td><code>backgroundAlpha</code></td><td>壁纸不透明度 <code>0~1</code>，默认约 <code>0.85</code>。越小越透、底下底色越明显。</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h4>theme.colors（配色）</h4>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>字段</th><th>具体干什么用</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><code>primary</code></td><td>主色调：强调色块、主按钮倾向色。</td></tr>
+              <tr><td><code>accent</code></td><td>点缀色：次要强调（如高亮、小标签）。</td></tr>
+              <tr><td><code>text</code></td><td>主要文字颜色（标题、正文）。</td></tr>
+              <tr><td><code>textSecondary</code></td><td>次要/说明文字颜色（灰色提示那一类）。</td></tr>
+              <tr><td><code>rim</code></td><td>描边 / 玻璃边缘高光色。</td></tr>
+              <tr><td><code>glassPrimary</code></td><td>玻璃按钮/卡片主填充色（半透明常用 <code>#AARRGGBB</code>）。</td></tr>
+              <tr><td><code>surface</code></td><td>面板/卡片底色。</td></tr>
+              <tr><td><code>navSelected</code></td><td>底部/顶部导航<strong>当前选中页</strong>的文字色。</td></tr>
+              <tr><td><code>navUnselected</code></td><td>导航<strong>未选中页</strong>的文字色。</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="muted">颜色写法：<code>#RGB</code> / <code>#RRGGBB</code> / <code>#AARRGGBB</code>。</p>
+
+        <h4>theme.nav（导航文案）</h4>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>字段</th><th>具体干什么用</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><code>home</code></td><td>导航「主页」显示名。</td></tr>
+              <tr><td><code>versions</code></td><td>导航「版本」显示名。</td></tr>
+              <tr><td><code>community</code></td><td>导航「社区」显示名。</td></tr>
+              <tr><td><code>multiplayer</code></td><td>导航「联机」显示名。</td></tr>
+              <tr><td><code>ai</code></td><td>导航「AI」显示名。</td></tr>
+              <tr><td><code>pluginStore</code></td><td>导航「插件」显示名（也认 plugins / plugin）。</td></tr>
+              <tr><td><code>settings</code></td><td>导航「设置」显示名。</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3 id="control-fields">3.5 操控布局：每个字段干什么</h3>
+        <p class="muted">开启 <code>features.controlLayout</code> 后，进游戏用本包的虚拟按键。目录示例：</p>
+        <pre><code>my-control-pack/
+├── booxin-plugin.json
+├── control_layout.json          ← 主面板
+├── control_layout_build.json    ← 可选：extraLayouts
+└── assets/
+    └── btn.png</code></pre>
+        <pre><code>{
+  "schema": 1,
+  "id": "my-control-pack",
+  "name": "My Control Pack",
+  "version": "1.0.0",
+  "type": "control",
+  "features": { "controlLayout": true },
+  "layoutFile": "control_layout.json",
+  "extraLayouts": [
+    { "id": "build", "name": "建造", "file": "control_layout_build.json" }
+  ]
+}</code></pre>
+        <p class="warn">
+          没有 <code>icon</code>、也没有 <code>style</code>/<code>buttonStyle</code> 时，按键默认几乎透明（只留淡描边），容易「装了像没装」。
+          主题操控包请至少写一套 <code>buttonStyle</code> 或给按钮贴图。
+        </p>
+        <p class="muted">布局文件查找顺序（声明优先）：<code>layoutFile</code> → <code>control_layout.json</code> → <code>layout.json</code> → <code>controls.json</code> → <code>assets/control_layout.json</code>。</p>
+
+        <h4>布局顶层字段</h4>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>字段</th><th>具体干什么用</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><code>version</code></td><td>布局格式版本，写 <code>4</code>。</td></tr>
+              <tr><td><code>buttons</code></td><td>虚拟按键数组（跳、潜行、背包、鼠标键等）。</td></tr>
+              <tr><td><code>joystick</code></td><td>左侧移动轮盘（WASD）。</td></tr>
+              <tr><td><code>floatingBall</code></td><td>游戏内「控」悬浮球位置；点开操控设置菜单。</td></tr>
+              <tr><td><code>gestureQuick</code></td><td>手势模式快捷切换按钮位置（综合 / 战斗 / AA）。</td></tr>
+              <tr><td><code>buttonStyle</code> / <code>buttonCss</code></td><td>本布局所有按键的默认外观；单键 <code>style</code> 可覆盖。</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h4>buttons[] 每个字段</h4>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>字段</th><th>具体干什么用</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><code>id</code></td><td>按键稳定 ID。用户拖动后本机用它记住位置；建议写成 <code>jump</code>、<code>lmb</code> 这种固定名，不要每次随机。</td></tr>
+              <tr><td><code>label</code></td><td>按键上显示的文字（如「跳」「左键」）。用户可在游戏编辑模式「重命名」覆盖。</td></tr>
+              <tr><td><code>kind</code></td><td>按键行为类型，见下表。决定是点一下、按住、跟手还是开软键盘。</td></tr>
+              <tr><td><code>code</code></td><td>要模拟的 GLFW 键码或鼠标键。例：空格 <code>32</code>、E <code>69</code>、左键 <code>0</code>、右键 <code>1</code>。软键盘可写 <code>0</code>。</td></tr>
+              <tr><td><code>codes</code></td><td>组合键，长度 ≥2。例：<code>[341, 67]</code> = Ctrl+C（修饰键在前）。</td></tr>
+              <tr><td><code>outputText</code> / <code>text</code></td><td>点按时往游戏输入这段聊天/命令文本（如 <code>/home</code>）。可与 <code>code: 0</code> 做成纯命令键。</td></tr>
+              <tr><td><code>x</code> / <code>y</code></td><td>按键中心在屏幕上的相对位置，<code>0~1</code>。<code>x=0</code> 最左，<code>x=1</code> 最右；<code>y=0</code> 最上，<code>y=1</code> 最下。例：右下角约 <code>0.90, 0.74</code>。</td></tr>
+              <tr><td><code>sizeDp</code></td><td>按键边长（密度无关像素），默认约 52，允许 <code>36~160</code>。越大越好按，越小越不挡画面。</td></tr>
+              <tr><td><code>icon</code></td><td>按钮背景图路径（相对插件目录，如 <code>assets/btn.png</code>）。有图时优先用图，不用 CSS 底。</td></tr>
+              <tr><td><code>style</code> / <code>css</code></td><td>无贴图时用颜色/圆角/渐变画按钮底；覆盖布局级 <code>buttonStyle</code>。</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h4>kind（按下去会发生什么）</h4>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>kind</th><th>具体干什么用</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><code>KEY_TAP</code></td><td>手指抬起时点一次键盘键。适合打开背包 E、聊天 T、丢弃 Q。有 <code>outputText</code> 时改成输入那段文字。</td></tr>
+              <tr><td><code>KEY_HOLD</code></td><td>按住时键盘键保持按下，松开才放开。适合跳跃（空格）、潜行（Shift）。手指滑出按钮后交给空白区转视角。</td></tr>
+              <tr><td><code>MOUSE_HOLD</code></td><td>同上，但是鼠标键。适合攻击（左键）、使用/放置（右键）。</td></tr>
+              <tr><td><code>KEY_FOLLOW</code> / <code>MOUSE_FOLLOW</code></td><td>按住期间<strong>按钮跟着手指走</strong>并保持按下，松开弹回原位。适合边按边移动手指的战斗键。不会把触摸交给转视角。</td></tr>
+              <tr><td><code>KEY_TOGGLE</code> / <code>MOUSE_TOGGLE</code></td><td>点一下闩住「按下」，再点一下松开。适合需要长时间按住又不想一直按着的场景。</td></tr>
+              <tr><td><code>SOFT_KEYBOARD</code></td><td>切换 Android 系统软键盘（打字聊天）。布局里没写时，启动器会自动补一个。</td></tr>
+              <tr><td><code>SCROLL</code></td><td>模拟鼠标滚轮切物品栏。<code>code ≥ 0</code> 向上，负数向下。</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="muted">FCL 兼容特殊码（单码）：<code>-1</code> 左键、<code>-2</code> Ctrl+C、<code>-3</code> 右键、<code>-4</code> ←、<code>-5</code> →。</p>
+
+        <h4>常用 code（GLFW）</h4>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>用途</th><th>code</th><th>说明</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>鼠标左键 / 攻击</td><td><code>0</code></td><td><code>MOUSE_HOLD</code> 或 <code>MOUSE_FOLLOW</code></td></tr>
+              <tr><td>鼠标右键 / 使用</td><td><code>1</code></td><td>同上</td></tr>
+              <tr><td>空格 / 跳</td><td><code>32</code></td><td><code>KEY_HOLD</code></td></tr>
+              <tr><td>左 Shift / 潜行</td><td><code>340</code></td><td><code>KEY_HOLD</code></td></tr>
+              <tr><td>左 Ctrl / 疾跑</td><td><code>341</code></td><td><code>KEY_HOLD</code></td></tr>
+              <tr><td>E / 背包</td><td><code>69</code></td><td><code>KEY_TAP</code></td></tr>
+              <tr><td>T / 聊天</td><td><code>84</code></td><td><code>KEY_TAP</code></td></tr>
+              <tr><td>Q / 丢弃</td><td><code>81</code></td><td><code>KEY_TAP</code></td></tr>
+              <tr><td>Esc</td><td><code>256</code></td><td><code>KEY_TAP</code></td></tr>
+              <tr><td>字母 A–Z</td><td><code>65–90</code></td><td>与 ASCII 大写字母相同</td></tr>
+              <tr><td>数字 0–9</td><td><code>48–57</code></td><td>快捷栏常配合 <code>KEY_TAP</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h4>joystick / floatingBall / gestureQuick</h4>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>字段</th><th>具体干什么用</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><code>joystick.x</code> / <code>y</code></td><td>移动轮盘中心位置（0~1）。常见左下角约 <code>0.13, 0.84</code>。</td></tr>
+              <tr><td><code>joystick.sizeDp</code></td><td>轮盘直径，约 <code>120~220</code>，默认约 150。</td></tr>
+              <tr><td><code>joystick.follow</code></td><td>默认 <code>false</code>。为 <code>true</code> 时：按下轮盘会跳到指下；拖出外圈时底盘追手；松开回弹。适合动态摇杆手感。</td></tr>
+              <tr><td><code>floatingBall.x</code> / <code>y</code></td><td>「控」悬浮球位置。点它打开陀螺仪 / 联机 / 自定义布局 / 退出等菜单。</td></tr>
+              <tr><td><code>gestureQuick.x</code> / <code>y</code></td><td>手势模式快捷钮位置。用来在「综合 / 战斗 / AA」触摸手势模式间切换。</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="muted">用户在游戏里拖动按键/轮盘/重命名后，位置与文案写入本机，并与插件贴图样式合并：插件管外观，本机管几何与自定义名字。</p>
+
+        <h4>style / css / buttonStyle（按钮长什么样）</h4>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>字段</th><th>别名</th><th>具体干什么用</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><code>backgroundColor</code></td><td><code>background</code> / <code>bg</code></td><td>按钮填充色。也可用 <code>transparent</code> 做成空心键。</td></tr>
+              <tr><td><code>borderColor</code></td><td><code>border-color</code></td><td>描边颜色（圆圈边缘）。</td></tr>
+              <tr><td><code>borderWidth</code></td><td><code>border-width</code></td><td>描边粗细（dp）。</td></tr>
+              <tr><td><code>borderRadius</code></td><td><code>radius</code></td><td>圆角大小。写 <code>50%</code> / <code>full</code> / <code>circle</code> → 正圆。</td></tr>
+              <tr><td><code>shape</code></td><td>—</td><td>外形：<code>oval</code>/<code>circle</code> 圆；<code>rect</code> 方；<code>roundrect</code>/<code>pill</code> 圆角矩形。</td></tr>
+              <tr><td><code>gradient</code></td><td>—</td><td>渐变填充，至少 2 个颜色。也可用 <code>"linear-gradient(#a,#b)"</code> 字符串。</td></tr>
+              <tr><td><code>gradientOrientation</code></td><td>—</td><td>渐变方向：<code>tl_br</code>（左上→右下）、<code>top_bottom</code>、<code>left_right</code> 等。</td></tr>
+              <tr><td><code>textColor</code></td><td><code>color</code></td><td>按钮上 <code>label</code> 文字颜色。</td></tr>
+              <tr><td><code>opacity</code></td><td><code>alpha</code></td><td>整颗按钮透明度 <code>0.15~1</code>。越小越透、越不挡游戏画面。</td></tr>
+              <tr><td><code>pressScale</code></td><td><code>press-scale</code></td><td>按下时缩小比例 <code>0.72~1</code>，默认约 0.90，用来做按压缩放反馈。</td></tr>
+              <tr><td><code>pressEffect</code></td><td>或 <code>"jelly": true</code></td><td><code>squash</code>：按下瞬间缩小；<code>jelly</code>：压扁再弹回，手感更「果冻」。</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="muted">绘制优先级：<strong>icon 贴图 → style/css → 启动器默认近透明圆形底</strong>。</p>
+        <p class="muted"><code>icon</code> 规则：相对插件目录；仅 png/webp/jpg/jpeg；禁止绝对路径和 <code>..</code>。</p>
+
+        <h4>完整布局示例</h4>
+        <pre><code>{
+  "version": 4,
+  "buttonStyle": {
+    "shape": "oval",
+    "backgroundColor": "#AA2A6FA8",
+    "borderColor": "#88FFFFFF",
+    "borderWidth": 2,
+    "textColor": "#FFFFFFFF",
+    "opacity": 0.92,
+    "pressEffect": "jelly"
+  },
+  "buttons": [
+    {
+      "id": "jump",
+      "label": "跳",
+      "kind": "KEY_HOLD",
+      "code": 32,
+      "x": 0.90,
+      "y": 0.70,
+      "sizeDp": 64
+    },
+    {
+      "id": "lmb",
+      "label": "左键",
+      "kind": "MOUSE_HOLD",
+      "code": 0,
+      "x": 0.88,
+      "y": 0.55,
+      "sizeDp": 58
+    }
+  ],
+  "joystick": { "x": 0.13, "y": 0.80, "sizeDp": 150, "follow": false },
+  "floatingBall": { "x": 0.96, "y": 0.38 },
+  "gestureQuick": { "x": 0.96, "y": 0.30 }
+}</code></pre>
+        <p class="ok">旧客户端没有新字段时仍可加载主布局，只是忽略不认识的项。</p>
+      </section>
+
+      <section id="pages-fields" class="card">
+        <h2>3.6 自定义页面 / JS 桥：每个字段干什么</h2>
+        <p class="muted">页面跑在启动器 WebView 里（启动器 UI 层），<strong>不是</strong>游戏 JVM/SDL 底层。适合做说明页、工具页、论坛壳。</p>
+        <pre><code>{
+  "id": "booxin.sample.pages",
+  "name": "示例·自定义页面",
+  "version": "1.0.0",
+  "type": "ui",
+  "features": {
+    "customPages": true,
+    "jsCommands": true
+  },
+  "pages": [
+    {
+      "id": "demo",
+      "title": "示例页",
+      "entry": "pages/index.html"
+    },
+    {
+      "id": "forum",
+      "title": "论坛",
+      "url": "https://example.com/forum",
+      "orientation": "portrait",
+      "fullscreen": true
+    }
+  ]
+}</code></pre>
+
+        <h3>pages[] 字段</h3>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>字段</th><th>具体干什么用</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><code>id</code></td><td>页面内部 ID，同一插件内唯一，用于打开/切换页面。</td></tr>
+              <tr><td><code>title</code></td><td>顶栏/入口上显示的标题，用户看得见。</td></tr>
+              <tr><td><code>entry</code> / <code>html</code> / <code>file</code></td><td>插件包内的本地 HTML 路径，如 <code>pages/index.html</code>。和 <code>url</code> 二选一（有 url 优先远程）。</td></tr>
+              <tr><td><code>url</code> / <code>href</code> / <code>remote</code></td><td>直接打开的 <strong>https</strong> 网址（论坛、文档站）。非 https 会被忽略。</td></tr>
+              <tr><td><code>orientation</code></td><td>打开该页时锁定方向：<code>portrait</code>（竖屏）/ <code>landscape</code>（横屏）；也认「竖屏」「横屏」。</td></tr>
+              <tr><td><code>fullscreen</code> / <code>immersive</code></td><td><code>true</code> 时沉浸式打开，隐藏部分页面铬，内容区更大。</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>BooxinPlugin（需用户授权 jsCommands）</h3>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>方法</th><th>具体干什么用</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><code>getInfo()</code></td><td>读取启动器/插件基础信息（给页面展示用）。</td></tr>
+              <tr><td><code>toast(msg)</code></td><td>弹出一条短提示（Android Toast）。</td></tr>
+              <tr><td><code>openUrl(https)</code></td><td>用系统浏览器打开链接（仅 http/https）。</td></tr>
+              <tr><td><code>navigate(目标)</code></td><td>跳到启动器内页：<code>home</code> / <code>versions</code> / <code>community</code> / <code>multiplayer</code> / <code>ai</code> / <code>pluginstore</code> / <code>plugins</code> / <code>settings</code>。</td></tr>
+              <tr><td><code>close()</code></td><td>关闭当前插件页面，回到启动器。</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="bad">没有：shell、读写任意文件、NativeJvm、SDL、往游戏注入按键。不要指望用页面插件改游戏底层。</p>
       </section>
 
       <section id="greeting" class="card">
@@ -527,22 +935,19 @@ Compress-Archive -Path .\booxin-plugin.json -DestinationPath ..\my-greeting.zip 
           开 <code>customTheme</code>（或清单里写了 <code>theme</code> 对象）后，同一包还可直接带上
           图标 / 字体文件，无需再单独开 <code>customLauncherIcon</code> / <code>customFont</code>。
         </p>
+        <p>
+          <strong>每个 theme 字段改界面哪里、配色/导航分别管什么</strong>，见上方
+          <a href="#theme-fields">3.4 主题字段说明</a>（表格比这里更全）。
+        </p>
         <ul>
-          <li><code>theme.brandName</code>：顶栏品牌文字</li>
-          <li><code>theme.welcome*</code>：主页欢迎语（可按时段）</li>
-          <li><code>theme.homeLaunchText</code> / <code>homeSwitchVersionText</code> / <code>homeAccountText</code>：主页按钮文案</li>
-          <li><code>theme.homeStatusText</code> / <code>homeSelectedVersionLabel</code>：主页状态与「当前版本」标签</li>
-          <li><code>theme.hideOrbs</code>：隐藏背景装饰光斑</li>
-          <li><code>theme.colors.*</code>：主色 / 文字色 / 按钮玻璃色 / 导航选中色等（<code>#RRGGBB</code> 或 <code>#AARRGGBB</code>）</li>
-          <li><code>theme.nav.*</code>：顶栏各页文案</li>
-          <li><code>theme.backgroundImage</code> / <code>backgroundVideo</code>：覆盖设置里的内置壁纸</li>
-          <li><code>theme.backgroundAlpha</code>：0~1，默认 0.85</li>
-          <li><code>theme.applyAllText</code>：默认 true，把文字色铺到界面 TextView</li>
+          <li>文案类：<code>brandName</code>、<code>welcome*</code>、<code>homeLaunchText</code> 等 → 主页看得见的字</li>
+          <li>视觉类：<code>colors.*</code>、<code>backgroundImage</code>/<code>backgroundVideo</code>、<code>hideOrbs</code> → 颜色与壁纸</li>
+          <li>导航类：<code>nav.*</code> → 底栏/顶栏各页名字</li>
         </ul>
         <p class="muted">
           插件不能运行任意代码；只能改启动器已接线的这些字段。想加新能力需要发版启动器。
+          多个主题包同时启用时，按插件名称排序取第一个。
         </p>
-        <p class="muted">多个主题包同时启用时，按插件名称排序取第一个。</p>
       </section>
 
       <section id="test" class="card">
@@ -643,27 +1048,32 @@ adb shell run-as com.booxin.launcher sh -c \
               <tr>
                 <td><code>eglLib</code></td>
                 <td>可选</td>
-                <td>默认 <code>libEGL.so</code></td>
+                <td>配套 EGL 库文件名，默认 <code>libEGL.so</code>。启动器加载 GL 时一并找它。</td>
               </tr>
               <tr>
                 <td><code>rendererToken</code></td>
                 <td>可选</td>
-                <td>默认 <code>opengles3</code>；给启动链路识别后端</td>
+                <td>告诉启动链路「这是哪种后端」，默认 <code>opengles3</code>。例：<code>vulkan_zink</code>。影响识别与展示，不是随意字符串装饰。</td>
               </tr>
               <tr>
                 <td><code>libGlEs</code></td>
                 <td>可选</td>
-                <td>默认 <code>"3"</code>（字符串）</td>
+                <td>GLES 主版本号字符串，默认 <code>"3"</code>。会作为环境/启动参数传给游戏进程。</td>
               </tr>
               <tr>
                 <td><code>extraEnv</code></td>
                 <td>可选</td>
-                <td>启动游戏时额外环境变量</td>
+                <td>启动游戏时<strong>额外注入的环境变量</strong>。例：<code>{"LIBGL_ES":"3"}</code>。用来调渲染器行为。</td>
               </tr>
               <tr>
                 <td><code>disguiseAsGl4es</code></td>
                 <td>可选</td>
-                <td>默认 <code>false</code>；gl4es 类方案再开</td>
+                <td>默认 <code>false</code>。部分老模组/启动路径只认 gl4es；开了会伪装成 gl4es 环境（仅 gl4es 类方案需要）。</td>
+              </tr>
+              <tr>
+                <td><code>kindName</code></td>
+                <td>可选</td>
+                <td>渲染器种类显示名；不写则按 type / token 推断。</td>
               </tr>
             </tbody>
           </table>
@@ -679,9 +1089,8 @@ adb shell run-as com.booxin.launcher sh -c \
 
         <h3>6.5 可选 Manifest 元数据</h3>
         <pre><code>&lt;meta-data android:name="booxin.plugin" android:value="renderer" /&gt;
-&lt;meta-data android:name="fclPlugin" android:value="renderer" /&gt;
 &lt;meta-data android:name="org.lwjgl.opengl.libname" android:value="libmygl.so" /&gt;</code></pre>
-        <p class="muted">用于扫描「已安装到系统的 FCL 风格插件 APK」。普通导入本地 APK 主要仍看 <code>plugin.json</code> + so。</p>
+        <p class="muted">用于扫描「本机已安装的第三方渲染器插件 APK」。普通导入本地 APK 主要仍看 <code>plugin.json</code> + so。</p>
       </section>
 
       <section id="download-rules" class="card">
@@ -763,7 +1172,7 @@ adb shell run-as com.booxin.launcher sh -c \
             </thead>
             <tbody>
               <tr><td><code>ui</code></td><td>UI 插件</td><td>zip + 清单</td><td>本机插件</td><td>按 UI zip 安装</td></tr>
-              <tr><td><code>control</code></td><td>操控/虚拟按键</td><td>zip</td><td>本机插件</td><td>按 UI zip 安装</td></tr>
+              <tr><td><code>control</code></td><td>操控/虚拟按键</td><td>zip + <code>controlLayout</code>；可选 <code>icon</code> / <code>style</code></td><td>本机插件</td><td>启用后进游戏套用布局与绘制</td></tr>
               <tr><td><code>overlay</code></td><td>悬浮窗/HUD</td><td>zip</td><td>本机插件</td><td>按 UI zip 安装</td></tr>
               <tr><td><code>utility</code></td><td>工具</td><td>zip</td><td>本机插件</td><td>按 UI zip 安装</td></tr>
               <tr><td><code>input</code></td><td>输入法/键鼠</td><td>zip</td><td>本机插件</td><td>URL 请带 <code>.zip</code></td></tr>
@@ -846,7 +1255,9 @@ adb shell run-as com.booxin.launcher sh -c \
           <li>问候语：真机验证 启用→主页文案变 / 禁用→恢复默认</li>
           <li>图标：真机验证 启用→主页左侧圆标变 / 禁用→恢复默认</li>
           <li>字体：真机验证 启用→界面文字变 / 禁用→恢复默认；确认许可可分发</li>
-          <li>主题包：品牌名、配色、导航/主页按钮文案、壁纸、hideOrbs 至少验证一项可见变化</li>
+          <li>主题包：品牌名、配色、导航/主页按钮文案、壁纸图或视频、hideOrbs 至少验证一项可见变化</li>
+          <li>操控包：提供 <code>icon</code> 或 <code>buttonStyle</code>（否则默认近透明难辨认）；进游戏验证布局；有 <code>extraLayouts</code> 时验证面板切换</li>
+          <li>自定义页面：本地 entry 或 https url；fullscreen/orientation 按需验证</li>
           <li>渲染器：arm64-v8a 下存在与 <code>glLib</code> 同名的 so；可用「导入 APK」装上</li>
           <li>商店 type 与包格式一致；下载链最终能落到 .zip / .apk（可用短链重定向）</li>
           <li>简介写了「会做什么 / 不会做什么」，不夸大未接线能力</li>
@@ -856,10 +1267,10 @@ adb shell run-as com.booxin.launcher sh -c \
       </section>
 
       <section id="studio" class="card">
-        <h2>附录 · Booxin Studio（官方打包工具）</h2>
+        <h2>附录 · Booxin Studio（微型 IDE）</h2>
         <p>
-          用来<strong>新建模板、校验、打 zip</strong>。绿色包免装 Node，解压即用（Windows）。
-          <a href="https://www.coze.cn/s/HE-KO21qqfk/" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">前往下载</a>
+          官方插件工具：编辑项目、校验清单、<strong>一键打包 zip</strong>。绿色包免装 Node（Windows）。
+          <a href="https://www.coze.cn/s/DNg7gP2QbZg/" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">前往下载</a>
         </p>
 
         <h3>包内两个版本</h3>
@@ -872,7 +1283,7 @@ adb shell run-as com.booxin.launcher sh -c \
               <tr>
                 <td><code>BooxinStudio.exe</code></td>
                 <td><span class="tag now">推荐</span> 日常开发</td>
-                <td>双击打开窗口 → 按钮新建 / 打包 / 校验</td>
+                <td>微型 IDE：主页打开项目 / 历史；顶部一键打包</td>
               </tr>
               <tr>
                 <td><code>BooxinStudio-CLI.exe</code></td>
@@ -883,12 +1294,12 @@ adb shell run-as com.booxin.launcher sh -c \
           </table>
         </div>
 
-        <h3>推荐流程（窗口版）</h3>
+        <h3>推荐流程（窗口版 2.0）</h3>
         <ol>
           <li>解压绿色包，双击 <code>BooxinStudio.exe</code>。</li>
-          <li>点「新建完整主题包」（或问候语 / 字体 / 图标）。</li>
-          <li>按弹出目录里的 README 放入 <code>icon.png</code>、字体、壁纸等资源。</li>
-          <li>点「打包 zip」，选插件文件夹，保存 zip。</li>
+          <li>主页点「打开项目」或「新建主题包」；也可双击最近历史进入。</li>
+          <li>在左侧文件树双击编辑 <code>booxin-plugin.json</code> 等文本，按 README 放入资源。</li>
+          <li>点顶部「一键打包」（或 Ctrl+B），保存 zip。</li>
           <li>手机 Booxin →「插件」→ 本机安装或走「申请上架」上传该 zip。</li>
         </ol>
 

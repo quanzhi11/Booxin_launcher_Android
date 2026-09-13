@@ -115,6 +115,9 @@ object GlfwKeys {
     const val MOUSE_MIDDLE = 2
 
     fun shortLabel(code: Int): String = when (code) {
+        MOUSE_LEFT -> "左键"
+        MOUSE_RIGHT -> "右键"
+        MOUSE_MIDDLE -> "中键"
         KEY_SPACE -> "空格"
         KEY_ESCAPE -> "Esc"
         KEY_ENTER -> "Enter"

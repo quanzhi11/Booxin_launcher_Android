@@ -74,6 +74,41 @@ object GameOptionsPatch {
         }
     }
 
+    /**
+     * FCL/PC OptiFine often leaves a heavy shader pack enabled. Many Iris-oriented
+     * packs hit OptiFine's `#include depth exceeded: 10` and hang the render thread.
+     * One-shot: force shaders off so the title screen can load; user can re-enable.
+     */
+    fun disableOptiFineShadersOnce(gameDir: File): Boolean {
+        val marker = File(gameDir, ".booxin_optifine_shaders_off_v1")
+        if (marker.isFile) return false
+        val shadersFile = File(gameDir, "optionsshaders.txt")
+        val map = linkedMapOf<String, String>()
+        if (shadersFile.isFile) {
+            shadersFile.forEachLine { line ->
+                val idx = line.indexOf('=')
+                if (idx > 0) {
+                    map[line.substring(0, idx).trim()] = line.substring(idx + 1).trim()
+                }
+            }
+        }
+        val prev = map["shaderPack"].orEmpty()
+        if (prev.isNotBlank() &&
+            !prev.equals("OFF", ignoreCase = true) &&
+            prev != "(internal)" &&
+            prev != "null"
+        ) {
+            Log.i(TAG, "OptiFine: disabling imported shaderPack=$prev at ${gameDir.name}")
+        }
+        map["shaderPack"] = "OFF"
+        return runCatching {
+            shadersFile.parentFile?.mkdirs()
+            shadersFile.writeText(map.entries.joinToString("\n") { "${it.key}=${it.value}" } + "\n")
+            marker.writeText("off:$prev")
+            true
+        }.getOrDefault(false)
+    }
+
     private fun applyLauncherPrefs(
         map: MutableMap<String, String>,
         tune: BooxinLaunchTune.Resolved?,

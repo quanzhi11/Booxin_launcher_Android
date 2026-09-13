@@ -64,7 +64,14 @@
           <h2>直接上架插件</h2>
           <label>名称 <input name="name" required /></label>
           <label>简介 <textarea name="description" rows="3"></textarea></label>
-          <label>下载链接（直链，不走本站） <input name="downloadUrl" required placeholder="https://..." /></label>
+          <label>版本号 <input name="version" id="publishVersion" value="1.0.0" placeholder="1.0.0" /></label>
+          <label>下载链接（可填直链，或下方上传自动填入）
+            <input name="downloadUrl" id="publishDownloadUrl" placeholder="https://..." />
+          </label>
+          <label>或上传插件包（≤250MB）
+            <input type="file" id="publishFile" accept=".zip,.apk,application/zip,application/vnd.android.package-archive,*/*" />
+          </label>
+          <p id="publishUploadHint" class="muted">上传后会写入本站 /uploads/ 并自动填到下载链接。</p>
           <label>类型
             <select name="type" id="publishType">
               <option value="renderer">渲染器</option>
@@ -113,6 +120,11 @@
           <option value="other">其他</option>
         </select>
       </label>
+      <fieldset class="platforms">
+        <legend>兼容平台</legend>
+        <label class="check"><input type="checkbox" id="reviewPlatformAndroid" checked /> Android（手机）</label>
+        <label class="check"><input type="checkbox" id="reviewPlatformDesktop" checked /> 桌面（Windows）</label>
+      </fieldset>
       <div class="dev-picker">
         <label>开发者搜索
           <input id="reviewDevQuery" placeholder="用户名关键词" />
@@ -133,6 +145,46 @@
         <button type="button" id="btnCloseReview" value="cancel">关闭</button>
       </div>
       <p id="reviewMsg" class="muted"></p>
+    </form>
+  </dialog>
+
+  <dialog id="editPluginDialog">
+    <form method="dialog" id="editPluginForm" class="form">
+      <h2>更新插件</h2>
+      <input type="hidden" id="editPluginId" />
+      <label>名称 <input id="editPluginName" required /></label>
+      <label>简介 <textarea id="editPluginDescription" rows="3"></textarea></label>
+      <label>版本号 <input id="editPluginVersion" required placeholder="1.0.0" /></label>
+      <label>类型
+        <select id="editPluginType">
+          <option value="renderer">渲染器</option>
+          <option value="driver">驱动</option>
+          <option value="ui">UI 插件</option>
+          <option value="control">操控 / 虚拟按键</option>
+          <option value="input">输入法 / 键鼠</option>
+          <option value="overlay">悬浮窗 / HUD</option>
+          <option value="utility">工具</option>
+          <option value="pack">整合包附属</option>
+          <option value="other">其他</option>
+        </select>
+      </label>
+      <fieldset class="platforms">
+        <legend>兼容平台</legend>
+        <label class="check"><input type="checkbox" id="editPlatformAndroid" checked /> Android（手机）</label>
+        <label class="check"><input type="checkbox" id="editPlatformDesktop" checked /> 桌面（Windows）</label>
+      </fieldset>
+      <label>下载链接
+        <input id="editPluginUrl" required placeholder="https://..." />
+      </label>
+      <label>上传新包覆盖（≤250MB，可选）
+        <input type="file" id="editPluginFile" accept=".zip,.apk,application/zip,application/vnd.android.package-archive,*/*" />
+      </label>
+      <p class="muted">选了文件会先上传到本站，再把下载链接改成新地址；用户下次下载即是新版本。</p>
+      <div class="row">
+        <button type="button" id="btnSavePlugin" class="primary">保存更新</button>
+        <button type="button" id="btnCloseEditPlugin" value="cancel">关闭</button>
+      </div>
+      <p id="editPluginMsg" class="muted"></p>
     </form>
   </dialog>
 

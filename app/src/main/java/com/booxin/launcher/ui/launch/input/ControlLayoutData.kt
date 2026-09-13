@@ -19,7 +19,7 @@ data class ControlLayoutData(
          * On press, pad recenters under the finger; base chases past the rim;
          * springs home on release.
          */
-        val follow: Boolean = true
+        val follow: Boolean = false
     )
 
     data class FloatingBallSpec(

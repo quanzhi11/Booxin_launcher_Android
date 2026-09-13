@@ -5,7 +5,12 @@
   "type": "module",
   "scripts": {
     "start": "node src/server.js",
-    "dev": "node --watch src/server.js"
+    "dev": "node --watch src/server.js",
+    "pm2": "pm2 start ecosystem.config.cjs",
+    "pm2:stop": "pm2 stop booxin-plugin-marketplace",
+    "pm2:restart": "pm2 restart booxin-plugin-marketplace",
+    "pm2:logs": "pm2 logs booxin-plugin-marketplace",
+    "pm2:startup": "pm2 startup && pm2 save"
   },
   "dependencies": {
     "cors": "^2.8.5",

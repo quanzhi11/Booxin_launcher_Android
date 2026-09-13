@@ -1,15 +1,67 @@
 <?xml version="1.0" encoding="utf-8"?>
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/mpOverlayRoot"
     android:layout_width="match_parent"
-    android:layout_height="wrap_content"
-    android:minHeight="320dp">
+    android:layout_height="match_parent"
+    android:background="#88000000"
+    android:clickable="true"
+    android:focusable="true">
 
     <LinearLayout
+        android:id="@+id/mpPanel"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:layout_gravity="center"
+        android:layout_marginHorizontal="10dp"
+        android:layout_marginVertical="6dp"
+        android:background="@drawable/bg_ingame_community_dialog"
+        android:clickable="true"
+        android:focusable="true"
+        android:orientation="vertical"
+        android:paddingHorizontal="8dp"
+        android:paddingTop="6dp"
+        android:paddingBottom="6dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="end"
+            android:orientation="horizontal">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/buttonClose"
+                style="@style/Widget.Material3.Button.TextButton"
+                android:layout_width="wrap_content"
+                android:layout_height="28dp"
+                android:minWidth="0dp"
+                android:paddingHorizontal="8dp"
+                android:text="@string/launch_close"
+                android:textSize="11sp" />
+        </LinearLayout>
+
+        <FrameLayout
+            android:id="@+id/mpContent"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_marginTop="4dp"
+            android:layout_weight="1">
+
+    <!-- Browse: same flow as launcher — join code + open public rooms -->
+    <androidx.core.widget.NestedScrollView
         android:id="@+id/panelBrowse"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:orientation="vertical">
+        android:fillViewport="true"
+        android:overScrollMode="ifContentScrolls"
+        android:scrollbars="vertical"
+        android:fadeScrollbars="false">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="2dp">
 
         <TextView
             android:id="@+id/textHint"
@@ -17,23 +69,23 @@
             android:layout_height="wrap_content"
             android:text="@string/ingame_mp_hint"
             android:textColor="@color/md_theme_light_outline"
-            android:textSize="12sp" />
+            android:textSize="9.6sp" />
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/buttonCreate"
             style="@style/Widget.Booxin.PrimaryButton"
             android:layout_width="match_parent"
-            android:layout_height="36dp"
-            android:layout_marginTop="8dp"
+            android:layout_height="40dp"
+            android:layout_marginTop="10dp"
             android:insetTop="0dp"
             android:insetBottom="0dp"
             android:text="@string/ingame_mp_create"
-            android:textSize="12sp" />
+            android:textSize="10.4sp" />
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
+            android:layout_marginTop="10dp"
             android:gravity="center_vertical"
             android:orientation="horizontal">
 
@@ -49,57 +101,87 @@
                     android:layout_height="wrap_content"
                     android:inputType="textCapCharacters"
                     android:maxLines="1"
-                    android:textSize="12sp" />
+                    android:textSize="10.4sp" />
             </com.google.android.material.textfield.TextInputLayout>
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/buttonJoinCode"
-                style="@style/Widget.Booxin.SecondaryButton"
+                style="@style/Widget.Booxin.PrimaryButton"
                 android:layout_width="wrap_content"
-                android:layout_height="36dp"
+                android:layout_height="40dp"
                 android:layout_marginStart="6dp"
                 android:insetTop="0dp"
                 android:insetBottom="0dp"
                 android:minWidth="0dp"
-                android:paddingHorizontal="12dp"
+                android:paddingHorizontal="14dp"
                 android:text="@string/ingame_mp_join"
-                android:textSize="12sp" />
+                android:textSize="10.4sp" />
         </LinearLayout>
 
         <TextView
             android:id="@+id/textJoinDepsHint"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
+            android:layout_marginTop="6dp"
             android:lineSpacingExtra="2dp"
             android:text="@string/ingame_mp_join_deps_hint"
             android:textColor="@color/md_theme_light_outline"
-            android:textSize="11sp" />
+            android:textSize="8.8sp" />
 
         <TextView
             android:id="@+id/textStatusBrowse"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="4dp"
-            android:ellipsize="end"
-            android:maxLines="2"
             android:textColor="@color/md_theme_light_outline"
-            android:textSize="11sp" />
+            android:textSize="9.6sp" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/buttonOpenPublicRooms"
+            style="@style/Widget.Booxin.SecondaryButton"
+            android:layout_width="match_parent"
+            android:layout_height="40dp"
+            android:layout_marginTop="10dp"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            android:text="@string/multiplayer_public_rooms"
+            android:textSize="11.2sp" />
+    </LinearLayout>
+    </androidx.core.widget.NestedScrollView>
+
+    <!-- Public rooms list (launcher-aligned) -->
+    <LinearLayout
+        android:id="@+id/panelPublicList"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:padding="4dp"
+        android:visibility="gone">
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
             android:gravity="center_vertical"
             android:orientation="horizontal">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/buttonBackPublicList"
+                style="@style/Widget.Material3.Button.TextButton"
+                android:layout_width="wrap_content"
+                android:layout_height="32dp"
+                android:minWidth="0dp"
+                android:paddingHorizontal="0dp"
+                android:text="@string/multiplayer_back"
+                android:textSize="9.6sp" />
 
             <TextView
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
+                android:layout_marginStart="4dp"
                 android:layout_weight="1"
                 android:text="@string/multiplayer_public_rooms"
                 android:textColor="@color/booxin_navy"
-                android:textSize="12sp"
+                android:textSize="11.2sp"
                 android:textStyle="bold" />
 
             <com.google.android.material.button.MaterialButton
@@ -109,36 +191,107 @@
                 android:layout_height="28dp"
                 android:minWidth="0dp"
                 android:text="@string/multiplayer_refresh"
-                android:textSize="11sp" />
+                android:textSize="8.8sp" />
         </LinearLayout>
 
-        <androidx.recyclerview.widget.RecyclerView
-            android:id="@+id/recyclerPublicRooms"
+        <com.google.android.material.textfield.TextInputLayout
             android:layout_width="match_parent"
-            android:layout_height="0dp"
-            android:layout_marginTop="2dp"
-            android:layout_weight="1"
-            android:minHeight="140dp"
-            tools:listitem="@layout/item_multiplayer_user" />
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:hint="@string/multiplayer_room_search_hint">
+
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/inputPublicRoomSearch"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:imeOptions="actionSearch"
+                android:inputType="text"
+                android:maxLines="1"
+                android:textSize="10.4sp" />
+        </com.google.android.material.textfield.TextInputLayout>
 
         <TextView
-            android:id="@+id/textRoomsEmpty"
+            android:id="@+id/textPublicRoomCount"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:gravity="center"
-            android:paddingVertical="12dp"
-            android:text="@string/multiplayer_rooms_empty"
+            android:layout_marginTop="4dp"
             android:textColor="@color/md_theme_light_outline"
-            android:textSize="12sp"
-            android:visibility="gone" />
+            android:textSize="8.8sp"
+            tools:text="3 个房间" />
 
-        <ProgressBar
-            android:id="@+id/progress"
+        <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_marginTop="4dp"
+            android:layout_weight="1">
+
+            <androidx.recyclerview.widget.RecyclerView
+                android:id="@+id/recyclerPublicRooms"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:clipToPadding="false"
+                android:fadeScrollbars="false"
+                android:paddingBottom="4dp"
+                android:scrollbars="vertical" />
+
+            <TextView
+                android:id="@+id/textRoomsEmpty"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:gravity="center"
+                android:padding="16dp"
+                android:text="@string/multiplayer_rooms_empty"
+                android:textColor="@color/md_theme_light_outline"
+                android:textSize="9.6sp"
+                android:visibility="gone" />
+        </FrameLayout>
+    </LinearLayout>
+
+    <!-- Create room -->
+    <LinearLayout
+        android:id="@+id/panelCreate"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:padding="4dp"
+        android:visibility="gone">
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/buttonBackCreate"
+            style="@style/Widget.Material3.Button.TextButton"
             android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_gravity="center_horizontal"
-            android:indeterminate="true"
-            android:visibility="gone" />
+            android:layout_height="32dp"
+            android:minWidth="0dp"
+            android:paddingHorizontal="0dp"
+            android:text="@string/multiplayer_back"
+            android:textSize="9.6sp" />
+
+        <androidx.core.widget.NestedScrollView
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:fillViewport="true"
+            android:overScrollMode="ifContentScrolls"
+            android:scrollbars="vertical"
+            android:fadeScrollbars="false">
+
+            <include
+                android:id="@+id/createForm"
+                layout="@layout/dialog_ingame_room_create"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content" />
+        </androidx.core.widget.NestedScrollView>
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/buttonConfirmCreate"
+            style="@style/Widget.Booxin.PrimaryButton"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="8dp"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            android:text="@string/ingame_mp_create_confirm"
+            android:textSize="11.2sp" />
     </LinearLayout>
 
     <LinearLayout
@@ -146,86 +299,134 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:orientation="vertical"
+        android:padding="4dp"
         android:visibility="gone">
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/buttonLeave"
-            style="@style/Widget.Booxin.SecondaryButton"
-            android:layout_width="match_parent"
-            android:layout_height="40dp"
-            android:insetTop="0dp"
-            android:insetBottom="0dp"
-            android:text="@string/ingame_mp_leave"
-            android:textSize="13sp" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/buttonDownloadHostDeps"
-            style="@style/Widget.Booxin.PrimaryButton"
-            android:layout_width="match_parent"
-            android:layout_height="40dp"
-            android:layout_marginTop="8dp"
-            android:insetTop="0dp"
-            android:insetBottom="0dp"
-            android:text="@string/ingame_mp_download_host_deps"
-            android:textSize="13sp"
-            android:visibility="gone" />
-
-        <TextView
-            android:id="@+id/textHostDepsInfo"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:textColor="@color/md_theme_light_outline"
-            android:textSize="12sp"
-            android:visibility="gone"
-            tools:text="1.20.1 · fabric · 12 个模组" />
-
-        <TextView
-            android:id="@+id/textStatusInRoom"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:textIsSelectable="true"
-            android:textColor="@color/booxin_navy"
-            android:textSize="13sp"
-            tools:text="房间码：..." />
-
-        <TextView
-            android:id="@+id/textMembers"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:textIsSelectable="true"
-            android:textColor="@color/md_theme_light_outline"
-            android:textSize="12sp"
-            tools:text="成员" />
 
         <LinearLayout
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:baselineAligned="false"
             android:orientation="horizontal">
 
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/buttonCopyCode"
-                style="@style/Widget.Material3.Button.TextButton"
+            <LinearLayout
                 android:layout_width="0dp"
-                android:layout_height="32dp"
+                android:layout_height="match_parent"
+                android:layout_marginEnd="6dp"
                 android:layout_weight="1"
-                android:minWidth="0dp"
-                android:text="@string/ingame_mp_copy_code"
-                android:textSize="11sp" />
+                android:orientation="vertical">
 
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/buttonRefreshMembers"
-                style="@style/Widget.Material3.Button.TextButton"
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/buttonLeave"
+                    style="@style/Widget.Booxin.SecondaryButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="40dp"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:text="@string/ingame_mp_leave"
+                    android:textSize="10.4sp" />
+
+                <TextView
+                    android:id="@+id/textStatusInRoom"
+                    android:layout_width="match_parent"
+                    android:layout_height="0dp"
+                    android:layout_marginTop="8dp"
+                    android:layout_weight="1"
+                    android:scrollbars="vertical"
+                    android:fadeScrollbars="false"
+                    android:textIsSelectable="true"
+                    android:textColor="@color/booxin_navy"
+                    android:textSize="9.6sp"
+                    tools:text="身份：房主" />
+            </LinearLayout>
+
+            <LinearLayout
                 android:layout_width="0dp"
-                android:layout_height="32dp"
-                android:layout_weight="1"
-                android:minWidth="0dp"
-                android:text="@string/ingame_mp_refresh"
-                android:textSize="11sp" />
+                android:layout_height="match_parent"
+                android:layout_weight="1.15"
+                android:orientation="vertical">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:id="@+id/textMembersTitle"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="@string/ingame_mp_members_title"
+                        android:textColor="@color/booxin_navy"
+                        android:textSize="9.6sp"
+                        android:textStyle="bold" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/buttonInviteFriend"
+                        style="@style/Widget.Material3.Button.TextButton"
+                        android:layout_width="36dp"
+                        android:layout_height="32dp"
+                        android:insetTop="0dp"
+                        android:insetBottom="0dp"
+                        android:minWidth="0dp"
+                        android:padding="0dp"
+                        android:text="+"
+                        android:textSize="14.4sp"
+                        android:textStyle="bold" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/buttonRefreshMembers"
+                        style="@style/Widget.Material3.Button.TextButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="28dp"
+                        android:minWidth="0dp"
+                        android:text="@string/ingame_mp_refresh"
+                        android:textSize="8.8sp" />
+                </LinearLayout>
+
+                <androidx.recyclerview.widget.RecyclerView
+                    android:id="@+id/recyclerMembers"
+                    android:layout_width="match_parent"
+                    android:layout_height="0dp"
+                    android:layout_weight="1"
+                    android:clipToPadding="false"
+                    android:fadeScrollbars="false"
+                    android:scrollbars="vertical"
+                    tools:listitem="@layout/item_multiplayer_user" />
+
+                <TextView
+                    android:id="@+id/textMembersEmpty"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center"
+                    android:paddingVertical="8dp"
+                    android:text="@string/ingame_mp_members_empty"
+                    android:textColor="@color/md_theme_light_outline"
+                    android:textSize="8.8sp"
+                    android:visibility="gone" />
+            </LinearLayout>
         </LinearLayout>
+
+        <TextView
+            android:id="@+id/textRoomCode"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:gravity="center"
+            android:textIsSelectable="true"
+            android:textColor="@color/md_theme_light_outline"
+            android:textSize="8.8sp"
+            tools:text="房间码：CSFGG-…" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/buttonCopyCode"
+            style="@style/Widget.Material3.Button.TextButton"
+            android:layout_width="match_parent"
+            android:layout_height="32dp"
+            android:minWidth="0dp"
+            android:text="@string/ingame_mp_copy_code"
+            android:textSize="8.8sp" />
     </LinearLayout>
 
     <LinearLayout
@@ -233,6 +434,7 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:orientation="vertical"
+        android:padding="4dp"
         android:visibility="gone">
 
         <com.google.android.material.button.MaterialButton
@@ -243,13 +445,15 @@
             android:minWidth="0dp"
             android:paddingHorizontal="0dp"
             android:text="@string/multiplayer_back"
-            android:textSize="12sp" />
+            android:textSize="9.6sp" />
 
         <androidx.core.widget.NestedScrollView
             android:layout_width="match_parent"
             android:layout_height="0dp"
             android:layout_weight="1"
-            android:fillViewport="true">
+            android:fadeScrollbars="false"
+            android:fillViewport="true"
+            android:scrollbars="vertical">
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -263,7 +467,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:textColor="@color/booxin_navy"
-                    android:textSize="17sp"
+                    android:textSize="13.6sp"
                     android:textStyle="bold"
                     tools:text="BooxinAI" />
 
@@ -273,7 +477,7 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="8dp"
                     android:textColor="@color/booxin_navy"
-                    android:textSize="14sp"
+                    android:textSize="11.2sp"
                     tools:text="欢迎加入" />
 
                 <TextView
@@ -282,7 +486,7 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="10dp"
                     android:textColor="@color/md_theme_light_outline"
-                    android:textSize="12sp"
+                    android:textSize="9.6sp"
                     tools:text="1.20.1 · 1/8" />
 
                 <TextView
@@ -292,7 +496,7 @@
                     android:layout_marginTop="10dp"
                     android:textColor="@color/md_theme_light_outline"
                     android:textIsSelectable="true"
-                    android:textSize="11sp"
+                    android:textSize="8.8sp"
                     tools:text="房间码" />
 
                 <TextView
@@ -303,7 +507,7 @@
                     android:ellipsize="end"
                     android:maxLines="2"
                     android:textColor="@color/md_theme_light_outline"
-                    android:textSize="11sp" />
+                    android:textSize="8.8sp" />
             </LinearLayout>
         </androidx.core.widget.NestedScrollView>
 
@@ -311,10 +515,20 @@
             android:id="@+id/buttonJoinDetail"
             style="@style/Widget.Booxin.PrimaryButton"
             android:layout_width="match_parent"
-            android:layout_height="40dp"
+            android:layout_height="44dp"
             android:insetTop="0dp"
             android:insetBottom="0dp"
             android:text="@string/ingame_mp_join"
-            android:textSize="13sp" />
+            android:textSize="10.4sp" />
+    </LinearLayout>
+
+    <ProgressBar
+        android:id="@+id/progress"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:indeterminate="true"
+        android:visibility="gone" />
+        </FrameLayout>
     </LinearLayout>
 </FrameLayout>

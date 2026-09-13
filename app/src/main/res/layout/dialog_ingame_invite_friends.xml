@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:minHeight="220dp"
+    android:orientation="vertical"
+    android:padding="4dp">
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/ingame_mp_invite_online_only"
+        android:textColor="@color/md_theme_light_outline"
+        android:textSize="9.6sp" />
+
+    <ProgressBar
+        android:id="@+id/progressInvite"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center_horizontal"
+        android:layout_marginTop="12dp"
+        android:indeterminate="true"
+        android:visibility="gone" />
+
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/recyclerInviteFriends"
+        android:layout_width="match_parent"
+        android:layout_height="280dp"
+        android:layout_marginTop="8dp"
+        tools:listitem="@layout/item_multiplayer_user" />
+
+    <TextView
+        android:id="@+id/textInviteEmpty"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center"
+        android:paddingVertical="24dp"
+        android:text="@string/ingame_mp_invite_no_online"
+        android:textColor="@color/md_theme_light_outline"
+        android:textSize="10.4sp"
+        android:visibility="gone" />
+</LinearLayout>

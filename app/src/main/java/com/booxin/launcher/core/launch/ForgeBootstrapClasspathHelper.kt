@@ -63,6 +63,10 @@ object ForgeBootstrapClasspathHelper {
         tryAdd(paths, seenIdentities, clientJar)
 
         for (artifactPath in parseShimArtifactPaths(shimLines)) {
+            if (isEarlyDisplayPath(artifactPath)) {
+                Log.i(TAG, "skip earlydisplay from shim: $artifactPath")
+                continue
+            }
             val local = File(librariesDir, artifactPath.replace('/', File.separatorChar))
             if (!local.isFile) {
                 Log.w(TAG, "shim library missing: $artifactPath")
@@ -75,6 +79,10 @@ object ForgeBootstrapClasspathHelper {
             val path = library.path
             val lowerPath = path.lowercase(Locale.ROOT)
             if (lowerPath.contains("-client.jar")) continue
+            if (isEarlyDisplayPath(path) || isEarlyDisplayName(library.name)) {
+                Log.i(TAG, "skip earlydisplay library: ${library.name}")
+                continue
+            }
             val group = library.name.substringBefore(':')
             // Shim list already carries the Forge/modlauncher stack.
             if (group == "net.minecraftforge" || group == "cpw.mods") continue
@@ -93,10 +101,29 @@ object ForgeBootstrapClasspathHelper {
     }
 
     private fun tryAdd(paths: LinkedHashSet<File>, seen: HashSet<String>, file: File) {
+        if (isEarlyDisplayPath(file.path) || isEarlyDisplayName(file.name)) {
+            Log.i(TAG, "skip earlydisplay jar: ${file.name}")
+            return
+        }
         val canonical = runCatching { file.canonicalFile }.getOrDefault(file)
         val identity = identityKey(canonical)
         if (!seen.add(identity)) return
         paths.add(canonical)
+    }
+
+    /** Android GLFW stubs crash if FML early loading screen takes over the window. */
+    private fun isEarlyDisplayPath(path: String): Boolean {
+        val lower = path.lowercase(Locale.ROOT).replace('\\', '/')
+        return "fmlearlydisplay" in lower ||
+            lower.contains("/earlydisplay/") ||
+            lower.contains("earlydisplay-")
+    }
+
+    private fun isEarlyDisplayName(name: String): Boolean {
+        val lower = name.lowercase(Locale.ROOT)
+        if ("fmlearlydisplay" in lower) return true
+        val parts = lower.substringBefore('@').split(':')
+        return parts.getOrNull(1) == "earlydisplay"
     }
 
     private fun identityKey(file: File): String =

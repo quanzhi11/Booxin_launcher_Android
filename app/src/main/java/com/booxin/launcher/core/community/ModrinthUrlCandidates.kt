@@ -1,5 +1,9 @@
 package com.booxin.launcher.core.community
 
+import com.booxin.launcher.core.download.DownloadProviders
+import com.booxin.launcher.core.download.DownloadSource
+import com.booxin.launcher.core.download.MirrorPreference
+
 /**
  * Modrinth API / CDN URL candidates.
  *
@@ -22,9 +26,11 @@ object ModrinthUrlCandidates {
     }
 
     /**
-     * Expand a Modrinth file URL into official CDN → alt CDN → MCIM fallback.
+     * Expand a Modrinth file URL into CDN / mirror candidates.
+     * On CN (mirror-first prefs) try MCIM before cdn.modrinth.com so we do not
+     * burn cascade timeouts on an unreachable official host for every jar.
      */
-    fun fileDownloads(rawUrl: String): List<String> {
+    fun fileDownloads(rawUrl: String, mirrorFirst: Boolean = preferMirrorFirst()): List<String> {
         val input = rawUrl.trim()
         if (input.isEmpty()) return emptyList()
         val path = extractCdnPath(input)
@@ -33,7 +39,18 @@ object ModrinthUrlCandidates {
         val official = "$CDN_OFFICIAL/$path"
         val alt = "$CDN_ALT/$path"
         val mirror = "$MCIM_HOST/$path"
-        return listOf(official, alt, mirror, input).distinct()
+        return if (mirrorFirst) {
+            listOf(mirror, official, alt, input).distinct()
+        } else {
+            listOf(official, alt, mirror, input).distinct()
+        }
+    }
+
+    fun preferMirrorFirst(): Boolean = when (DownloadProviders.source) {
+        DownloadSource.MIRROR -> true
+        DownloadSource.OFFICIAL -> false
+        DownloadSource.BALANCED ->
+            DownloadProviders.libraryPreference == MirrorPreference.MIRROR_FIRST
     }
 
     private fun extractCdnPath(url: String): String? {

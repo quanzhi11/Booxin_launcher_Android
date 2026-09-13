@@ -99,6 +99,7 @@ class GameLaunchService : Service() {
         val userType = intent?.getStringExtra(EXTRA_USER_TYPE)
         val serverAddress = intent?.getStringExtra(EXTRA_SERVER_ADDRESS)?.takeIf { it.isNotBlank() }
         val offlineSkinPath = intent?.getStringExtra(EXTRA_OFFLINE_SKIN_PATH)?.takeIf { it.isNotBlank() }
+        val authServerUrl = intent?.getStringExtra(EXTRA_AUTH_SERVER_URL)?.takeIf { it.isNotBlank() }
         val windowWidth = intent?.getIntExtra(EXTRA_WINDOW_WIDTH, 0) ?: 0
         val windowHeight = intent?.getIntExtra(EXTRA_WINDOW_HEIGHT, 0) ?: 0
 
@@ -121,6 +122,10 @@ class GameLaunchService : Service() {
         acquireWakeLock()
         hardKillScheduled = false
         userRequestedStop = false
+        OemLaunchProfile.applyGameProcessBoost(this)
+        if (OemLaunchProfile.isOplusFamily()) {
+            appendLog("ColorOS 性能保活：提高调度优先级 / GameState / 前台通知")
+        }
 
         launchJob = scope.launch {
             var outcome: LaunchOutcome = LaunchOutcome.Failed("未知错误")
@@ -138,7 +143,8 @@ class GameLaunchService : Service() {
                             accessToken = accessToken,
                             userType = userType,
                             serverAddress = serverAddress,
-                            offlineSkinPath = offlineSkinPath
+                            offlineSkinPath = offlineSkinPath,
+                            authServerUrl = authServerUrl
                         )
                         if (LaunchSession.current() == LaunchPhase.Stopping) break
 
@@ -287,7 +293,8 @@ class GameLaunchService : Service() {
         accessToken: String? = null,
         userType: String? = null,
         serverAddress: String? = null,
-        offlineSkinPath: String? = null
+        offlineSkinPath: String? = null,
+        authServerUrl: String? = null
     ): LaunchOutcome {
         appendLog("准备 Java 与游戏文件…")
         GameLaunchLogBus.muteUi.set(false)
@@ -482,6 +489,11 @@ class GameLaunchService : Service() {
                 launchTune,
                 relMipmapCap = relGuard?.mipmapLevels
             )
+            if (versionId.contains("optifine", ignoreCase = true)) {
+                if (GameOptionsPatch.disableOptiFineShadersOnce(gameDir)) {
+                    appendLog("OptiFine：已关闭从其他启动器带入的光影（避免卡死），可在游戏内重新开启")
+                }
+            }
             val rd = launchTune?.renderDistance
                 ?: com.booxin.launcher.core.LauncherPrefs.renderDistance()
             val vsync = launchTune?.enableVsync
@@ -531,6 +543,7 @@ class GameLaunchService : Service() {
             )
         }
         if (!serverAddress.isNullOrBlank()) {
+            // Do not pin as "Booxin 联机隧道" — join via LAN / --server / official list only.
             appendLog("自动加入服务器: $serverAddress")
         }
         val offlineSkin = runCatching {
@@ -567,6 +580,23 @@ class GameLaunchService : Service() {
         ) {
             appendLog("离线皮肤未能启用（将使用默认皮肤）")
         }
+        val thirdPartyAgent = if (offlineSkin == null && !authServerUrl.isNullOrBlank()) {
+            runCatching {
+                if (!com.booxin.launcher.core.skin.AuthlibInjectorInstaller.isReady()) {
+                    appendLog("正在下载 authlib-injector（第三方登录）…")
+                }
+                com.booxin.launcher.core.auth.ThirdPartyAuthService.prepareLaunchAgent(authServerUrl)
+            }.onFailure {
+                appendLog("第三方 authlib-injector 准备失败: ${it.message}")
+            }.getOrNull()
+        } else {
+            null
+        }
+        if (thirdPartyAgent != null) {
+            appendLog("第三方登录已启用（authlib-injector @ ${thirdPartyAgent.apiRoot}）")
+        } else if (offlineSkin == null && !authServerUrl.isNullOrBlank()) {
+            appendLog("第三方 authlib-injector 未能启用")
+        }
         val command = runCatching {
             LaunchCommandBuilder(this@GameLaunchService).build(
                 versionId = versionId,
@@ -579,10 +609,11 @@ class GameLaunchService : Service() {
                 accessToken = accessToken,
                 userType = userType,
                 serverAddress = serverAddress,
-                javaAgentArg = offlineSkin?.javaAgentArg,
+                javaAgentArg = offlineSkin?.javaAgentArg ?: thirdPartyAgent?.javaAgentArg,
                 offlineSkinAccessToken = offlineSkin?.accessToken,
                 offlineSkinUserType = offlineSkin?.userType,
-                offlineSkinExtraJvmArgs = offlineSkin?.extraJvmArgs.orEmpty(),
+                offlineSkinExtraJvmArgs = offlineSkin?.extraJvmArgs
+                    ?: thirdPartyAgent?.extraJvmArgs.orEmpty(),
                 forceVsync = launchTune?.enableVsync
             )
         }.getOrElse {
@@ -652,6 +683,11 @@ class GameLaunchService : Service() {
             return LaunchOutcome.Failed("setupBridgeWindow 失败: ANativeWindow 为空（Surface 未就绪）")
         }
         if (com.booxin.launcher.core.java.MinecraftJavaRequirement.usesSdlWindowing(versionId)) {
+            // Cache ART ClassLoader early so HotSpot can finish SDL JNI even if Surface
+            // attach is delayed.
+            runCatching {
+                NativeJvmLauncher.cacheArtClassLoader(BooxinSdlBootstrap::class.java.classLoader)
+            }
             runCatching {
                 val act = LaunchActivity.foregroundOrNull()
                 val surf = GameSurfaceBridge.currentSurface()
@@ -697,6 +733,9 @@ class GameLaunchService : Service() {
         appendLog("提示：创建 JVM / 加载 Forge 主类可能要一两分钟，进度会持续刷新")
         updateNotification("Minecraft 正在加载…")
 
+        // LAN MOTD must run in :game — main-process multicast often never reaches MC here.
+        com.booxin.launcher.core.multiplayer.GameProcessLanMotd.startIfRoomActive(applicationContext)
+
         if (!LaunchSession.enterRunning()) {
             return LaunchOutcome.Failed("已停止")
         }
@@ -715,6 +754,7 @@ class GameLaunchService : Service() {
             }
         } finally {
             logJob.cancel()
+            com.booxin.launcher.core.multiplayer.GameProcessLanMotd.stop()
         }
     }
 
@@ -772,7 +812,12 @@ class GameLaunchService : Service() {
             stop,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        val priority = if (OemLaunchProfile.isOplusFamily()) {
+            NotificationCompat.PRIORITY_DEFAULT
+        } else {
+            NotificationCompat.PRIORITY_LOW
+        }
+        return NotificationCompat.Builder(this, foregroundChannelId())
             .setContentTitle(getString(R.string.launch_fg_title))
             .setContentText(content)
             .setSmallIcon(R.mipmap.ic_launcher)
@@ -781,20 +826,30 @@ class GameLaunchService : Service() {
             .setOnlyAlertOnce(true)
             .addAction(0, getString(R.string.launch_stop), stopPi)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setPriority(priority)
             .build()
     }
 
     private fun ensureChannel() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val nm = getSystemService(NotificationManager::class.java) ?: return
-        val channel = NotificationChannel(
-            CHANNEL_ID,
-            getString(R.string.launch_fg_channel),
+        // ColorOS often demotes LOW-importance FGS; dedicated DEFAULT channel for oplus.
+        val id = foregroundChannelId()
+        val importance = if (OemLaunchProfile.isOplusFamily()) {
+            NotificationManager.IMPORTANCE_DEFAULT
+        } else {
             NotificationManager.IMPORTANCE_LOW
+        }
+        val channel = NotificationChannel(
+            id,
+            getString(R.string.launch_fg_channel),
+            importance
         )
         nm.createNotificationChannel(channel)
     }
+
+    private fun foregroundChannelId(): String =
+        if (OemLaunchProfile.isOplusFamily()) "booxin_game_oplus" else CHANNEL_ID
 
     private suspend fun rebindGameSurface(retries: Int) {
         val backend = GameRuntimeBackends.current()
@@ -870,6 +925,7 @@ class GameLaunchService : Service() {
     }
 
     override fun onDestroy() {
+        com.booxin.launcher.core.multiplayer.GameProcessLanMotd.stop()
         com.booxin.launcher.core.skin.OfflineSkinLaunch.shutdown()
         GameSurfaceBridge.onSurfaceLostWhileRunning = null
         GameSurfaceBridge.onSurfaceRestoredWhileRunning = null
@@ -892,6 +948,7 @@ class GameLaunchService : Service() {
         const val EXTRA_USER_TYPE = "user_type"
         const val EXTRA_SERVER_ADDRESS = "server_address"
         const val EXTRA_OFFLINE_SKIN_PATH = "offline_skin_path"
+        const val EXTRA_AUTH_SERVER_URL = "auth_server_url"
         const val ACTION_STOP = "com.booxin.launcher.STOP_GAME"
         private const val CHANNEL_ID = "booxin_game"
         private const val NOTIFICATION_ID = 2107
@@ -906,7 +963,8 @@ class GameLaunchService : Service() {
             accessToken: String? = null,
             userType: String? = null,
             serverAddress: String? = null,
-            offlineSkinPath: String? = null
+            offlineSkinPath: String? = null,
+            authServerUrl: String? = null
         ) {
             val intent = Intent(context, GameLaunchService::class.java).apply {
                 putExtra(EXTRA_VERSION_ID, versionId)
@@ -918,6 +976,7 @@ class GameLaunchService : Service() {
                 userType?.let { putExtra(EXTRA_USER_TYPE, it) }
                 serverAddress?.takeIf { it.isNotBlank() }?.let { putExtra(EXTRA_SERVER_ADDRESS, it) }
                 offlineSkinPath?.takeIf { it.isNotBlank() }?.let { putExtra(EXTRA_OFFLINE_SKIN_PATH, it) }
+                authServerUrl?.takeIf { it.isNotBlank() }?.let { putExtra(EXTRA_AUTH_SERVER_URL, it) }
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)

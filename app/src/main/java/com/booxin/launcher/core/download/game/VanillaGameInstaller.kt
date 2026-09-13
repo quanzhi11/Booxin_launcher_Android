@@ -170,7 +170,8 @@ class VanillaGameInstaller(
                             rawUrl = lib.url,
                             destination = File(LauncherPaths.librariesDir, lib.path),
                             sha1 = lib.sha1,
-                            label = lib.name
+                            label = lib.name,
+                            expectedSize = lib.size
                         )
                     },
                     versionId = versionId,
@@ -237,14 +238,23 @@ class VanillaGameInstaller(
         val completed = AtomicInteger(0)
         val total = items.size
         val lastEmitAt = AtomicLong(0L)
-        // Assets: existence+size is enough; full SHA on every file throttles throughput hard.
-        val skipShaIfPresent = phase == GameInstallPhase.ASSETS
+        // Assets / libraries: existence (+ size when known) is enough before download;
+        // full SHA on every file throttles throughput hard on phone storage.
         items.map { item ->
             async(Dispatchers.IO) {
                 semaphore.withPermit {
                     val dest = item.destination
-                    val alreadyThere = dest.isFile && dest.length() > 0L &&
-                        (skipShaIfPresent || Digests.matchesSha1(dest, item.sha1))
+                    val alreadyThere = when (phase) {
+                        GameInstallPhase.ASSETS ->
+                            dest.isFile && dest.length() > 0L
+                        GameInstallPhase.LIBRARIES ->
+                            dest.isFile && dest.length() > 0L && (
+                                item.expectedSize > 0L && dest.length() == item.expectedSize ||
+                                    item.expectedSize <= 0L && Digests.matchesSha1(dest, item.sha1)
+                                )
+                        else ->
+                            dest.isFile && dest.length() > 0L && Digests.matchesSha1(dest, item.sha1)
+                    }
                     if (!alreadyThere) {
                         downloadVerified(
                             rawUrl = item.rawUrl,
@@ -402,13 +412,14 @@ class VanillaGameInstaller(
         val destination: File,
         val sha1: String?,
         val label: String,
-        val urlCandidates: List<String>? = null
+        val urlCandidates: List<String>? = null,
+        val expectedSize: Long = -1L
     )
 
     companion object {
-        private const val LIBRARY_CONCURRENCY = 12
+        private const val LIBRARY_CONCURRENCY = 32
         /** Many small asset objects — higher concurrency materially cuts wall time. */
-        private const val ASSET_CONCURRENCY = 32
+        private const val ASSET_CONCURRENCY = 64
         /** Avoid flooding UI/StateFlow on every tiny asset completion. */
         private const val ASSET_PROGRESS_EMIT_MS = 120L
     }

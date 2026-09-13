@@ -140,13 +140,46 @@ data class PublicRoom(
     val modpackLoader: String? = null,
     val modsJson: String? = null,
     val mods: List<RoomModDependency> = emptyList(),
-    val status: String? = null
+    val status: String? = null,
+    /** Direct dedicated address (cloud servers). PC: DedicatedAddress. */
+    val dedicatedAddress: String? = null,
+    /** Optional legacy/server address field from room API. */
+    val serverAddress: String? = null
 ) {
     fun resolveMods(): List<RoomModDependency> =
         when {
             mods.isNotEmpty() -> mods
             else -> RoomHostDependencyService.deserializeMods(modsJson)
         }
+
+    /** Align with PC PublicRoomSearchDialog.IsCloudPublicRoom. */
+    fun isCloudPublicRoom(): Boolean {
+        if (!dedicatedAddress.isNullOrBlank()) return true
+        if (roomCode.startsWith("BXC-", ignoreCase = true)) return true
+        return remark?.contains("Booxin 云服", ignoreCase = true) == true
+    }
+
+    /**
+     * Resolve playable host:port for cloud dedicated rooms.
+     * Align with PC ResolveCloudDedicatedAddress.
+     */
+    fun resolveCloudDedicatedAddress(): String? {
+        dedicatedAddress?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
+        serverAddress?.trim()?.takeIf { it.contains(':') }?.let { return it }
+        val remarkText = remark?.trim().orEmpty()
+        if (remarkText.isNotEmpty()) {
+            for (part in remarkText.split('·')) {
+                val candidate = part.trim()
+                if (candidate.contains(':') && candidate.any { it.isDigit() }) {
+                    return candidate
+                }
+            }
+        }
+        if (port in 1..65535) {
+            return "175.178.174.103:$port"
+        }
+        return null
+    }
 }
 
 data class TerracottaLobbyInfo(

@@ -43,14 +43,17 @@ object GameLaunchLogBus {
     }
 
     fun emit(context: Context, line: String) {
-        appendToFile(line)
-        if (muteUi.get()) return
-        context.sendBroadcast(
-            Intent(ACTION_LOG).apply {
-                setPackage(context.packageName)
-                putExtra(EXTRA_LINE, line)
-            }
-        )
+        // After overlay hide: skip dual disk append — continuous I/O hitchs touch/FPS
+        // on ColorOS. Crash paths still use emitFailed / finished.
+        if (!muteUi.get()) {
+            appendToFile(line)
+            context.sendBroadcast(
+                Intent(ACTION_LOG).apply {
+                    setPackage(context.packageName)
+                    putExtra(EXTRA_LINE, line)
+                }
+            )
+        }
     }
 
     fun finished(context: Context) {

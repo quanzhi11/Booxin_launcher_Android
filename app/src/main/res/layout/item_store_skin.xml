@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginBottom="8dp"
+    android:background="@drawable/bg_surface_card"
+    android:gravity="center_vertical"
+    android:orientation="horizontal"
+    android:padding="12dp">
+
+    <ImageView
+        android:id="@+id/imageStoreSkin"
+        android:layout_width="48dp"
+        android:layout_height="96dp"
+        android:contentDescription="@string/skin_store_title"
+        android:scaleType="fitCenter"
+        tools:src="@android:drawable/ic_menu_gallery" />
+
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="10dp"
+        android:layout_weight="1"
+        android:orientation="vertical">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/textStoreSkinName"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:ellipsize="end"
+                android:maxLines="1"
+                android:textColor="@color/booxin_navy"
+                android:textSize="15sp"
+                android:textStyle="bold"
+                tools:text="皮肤名" />
+
+            <TextView
+                android:id="@+id/textStoreSkinReprintBadge"
+                android:layout_width="28dp"
+                android:layout_height="28dp"
+                android:layout_marginStart="6dp"
+                android:background="@drawable/bg_skin_reprint_circle"
+                android:gravity="center"
+                android:text="@string/skin_store_origin_reprint"
+                android:textColor="#FFFFC107"
+                android:textSize="9sp"
+                android:textStyle="bold"
+                android:visibility="gone"
+                tools:visibility="visible" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/textStoreSkinOrigin"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:textColor="@color/booxin_navy"
+            android:textSize="11sp"
+            tools:text="原创 · 允许转载" />
+
+        <TextView
+            android:id="@+id/textStoreSkinMeta"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:textColor="@color/md_theme_light_outline"
+            android:textSize="12sp"
+            tools:text="作者 · classic" />
+
+        <TextView
+            android:id="@+id/textStoreSkinRating"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:textColor="@color/md_theme_light_outline"
+            android:textSize="12sp"
+            tools:text="★ 4.5（12）· 3 评" />
+    </LinearLayout>
+</LinearLayout>

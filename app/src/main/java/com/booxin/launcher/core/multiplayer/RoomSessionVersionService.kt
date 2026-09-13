@@ -82,11 +82,14 @@ object RoomSessionVersionService {
         var pure = RoomHostDependencyService.extractPureVersion(gameVersion)
         if (pure.isBlank()) pure = "unknown"
         val loaderPart = RoomHostDependencyService.normalizeLoader(loader) ?: "vanilla"
-        val shortFp = fingerprint.take(8).ifBlank { "00000000" }
+        // Match PC: take first 8 chars when long enough; otherwise keep as-is.
+        val shortFp = if (fingerprint.length >= 8) fingerprint.take(8) else fingerprint
         val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
         var raw = "联机-$pure-$loaderPart-$shortFp-$stamp"
         raw = RoomHostDependencyService.sanitizeFileName(raw)
-        return if (raw.length <= 96) raw else raw.take(96)
+        if (raw.length > 96) raw = raw.take(96)
+        // PC RunAgentVersionDownloadAsync: if occupied, append -2, -3, …
+        return com.booxin.launcher.core.version.VersionInstanceNameGenerator.ensureUnique(raw)
     }
 
     fun cloneInstanceKeepSource(

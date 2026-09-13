@@ -203,17 +203,26 @@ class EasyTierSession private constructor(
         ensureAlive()
         val localPort = allocatePort()
         val ip = targetIp.substringBefore('/').trim()
-        val cmds = listOf(
+        // 0.0.0.0 so waitForLocalTcp(127.0.0.1) and Wi‑Fi-sourced LAN MOTD both work.
+        // TCP must succeed; do not swallow failures (silent miss →「本地端口未就绪」).
+        runCli(
             listOf(
                 "--rpc-portal", "127.0.0.1:$rpcPort",
-                "port-forward", "add", "tcp", "127.0.0.1:$localPort", "$ip:$targetPort"
+                "port-forward", "add", "tcp", "0.0.0.0:$localPort", "$ip:$targetPort"
             ),
-            listOf(
-                "--rpc-portal", "127.0.0.1:$rpcPort",
-                "port-forward", "add", "udp", "127.0.0.1:$localPort", "$ip:$targetPort"
-            )
+            retries = 4
         )
-        cmds.forEach { runCli(it) }
+        runCatching {
+            runCli(
+                listOf(
+                    "--rpc-portal", "127.0.0.1:$rpcPort",
+                    "port-forward", "add", "udp", "0.0.0.0:$localPort", "$ip:$targetPort"
+                ),
+                retries = 2
+            )
+        }.onFailure { err ->
+            DiagEventLog.w(TAG, "udp port-forward optional fail: ${err.message}")
+        }
         DiagEventLog.i(TAG, "port-forward local=$localPort -> $ip:$targetPort")
         localPort
     }

@@ -10,6 +10,7 @@ import com.booxin.launcher.core.download.modloader.ForgeGameInstaller
 import com.booxin.launcher.core.download.modloader.OptiFineGameInstaller
 import com.booxin.launcher.core.download.modloader.QuiltGameInstaller
 import com.booxin.launcher.core.java.InstalledJavaRuntime
+import com.booxin.launcher.core.version.VersionUiMetaStore
 import com.booxin.launcher.data.model.AccountType
 import com.booxin.launcher.data.model.GameVersion
 import com.booxin.launcher.data.model.LauncherAccount
@@ -67,6 +68,7 @@ class LauncherRepository(
     }
 
     fun refreshInstalledVersions() {
+        val meta = VersionUiMetaStore.load()
         val dirs = LauncherPaths.versionsDir.listFiles()
             ?.filter { it.isDirectory }
             ?.sortedByDescending { it.lastModified() }
@@ -85,7 +87,9 @@ class LauncherRepository(
                 type = remote?.type ?: readLocalType(dir),
                 installed = true,
                 releaseTime = remote?.releaseTime,
-                url = remote?.url
+                url = remote?.url,
+                customDisplayName = meta.aliases[id],
+                isDefault = meta.defaultVersionId == id
             )
         }
         // Hide vanilla (or other) parents that only exist as inheritsFrom for a loader version.
@@ -94,12 +98,24 @@ class LauncherRepository(
             .mapNotNull { VersionJsonMerger.resolveInheritsFrom(it.id) }
             .toSet()
         val explicit = explicitVersionIds()
-        _installedVersions.value = allInstalled.filter { version ->
+        val visible = allInstalled.filter { version ->
             version.id !in inheritedParents || version.id in explicit
         }
+        val orderedIds = VersionUiMetaStore.sortInstalled(visible.map { it.id }, meta)
+        val byId = visible.associateBy { it.id }
+        _installedVersions.value = orderedIds.mapIndexedNotNull { index, id ->
+            byId[id]?.copy(sortIndex = index, isDefault = meta.defaultVersionId == id)
+        }
         val selected = _session.value.selectedVersionId
+            ?: meta.selectedVersionId
+            ?: meta.defaultVersionId
         if (selected == null || _installedVersions.value.none { it.id == selected }) {
-            _installedVersions.value.firstOrNull()?.let { selectVersion(it.id) }
+            val fallback = meta.defaultVersionId
+                ?.takeIf { id -> _installedVersions.value.any { it.id == id } }
+                ?: _installedVersions.value.firstOrNull()?.id
+            fallback?.let { selectVersion(it) }
+        } else if (_session.value.selectedVersionId != selected) {
+            selectVersion(selected)
         }
     }
 
@@ -299,6 +315,26 @@ class LauncherRepository(
 
     fun selectVersion(versionId: String) {
         _session.update { it.copy(selectedVersionId = versionId) }
+        VersionUiMetaStore.setSelected(versionId)
+    }
+
+    fun setVersionDisplayName(versionId: String, displayName: String?) {
+        VersionUiMetaStore.setAlias(versionId, displayName)
+        refreshInstalledVersions()
+    }
+
+    fun setDefaultVersion(versionId: String?) {
+        VersionUiMetaStore.setDefault(versionId)
+        if (!versionId.isNullOrBlank()) {
+            selectVersion(versionId)
+        } else {
+            refreshInstalledVersions()
+        }
+    }
+
+    fun reorderInstalledVersions(orderedIds: List<String>) {
+        VersionUiMetaStore.setOrder(orderedIds)
+        refreshInstalledVersions()
     }
 
     fun deleteInstalledVersion(versionId: String): Result<Unit> = runCatching {
@@ -309,6 +345,7 @@ class LauncherRepository(
         versionDir.deleteRecursively()
         clearForgeInstallerCache(versionId)
         unmarkExplicitVersion(versionId)
+        VersionUiMetaStore.removeVersion(versionId)
         _remoteVersions.update { list ->
             list.map { if (it.id == versionId) it.copy(installed = false) else it }
         }
@@ -316,23 +353,20 @@ class LauncherRepository(
     }
 
     private fun clearForgeInstallerCache(versionId: String) {
-        val neoMarker = "-neoforge-"
-        if (versionId.contains(neoMarker, ignoreCase = true)) {
-            val parts = versionId.split(neoMarker, ignoreCase = true, limit = 2)
-            if (parts.size == 2) {
-                File(LauncherPaths.rootDir, "cache/neoforge/installer-${parts[0]}-${parts[1]}.jar")
-                    .takeIf { it.isFile }
-                    ?.delete()
-            }
-            return
+        fun clear(marker: String, cacheSubdir: String) {
+            if (!versionId.contains(marker, ignoreCase = true)) return
+            val parts = versionId.split(marker, ignoreCase = true, limit = 2)
+            if (parts.size != 2) return
+            File(LauncherPaths.rootDir, "cache/$cacheSubdir/installer-${parts[0]}-${parts[1]}.jar")
+                .takeIf { it.isFile }
+                ?.delete()
         }
-        val marker = "-forge-"
-        if (!versionId.contains(marker, ignoreCase = true)) return
-        val parts = versionId.split(marker, ignoreCase = true, limit = 2)
-        if (parts.size != 2) return
-        File(LauncherPaths.rootDir, "cache/forge/installer-${parts[0]}-${parts[1]}.jar")
-            .takeIf { it.isFile }
-            ?.delete()
+        // PC-aligned ids: 1.20.1-NeoForge_21.x / 1.20.1-Forge_47.x
+        // Legacy Android ids: 1.20.1-neoforge-21.x / 1.20.1-forge-47.x
+        clear("-NeoForge_", "neoforge")
+        clear("-neoforge-", "neoforge")
+        clear("-Forge_", "forge")
+        clear("-forge-", "forge")
     }
 
     fun addOfflineAccount(name: String) {
@@ -356,6 +390,10 @@ class LauncherRepository(
 
     fun upsertMicrosoftAccount(account: LauncherAccount) {
         upsertAccount(account.copy(type = AccountType.MICROSOFT, selected = true))
+    }
+
+    fun upsertThirdPartyAccount(account: LauncherAccount) {
+        upsertAccount(account.copy(type = AccountType.THIRD_PARTY, selected = true))
     }
 
     fun selectAccount(accountId: String) {
@@ -420,7 +458,11 @@ class LauncherRepository(
                             xuid = o.optString("xuid").ifBlank { null },
                             userType = o.optString(
                                 "userType",
-                                if (type == AccountType.MICROSOFT) "msa" else "legacy"
+                                when (type) {
+                                    AccountType.MICROSOFT -> "msa"
+                                    AccountType.THIRD_PARTY -> "mojang"
+                                    AccountType.OFFLINE -> "legacy"
+                                }
                             ),
                             hasMinecraft = o.optBoolean(
                                 "hasMinecraft",
@@ -434,7 +476,8 @@ class LauncherRepository(
                             skinMode = o.optString("skinMode").ifBlank { null },
                             skinModel = o.optString("skinModel", "classic").ifBlank { "classic" },
                             skinPlayerName = o.optString("skinPlayerName").ifBlank { null },
-                            skinPlayerUuid = o.optString("skinPlayerUuid").ifBlank { null }
+                            skinPlayerUuid = o.optString("skinPlayerUuid").ifBlank { null },
+                            thirdPartyServerUrl = o.optString("thirdPartyServerUrl").ifBlank { null }
                         )
                     )
                 }
@@ -488,6 +531,7 @@ class LauncherRepository(
                     .put("skinModel", a.skinModel)
                     .put("skinPlayerName", a.skinPlayerName)
                     .put("skinPlayerUuid", a.skinPlayerUuid)
+                    .put("thirdPartyServerUrl", a.thirdPartyServerUrl)
             )
         }
         prefs.edit().putString(KEY_ACCOUNTS, arr.toString()).apply()

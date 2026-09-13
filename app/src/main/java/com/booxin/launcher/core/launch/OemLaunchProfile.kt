@@ -1,5 +1,6 @@
 package com.booxin.launcher.core.launch
 
+import android.content.Context
 import android.os.Build
 import java.util.Locale
 
@@ -101,6 +102,51 @@ object OemLaunchProfile {
      */
     fun needsPatientForceRebind(): Boolean =
         isHuaweiFamily() || isVivoFamily() || isOplusFamily()
+
+    /**
+     * ColorOS often thermal-throttles and deprioritizes `:game` under QUALITY/high RD.
+     * AUTO should pick a more conservative preset than RAM alone suggests.
+     */
+    fun needsConservativeAutoTune(): Boolean = isOplusFamily()
+
+    /**
+     * Raise scheduling priority / hint OEM game boost for the current process.
+     * Call from `:game` (LaunchActivity / GameLaunchService) on ColorOS family.
+     */
+    fun applyGameProcessBoost(context: Context) {
+        if (!isOplusFamily()) return
+        runCatching {
+            android.os.Process.setThreadPriority(
+                android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY
+            )
+        }
+        // Android 13+: tell the system we are in active gameplay (helps Game Mode).
+        if (Build.VERSION.SDK_INT >= 33) {
+            runCatching {
+                val gm = context.getSystemService(android.app.GameManager::class.java)
+                gm?.setGameState(
+                    android.app.GameState(
+                        /* isLoading = */ false,
+                        android.app.GameState.MODE_GAMEPLAY_INTERRUPTIBLE
+                    )
+                )
+            }
+        }
+        // Best-effort ColorOS / OxygenOS game-boost broadcasts (no-op if absent).
+        val pkg = context.packageName
+        listOf(
+            "oplus.intent.action.GAME_BOOST",
+            "com.oplus.games.action.GAME_BOOST",
+            "com.oneplus.gamespace.action.ADD_GAME"
+        ).forEach { action ->
+            runCatching {
+                context.sendBroadcast(
+                    android.content.Intent(action).putExtra("package_name", pkg)
+                )
+            }
+        }
+        android.util.Log.i("OemLaunchProfile", "oplus game process boost applied (${describe()})")
+    }
 
     fun describe(): String {
         val tags = buildList {

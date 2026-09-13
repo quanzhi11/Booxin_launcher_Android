@@ -3,7 +3,6 @@ package com.booxin.launcher.core
 import android.app.ActivityOptions
 import android.content.Context
 import android.content.Intent
-import com.booxin.launcher.AppContainer
 import com.booxin.launcher.R
 import com.booxin.launcher.core.java.JavaEnvironmentManager
 import com.booxin.launcher.core.uiplugin.UiPluginManager
@@ -143,9 +142,15 @@ class BooxinGameRuntime(
                     account.uuid?.let { putExtra(LaunchActivity.EXTRA_UUID, it) }
                     account.accessToken?.let { putExtra(LaunchActivity.EXTRA_ACCESS_TOKEN, it) }
                     putExtra(LaunchActivity.EXTRA_USER_TYPE, account.userType)
+                    if (account.type == AccountType.THIRD_PARTY) {
+                        account.thirdPartyServerUrl?.takeIf { it.isNotBlank() }?.let {
+                            putExtra(LaunchActivity.EXTRA_AUTH_SERVER_URL, it)
+                        }
+                    }
                 }
-                // Prefer Minecraft LAN list (guest LanBroadcast). Only inject --server
-                // when the caller explicitly requests direct-connect backup.
+                // Guests enter via Multiplayer → LAN (MOTD). Do NOT auto --server:
+                // that path causes「无效的会话」for offline / third-party accounts.
+                // Explicit serverAddress only: 官服 / 「直连备用启动」.
                 serverAddress?.takeIf { it.isNotBlank() }?.let {
                     putExtra(LaunchActivity.EXTRA_SERVER_ADDRESS, it)
                 }

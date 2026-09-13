@@ -17,6 +17,9 @@ object LauncherPrefs {
     private const val KEY_RENDERER = "renderer_kind"
     private const val KEY_RENDERER_LAST_MANUAL = "renderer_kind_last_manual"
     private const val KEY_RENDERER_MIGRATED_V539 = "renderer_migrated_mobileglues_v539"
+    private const val KEY_RENDERER_LEGACY_TEMP = "renderer_legacy_temp_gl4es"
+    private const val KEY_RENDERER_BEFORE_LEGACY = "renderer_before_legacy_gl4es"
+    private const val KEY_RENDERER_LEGACY_PIN_HEALED = "renderer_legacy_gl4es_pin_healed_v1"
     private const val KEY_GUI_SCALE_AUTO_RESTORED = "options_gui_scale_auto_restored_v1"
     private const val KEY_GL_COMPAT_MODE = "booxin_gl_compat_mode"
     private const val KEY_GAME_DIR_LOCATION = "game_dir_location"
@@ -36,6 +39,7 @@ object LauncherPrefs {
     private const val KEY_AI_PENDING_OUT_TRADE_NO = "ai_pending_out_trade_no"
     private const val KEY_AI_PENDING_USER_KEY = "ai_pending_user_key"
     private const val KEY_USER_AGREEMENT_ACCEPTED = "user_agreement_accepted_v1"
+    private const val KEY_CONTROLLER_NAV = "controller_nav_enabled"
     const val RENDERER_AUTO = "auto"
 
     /** Soft floor / ceiling for the settings slider (MB). */
@@ -66,6 +70,24 @@ object LauncherPrefs {
             } else {
                 prefs.edit().putBoolean(KEY_RENDERER_MIGRATED_V539, true).apply()
             }
+        }
+        // Older builds permanently pinned GL4ES after launching ancient clients.
+        // Heal once so modern versions return to MobileGlues.
+        if (!prefs.getBoolean(KEY_RENDERER_LEGACY_PIN_HEALED, false)) {
+            val raw = prefs.getString(KEY_RENDERER, null)
+            val edit = prefs.edit().putBoolean(KEY_RENDERER_LEGACY_PIN_HEALED, true)
+            if (raw == GlRendererKind.GL4ES.name ||
+                prefs.getBoolean(KEY_RENDERER_LEGACY_TEMP, false)
+            ) {
+                val restore = prefs.getString(KEY_RENDERER_BEFORE_LEGACY, null)
+                    ?.takeUnless { it == GlRendererKind.GL4ES.name || it == RENDERER_AUTO }
+                    ?: GlRendererKind.MOBILE_GLUES.name
+                edit.putString(KEY_RENDERER, restore)
+                    .putString(KEY_RENDERER_LAST_MANUAL, restore)
+                    .putBoolean(KEY_RENDERER_LEGACY_TEMP, false)
+                    .remove(KEY_RENDERER_BEFORE_LEGACY)
+            }
+            edit.apply()
         }
     }
 
@@ -135,12 +157,53 @@ object LauncherPrefs {
         if (value != RENDERER_AUTO) {
             edit.putString(KEY_RENDERER_LAST_MANUAL, value)
         }
+        // A real settings/user pick cancels any pending legacy temp restore.
+        edit.putBoolean(KEY_RENDERER_LEGACY_TEMP, false)
+            .remove(KEY_RENDERER_BEFORE_LEGACY)
         edit.apply()
     }
 
     fun setRendererKind(kind: GlRendererKind?) {
         setRendererPreference(kind?.name ?: RENDERER_AUTO)
     }
+
+    /**
+     * Temporary pin to holy GL4ES for ancient clients only.
+     * Does not overwrite [KEY_RENDERER_LAST_MANUAL] as a permanent user choice;
+     * [restoreRendererAfterLegacyIfNeeded] puts the previous preference back.
+     */
+    fun applyLegacyGl4esTemporarily() {
+        if (!::prefs.isInitialized) return
+        val edit = prefs.edit()
+        if (!prefs.getBoolean(KEY_RENDERER_LEGACY_TEMP, false)) {
+            val before = rendererPreference()
+            edit.putString(KEY_RENDERER_BEFORE_LEGACY, before)
+        }
+        edit.putString(KEY_RENDERER, GlRendererKind.GL4ES.name)
+            .putBoolean(KEY_RENDERER_LEGACY_TEMP, true)
+            .apply()
+    }
+
+    /**
+     * After a legacy GL4ES pin, restore MobileGlues (or the prior preference)
+     * when launching a modern version. Returns true if prefs changed.
+     */
+    fun restoreRendererAfterLegacyIfNeeded(): Boolean {
+        if (!::prefs.isInitialized) return false
+        if (!prefs.getBoolean(KEY_RENDERER_LEGACY_TEMP, false)) return false
+        val restore = prefs.getString(KEY_RENDERER_BEFORE_LEGACY, null)
+            ?.takeUnless { it == GlRendererKind.GL4ES.name }
+            ?: GlRendererKind.MOBILE_GLUES.name
+        prefs.edit()
+            .putString(KEY_RENDERER, restore)
+            .putBoolean(KEY_RENDERER_LEGACY_TEMP, false)
+            .remove(KEY_RENDERER_BEFORE_LEGACY)
+            .apply()
+        return true
+    }
+
+    fun isLegacyGl4esTemp(): Boolean =
+        ::prefs.isInitialized && prefs.getBoolean(KEY_RENDERER_LEGACY_TEMP, false)
 
     /**
      * One-shot: a prior build forced guiScale=3 into options.txt (menus look tiny
@@ -345,5 +408,16 @@ object LauncherPrefs {
         if (!::prefs.isInitialized) return
         // commit(): first-launch gate must persist before the next recreate.
         prefs.edit().putBoolean(KEY_USER_AGREEMENT_ACCEPTED, accepted).commit()
+    }
+
+    /** Bluetooth keyboard / gamepad launcher navigation (default on). */
+    fun controllerNavEnabled(): Boolean {
+        if (!::prefs.isInitialized) return true
+        return prefs.getBoolean(KEY_CONTROLLER_NAV, true)
+    }
+
+    fun setControllerNavEnabled(enabled: Boolean) {
+        if (!::prefs.isInitialized) return
+        prefs.edit().putBoolean(KEY_CONTROLLER_NAV, enabled).apply()
     }
 }

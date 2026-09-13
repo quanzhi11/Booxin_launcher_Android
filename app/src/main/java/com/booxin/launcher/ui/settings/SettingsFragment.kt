@@ -145,6 +145,7 @@ class SettingsFragment : Fragment() {
         setupLaunchTune()
         setupMemorySlider()
         setupGameOptions()
+        setupControllerNav()
         setupAiSettings()
         refreshRealtimeLog()
 
@@ -974,6 +975,19 @@ class SettingsFragment : Fragment() {
             R.string.settings_launch_tune_summary,
             resolved.summaryZh
         )
+    }
+
+    private fun setupControllerNav() {
+        val b = _binding ?: return
+        b.switchControllerNav.setOnCheckedChangeListener(null)
+        b.switchControllerNav.isChecked = LauncherPrefs.controllerNavEnabled()
+        b.switchControllerNav.setOnCheckedChangeListener { _, checked ->
+            LauncherPrefs.setControllerNavEnabled(checked)
+            (activity as? com.booxin.launcher.ui.MainActivity)?.refreshControllerUi()
+        }
+        b.buttonControllerHelp.setOnClickListener {
+            (activity as? com.booxin.launcher.ui.MainActivity)?.showBluetoothPairDialog()
+        }
     }
 
     private fun setupGameOptions() {

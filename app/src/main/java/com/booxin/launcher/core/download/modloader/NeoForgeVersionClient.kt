@@ -134,7 +134,7 @@ class NeoForgeVersionClient {
 
     companion object {
         fun neoForgeVersionId(mcVersion: String, loaderVersion: String): String =
-            "$mcVersion-neoforge-$loaderVersion"
+            com.booxin.launcher.core.version.VersionInstanceNameGenerator.neoForge(mcVersion, loaderVersion)
 
         fun isCompatible(neoForgeVersion: String, gameVersion: String): Boolean {
             if (neoForgeVersion.isBlank() || gameVersion.isBlank()) return false

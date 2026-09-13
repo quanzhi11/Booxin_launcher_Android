@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:paddingHorizontal="20dp"
+    android:paddingTop="12dp"
+    android:paddingBottom="8dp">
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/control_physical_hint"
+        android:textColor="?android:attr/textColorSecondary"
+        android:textSize="13sp" />
+
+    <Switch
+        android:id="@+id/switchPhysicalKeyboard"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:text="@string/control_physical_keyboard_enable"
+        android:textColor="?android:attr/textColorPrimary"
+        android:textSize="16sp" />
+
+    <Switch
+        android:id="@+id/switchPhysicalGamepad"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="@string/control_physical_gamepad_enable"
+        android:textColor="?android:attr/textColorPrimary"
+        android:textSize="16sp" />
+
+    <Switch
+        android:id="@+id/switchHideOnGamepad"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="@string/control_physical_hide_onscreen"
+        android:textColor="?android:attr/textColorPrimary"
+        android:textSize="16sp" />
+
+    <TextView
+        android:id="@+id/textGamepadLook"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:text="@string/control_physical_look_fmt"
+        android:textColor="?android:attr/textColorSecondary"
+        android:textSize="14sp" />
+
+    <SeekBar
+        android:id="@+id/seekGamepadLook"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:max="100"
+        android:min="1"
+        android:paddingVertical="8dp" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:text="@string/control_physical_mapping_hint"
+        android:textColor="?android:attr/textColorSecondary"
+        android:textSize="12sp" />
+
+    <TextView
+        android:id="@+id/textPhysicalDevices"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:textColor="?android:attr/textColorPrimary"
+        android:textSize="13sp" />
+</LinearLayout>

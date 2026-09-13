@@ -14,7 +14,7 @@
         android:textColor="@color/booxin_navy"
         android:textSize="16sp"
         android:textStyle="bold"
-        app:layout_constraintEnd_toStartOf="@id/buttonRow"
+        app:layout_constraintEnd_toStartOf="@id/buttonRowScroll"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
 
@@ -25,38 +25,54 @@
         android:layout_marginTop="2dp"
         android:text="@string/versions_subtitle"
         android:textColor="@color/md_theme_light_outline"
-        app:layout_constraintEnd_toStartOf="@id/buttonRow"
+        app:layout_constraintEnd_toStartOf="@id/buttonRowScroll"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toBottomOf="@id/title" />
 
-    <LinearLayout
-        android:id="@+id/buttonRow"
+    <HorizontalScrollView
+        android:id="@+id/buttonRowScroll"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginStart="12dp"
-        android:gravity="end"
-        android:orientation="horizontal"
+        android:scrollbars="none"
         app:layout_constraintBottom_toBottomOf="@id/subtitle"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintTop_toTopOf="@id/title">
 
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/buttonDownload"
-            style="@style/Widget.Booxin.PrimaryButton"
+        <LinearLayout
+            android:id="@+id/buttonRow"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:minWidth="0dp"
-            android:text="@string/versions_download" />
+            android:gravity="end"
+            android:orientation="horizontal">
 
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/buttonInstallModpack"
-            style="@style/Widget.Booxin.SecondaryButton"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="8dp"
-            android:minWidth="0dp"
-            android:text="@string/versions_install_modpack" />
-    </LinearLayout>
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/buttonDownload"
+                style="@style/Widget.Booxin.PrimaryButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:minWidth="0dp"
+                android:text="@string/versions_download" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/buttonInstallModpack"
+                style="@style/Widget.Booxin.SecondaryButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:minWidth="0dp"
+                android:text="@string/versions_install_modpack" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/buttonImportForeign"
+                style="@style/Widget.Material3.Button.OutlinedButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:minWidth="0dp"
+                android:text="@string/versions_import_foreign" />
+        </LinearLayout>
+    </HorizontalScrollView>
 
     <androidx.recyclerview.widget.RecyclerView
         android:id="@+id/recyclerVersions"
@@ -67,7 +83,7 @@
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/buttonRow"
+        app:layout_constraintTop_toBottomOf="@id/buttonRowScroll"
         tools:listitem="@layout/item_version" />
 
     <TextView

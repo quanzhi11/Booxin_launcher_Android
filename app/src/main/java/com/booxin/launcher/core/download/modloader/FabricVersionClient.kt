@@ -83,7 +83,7 @@ class FabricVersionClient {
 
     companion object {
         fun fabricVersionId(mcVersion: String, loaderVersion: String): String =
-            "$mcVersion-fabric-$loaderVersion"
+            com.booxin.launcher.core.version.VersionInstanceNameGenerator.fabric(mcVersion, loaderVersion)
 
         private val VERSION_COMPARATOR = Comparator<String> { a, b ->
             compareVersionParts(a, b)

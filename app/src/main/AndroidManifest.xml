@@ -23,6 +23,25 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
+    <!-- Bluetooth keyboard / gamepad pairing -->
+    <uses-permission
+        android:name="android.permission.BLUETOOTH"
+        android:maxSdkVersion="30" />
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_ADMIN"
+        android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation"
+        tools:targetApi="s" />
+    <uses-permission
+        android:name="android.permission.ACCESS_FINE_LOCATION"
+        android:maxSdkVersion="30" />
+    <uses-feature
+        android:name="android.hardware.bluetooth"
+        android:required="false" />
+
     <!-- Allow ultrawide / fold landscape without system letterboxing (black side bars). -->
     <supports-screens
         android:anyDensity="true"
@@ -52,6 +71,15 @@
         </intent>
         <package android:name="com.tungsten.fcl" />
         <package android:name="com.tungsten.fclauncher" />
+        <package android:name="com.movtery.zalithlauncher.v2" />
+        <package android:name="com.movtery.zalithlauncherv2" />
+        <package android:name="com.movtery.zalithlauncher2" />
+        <package android:name="com.movtery.zalithlauncher" />
+        <package android:name="com.miolauncher.app" />
+        <package android:name="com.mio.launcher" />
+        <package android:name="com.mio.launcher.ultimate" />
+        <package android:name="com.mio.ultimatelauncher" />
+        <package android:name="com.mio.launcher2" />
     </queries>
 
     <application
@@ -68,7 +96,9 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.BooxinLauncher"
-        android:usesCleartextTraffic="false">
+        android:usesCleartextTraffic="false"
+        android:isGame="true"
+        android:appCategory="game">
 
         <!-- Default Android max aspect ~1.86 leaves black bars on 20:9 / 21:9 landscape. -->
         <meta-data
@@ -117,6 +147,14 @@
             android:exported="false">
             <intent-filter>
                 <action android:name="com.booxin.launcher.action.DISMISS_ROOM_INVITE" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name=".core.multiplayer.ActiveRoomLeaveReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.booxin.launcher.action.LEAVE_ACTIVE_ROOM" />
             </intent-filter>
         </receiver>
 
@@ -187,6 +225,15 @@
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="minecraft_jvm" />
+        </service>
+
+        <service
+            android:name=".core.multiplayer.LobbyTunnelService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="booxin_lobby_tunnel" />
         </service>
 
         <service

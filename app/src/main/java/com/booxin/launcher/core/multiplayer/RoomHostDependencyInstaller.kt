@@ -248,11 +248,23 @@ object RoomHostDependencyInstaller {
         snapshot: RoomDependencySnapshot,
         installed: List<GameVersion> = AppContainer.repository.installedVersions.value
     ): GameVersion? {
+        val mods = snapshot.mods.filter { it.hasDownloadSource }
         val fingerprint = RoomSessionVersionService.computeFingerprint(
             snapshot.gameVersion,
             snapshot.loader,
-            snapshot.mods.filter { it.hasDownloadSource }
+            mods
         )
-        return RoomSessionVersionService.findExactMatch(installed, fingerprint)
+        RoomSessionVersionService.findExactMatch(installed, fingerprint)?.let { return it }
+        // Vanilla / no published mods: reuse any matching installed instance.
+        if (mods.isEmpty() && snapshot.modpackUrl.isNullOrBlank() &&
+            !snapshot.gameVersion.isNullOrBlank()
+        ) {
+            return RoomSessionVersionService.findCloneSource(
+                installed,
+                snapshot.gameVersion,
+                snapshot.loader
+            )
+        }
+        return null
     }
 }

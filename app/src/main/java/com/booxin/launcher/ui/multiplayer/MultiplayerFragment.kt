@@ -1,6 +1,9 @@
 package com.booxin.launcher.ui.multiplayer
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -12,6 +15,7 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
+import android.widget.ArrayAdapter
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
@@ -29,6 +33,9 @@ import com.booxin.launcher.core.multiplayer.BlockedUser
 import com.booxin.launcher.core.multiplayer.BooxinAuthSession
 import com.booxin.launcher.core.multiplayer.BooxinFriend
 import com.booxin.launcher.core.multiplayer.ChatConversation
+import com.booxin.launcher.core.multiplayer.CloudServerApiException
+import com.booxin.launcher.core.multiplayer.CloudServerInfo
+import com.booxin.launcher.core.multiplayer.CloudServerService
 import com.booxin.launcher.core.multiplayer.FriendRequest
 import com.booxin.launcher.core.multiplayer.LobbyPage
 import com.booxin.launcher.core.multiplayer.LobbyUser
@@ -51,21 +58,28 @@ import com.booxin.launcher.core.multiplayer.RoomInviteCoordinator
 import com.booxin.launcher.core.multiplayer.RoomMember
 import com.booxin.launcher.core.multiplayer.SearchUser
 import com.booxin.launcher.databinding.FragmentMultiplayerBinding
+import com.booxin.launcher.ui.controller.ControllerNavBinder
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.tabs.TabLayout
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.resume
+import java.util.concurrent.TimeUnit
 
 class MultiplayerFragment : Fragment() {
 
     private enum class AuthMode { PASSWORD, EMAIL, REGISTER, FORGOT }
 
     private enum class RoomsLeftMode { BROWSE, PUBLIC_LIST, PUBLIC_DETAIL }
+
+    /** Right-rail pages. Cloud sits between Friends and Lobby when visible. */
+    private enum class SocialPage { FRIENDS, CLOUD, LOBBY, MESSAGES, ACCOUNT }
 
     private var _binding: FragmentMultiplayerBinding? = null
     private val binding get() = _binding!!
@@ -77,6 +91,18 @@ class MultiplayerFragment : Fragment() {
     private var cachedPublicRooms: List<PublicRoom> = emptyList()
     private var selectedPublicRoom: PublicRoom? = null
     private val officialJoinService = OfficialServerJoinService()
+    private val cloudServerService = CloudServerService {
+        AppContainer.multiplayerAuth.current()?.accessToken
+    }
+    private var currentCloudServer: CloudServerInfo? = null
+    private var cloudServerBusy = false
+    private var cloudJoinInProgress = false
+    private var cloudHeartbeatJob: Job? = null
+    private var cloudPollJob: Job? = null
+    private var cloudVersionAdapter: ArrayAdapter<String>? = null
+    private var cloudTabVisible = false
+    private var socialPages: List<SocialPage> = emptyList()
+    private var socialTabListener: TabLayout.OnTabSelectedListener? = null
     private var askedDmNotificationPermission = false
     private var cachedHostDepsRoomCode: String? = null
     private var cachedHostDeps: RoomDependencySnapshot? = null
@@ -242,10 +268,12 @@ class MultiplayerFragment : Fragment() {
         ).forEach { (rv, adapter) ->
             rv.layoutManager = LinearLayoutManager(requireContext())
             rv.adapter = adapter
+            ControllerNavBinder.bindRecycler(rv)
         }
 
         binding.recyclerPublicRoomsGrid.layoutManager = GridLayoutManager(requireContext(), 2)
         binding.recyclerPublicRoomsGrid.adapter = publicRoomCardAdapter
+        ControllerNavBinder.bindRecycler(binding.recyclerPublicRoomsGrid)
 
         setupTabs()
         setupFriendsSubTabs()
@@ -307,6 +335,18 @@ class MultiplayerFragment : Fragment() {
             joinRoom(room.roomCode)
         }
         binding.buttonJoinOfficialServer.setOnClickListener { joinOfficialServer() }
+        binding.buttonCloudRefresh.setOnClickListener { refreshCloudServerUi() }
+        binding.buttonCloudCreate.setOnClickListener { createCloudServer() }
+        binding.buttonCloudJoin.setOnClickListener { joinCloudServer() }
+        binding.buttonCloudStop.setOnClickListener { stopCloudServer() }
+        binding.buttonCloudCopyAddress.setOnClickListener { copyCloudAddress() }
+        binding.buttonCloudUploadWorld.setOnClickListener {
+            showCloudWorldPcOnlyDialog(R.string.multiplayer_cloud_upload_world)
+        }
+        binding.buttonCloudDownloadWorld.setOnClickListener {
+            showCloudWorldPcOnlyDialog(R.string.multiplayer_cloud_download_world)
+        }
+        ensureCloudVersionSpinner(CloudServerService.DEFAULT_VERSIONS)
         binding.buttonCheckIn.setOnClickListener { performCheckIn() }
         binding.buttonPickFrame.setOnClickListener { showFramePicker() }
 
@@ -323,6 +363,7 @@ class MultiplayerFragment : Fragment() {
                         if (authKey != lastAuthKey) {
                             lastAuthKey = authKey
                             refreshPublicData()
+                            refreshCloudServerUi()
                             if (session != null) {
                                 ensureDmNotificationPermission()
                                 refreshSocialData()
@@ -384,12 +425,229 @@ class MultiplayerFragment : Fragment() {
             }
         }
         renderRoomsPanel()
+        view.post { maybePromptLogin() }
+    }
+
+    /**
+     * First open of 联机 while logged out: show a login dialog so FCL-style users
+     * are not dropped onto an empty social UI with no explanation.
+     */
+    private var loginPromptHandled = false
+
+    private fun maybePromptLogin() {
+        if (loginPromptHandled || _binding == null || !isAdded) return
+        if (AppContainer.multiplayerAuth.current() != null) {
+            loginPromptHandled = true
+            return
+        }
+        loginPromptHandled = true
+        showLoginRequiredDialog()
+    }
+
+    private fun showLoginRequiredDialog() {
+        if (!isAdded || _binding == null) return
+        if (AppContainer.multiplayerAuth.current() != null) return
+        val form = layoutInflater.inflate(R.layout.dialog_multiplayer_login, null, false)
+        val tabAuth = form.findViewById<com.google.android.material.tabs.TabLayout>(R.id.tabDialogAuth)
+        val layoutUser = form.findViewById<com.google.android.material.textfield.TextInputLayout>(
+            R.id.layoutDialogUsername
+        )
+        val layoutPass = form.findViewById<com.google.android.material.textfield.TextInputLayout>(
+            R.id.layoutDialogPassword
+        )
+        val layoutEmail = form.findViewById<com.google.android.material.textfield.TextInputLayout>(
+            R.id.layoutDialogEmail
+        )
+        val rowCode = form.findViewById<android.view.View>(R.id.rowDialogCode)
+        val inputUser = form.findViewById<com.google.android.material.textfield.TextInputEditText>(
+            R.id.inputDialogUsername
+        )
+        val inputPass = form.findViewById<com.google.android.material.textfield.TextInputEditText>(
+            R.id.inputDialogPassword
+        )
+        val inputEmail = form.findViewById<com.google.android.material.textfield.TextInputEditText>(
+            R.id.inputDialogEmail
+        )
+        val inputCode = form.findViewById<com.google.android.material.textfield.TextInputEditText>(
+            R.id.inputDialogEmailCode
+        )
+        val buttonSendCode = form.findViewById<com.google.android.material.button.MaterialButton>(
+            R.id.buttonDialogSendCode
+        )
+        val buttonSwitch = form.findViewById<com.google.android.material.button.MaterialButton>(
+            R.id.buttonDialogSwitchMethod
+        )
+
+        var mode = AuthMode.PASSWORD
+        fun applyDialogMode() {
+            val needUser = mode == AuthMode.PASSWORD || mode == AuthMode.REGISTER
+            val needPass = mode == AuthMode.PASSWORD || mode == AuthMode.REGISTER
+            val needEmail = mode == AuthMode.EMAIL || mode == AuthMode.REGISTER
+            val needCode = mode == AuthMode.EMAIL || mode == AuthMode.REGISTER
+            layoutUser.isVisible = needUser
+            layoutPass.isVisible = needPass
+            layoutEmail.isVisible = needEmail
+            rowCode.isVisible = needCode
+            buttonSwitch.isVisible = mode != AuthMode.REGISTER
+            buttonSwitch.text = when (mode) {
+                AuthMode.EMAIL -> getString(R.string.multiplayer_switch_to_password)
+                else -> getString(R.string.multiplayer_switch_to_email)
+            }
+            val dialog = form.tag as? androidx.appcompat.app.AlertDialog
+            dialog?.getButton(androidx.appcompat.app.AlertDialog.BUTTON_POSITIVE)?.text = when (mode) {
+                AuthMode.REGISTER -> getString(R.string.multiplayer_register)
+                AuthMode.EMAIL -> getString(R.string.multiplayer_email_login)
+                else -> getString(R.string.multiplayer_login)
+            }
+        }
+
+        tabAuth.addTab(tabAuth.newTab().setText(R.string.multiplayer_mode_login))
+        tabAuth.addTab(tabAuth.newTab().setText(R.string.multiplayer_mode_register))
+        tabAuth.addOnTabSelectedListener(object : com.google.android.material.tabs.TabLayout.OnTabSelectedListener {
+            override fun onTabSelected(tab: com.google.android.material.tabs.TabLayout.Tab) {
+                mode = when (tab.position) {
+                    1 -> AuthMode.REGISTER
+                    else -> if (mode == AuthMode.EMAIL) AuthMode.EMAIL else AuthMode.PASSWORD
+                }
+                if (tab.position == 0 && mode != AuthMode.EMAIL && mode != AuthMode.PASSWORD) {
+                    mode = AuthMode.PASSWORD
+                }
+                applyDialogMode()
+            }
+            override fun onTabUnselected(tab: com.google.android.material.tabs.TabLayout.Tab) = Unit
+            override fun onTabReselected(tab: com.google.android.material.tabs.TabLayout.Tab) = Unit
+        })
+        buttonSwitch.setOnClickListener {
+            mode = if (mode == AuthMode.EMAIL) AuthMode.PASSWORD else AuthMode.EMAIL
+            tabAuth.getTabAt(0)?.select()
+            applyDialogMode()
+        }
+        buttonSendCode.setOnClickListener {
+            val email = inputEmail.text?.toString().orEmpty().trim()
+            if (email.isEmpty()) {
+                toast(R.string.multiplayer_need_email)
+                return@setOnClickListener
+            }
+            buttonSendCode.isEnabled = false
+            viewLifecycleOwner.lifecycleScope.launch {
+                val result = when (mode) {
+                    AuthMode.REGISTER -> AppContainer.multiplayerAuth.sendRegisterCode(email)
+                    else -> AppContainer.multiplayerAuth.sendEmailLoginCode(email)
+                }
+                if (_binding == null || !isAdded) return@launch
+                buttonSendCode.isEnabled = true
+                result.fold(
+                    onSuccess = { msg ->
+                        Toast.makeText(
+                            requireContext(),
+                            msg.ifBlank { getString(R.string.multiplayer_send_code) },
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    },
+                    onFailure = { err ->
+                        Toast.makeText(
+                            requireContext(),
+                            getString(
+                                R.string.multiplayer_send_code_failed,
+                                err.message ?: "unknown"
+                            ),
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                )
+            }
+        }
+
+        val dialog = MaterialAlertDialogBuilder(requireContext())
+            .setTitle(R.string.multiplayer_login_dialog_title)
+            .setView(form)
+            .setPositiveButton(R.string.multiplayer_login, null)
+            .setNeutralButton(R.string.multiplayer_login_dialog_later) { _, _ ->
+                selectAccountTab()
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .create()
+        form.tag = dialog
+        dialog.setOnShowListener {
+            applyDialogMode()
+            dialog.getButton(androidx.appcompat.app.AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val positive = dialog.getButton(androidx.appcompat.app.AlertDialog.BUTTON_POSITIVE)
+                positive.isEnabled = false
+                viewLifecycleOwner.lifecycleScope.launch {
+                    val result: Result<String> = when (mode) {
+                        AuthMode.PASSWORD -> {
+                            val u = inputUser.text?.toString().orEmpty().trim()
+                            val p = inputPass.text?.toString().orEmpty()
+                            if (u.isEmpty() || p.isEmpty()) {
+                                toast(R.string.multiplayer_need_credentials)
+                                positive.isEnabled = true
+                                return@launch
+                            }
+                            AppContainer.multiplayerAuth.login(u, p).map { it.user.username }
+                        }
+                        AuthMode.EMAIL -> {
+                            val email = inputEmail.text?.toString().orEmpty().trim()
+                            val code = inputCode.text?.toString().orEmpty().trim()
+                            if (email.isEmpty() || code.isEmpty()) {
+                                toast(R.string.multiplayer_need_email_code)
+                                positive.isEnabled = true
+                                return@launch
+                            }
+                            AppContainer.multiplayerAuth.loginWithEmail(email, code)
+                                .map { it.user.username }
+                        }
+                        AuthMode.REGISTER -> {
+                            val u = inputUser.text?.toString().orEmpty().trim()
+                            val p = inputPass.text?.toString().orEmpty()
+                            val email = inputEmail.text?.toString().orEmpty().trim()
+                            val code = inputCode.text?.toString().orEmpty().trim()
+                            if (u.isEmpty() || p.isEmpty() || email.isEmpty() || code.isEmpty()) {
+                                toast(R.string.multiplayer_need_register_fields)
+                                positive.isEnabled = true
+                                return@launch
+                            }
+                            AppContainer.multiplayerAuth.register(u, p, email, code)
+                                .map { it.user.username }
+                        }
+                        AuthMode.FORGOT -> Result.failure(IllegalStateException("unsupported"))
+                    }
+                    if (_binding == null || !isAdded) return@launch
+                    positive.isEnabled = true
+                    result.fold(
+                        onSuccess = { name ->
+                            Toast.makeText(
+                                requireContext(),
+                                getString(R.string.multiplayer_login_ok, name),
+                                Toast.LENGTH_SHORT
+                            ).show()
+                            dialog.dismiss()
+                        },
+                        onFailure = { err ->
+                            Toast.makeText(
+                                requireContext(),
+                                getString(
+                                    if (mode == AuthMode.REGISTER) {
+                                        R.string.multiplayer_register_failed
+                                    } else {
+                                        R.string.multiplayer_login_failed
+                                    },
+                                    err.message ?: "unknown"
+                                ),
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                    )
+                }
+            }
+        }
+        dialog.show()
     }
 
     override fun onResume() {
         super.onResume()
         renderRoomsPanel()
         refreshPublicData()
+        refreshCloudServerUi()
         if (AppContainer.multiplayerAuth.current() != null) {
             refreshSocialData()
         }
@@ -428,11 +686,26 @@ class MultiplayerFragment : Fragment() {
         b.panelRoomsPublicDetail.isVisible = showPublicDetail
         b.panelRoomsInRoom.isVisible = inRoom
         if (inRoom) {
+            val lobby = AppContainer.multiplayerAuth.activeLobby.value
+            b.textInRoomTitle.isVisible = true
+            b.textInRoomTitle.text = getString(R.string.multiplayer_in_room_active)
+            b.textInRoomCode.isVisible = lobby != null
+            b.textInRoomCode.text = lobby?.roomCode.orEmpty()
+            b.textJoinStatusInRoom.isVisible = true
             refreshHostDepsUi()
+            renderRoomMembers(AppContainer.multiplayerAuth.roomMembers.value)
         } else {
             clearHostDepsCache()
             b.buttonDownloadHostDeps.isVisible = false
             b.textHostDepsInfo.isVisible = false
+            b.textInRoomTitle.isVisible = false
+            b.textInRoomCode.isVisible = false
+            b.textJoinStatusInRoom.isVisible = false
+            b.textDirectConnect.isVisible = false
+            b.buttonDirectBackupLaunch.isVisible = false
+            b.textRoomMembersTitle.isVisible = false
+            b.recyclerRoomMembers.isVisible = false
+            b.textRoomMembersEmpty.isVisible = false
         }
 
         if (showPublicDetail) {
@@ -441,13 +714,30 @@ class MultiplayerFragment : Fragment() {
             b.textPublicRoomMotd.text = detail.motd.ifBlank {
                 detail.remark.orEmpty().ifBlank { getString(R.string.multiplayer_public_rooms) }
             }
-            b.textPublicRoomMeta.text = getString(
-                R.string.multiplayer_public_room_meta,
-                detail.version?.ifBlank { "?" } ?: "?",
-                detail.currentPlayers,
-                detail.maxPlayers
+            b.textPublicRoomMeta.text = buildString {
+                if (detail.isCloudPublicRoom()) {
+                    append(getString(R.string.multiplayer_cloud_room_badge))
+                    append(" · ")
+                }
+                append(
+                    getString(
+                        R.string.multiplayer_public_room_meta,
+                        detail.version?.ifBlank { "?" } ?: "?",
+                        detail.currentPlayers,
+                        detail.maxPlayers
+                    )
+                )
+            }
+            val cloudAddress = detail.resolveCloudDedicatedAddress()
+            b.textPublicRoomCode.text = if (detail.isCloudPublicRoom() && !cloudAddress.isNullOrBlank()) {
+                getString(R.string.multiplayer_cloud_room_address, cloudAddress)
+            } else {
+                getString(R.string.multiplayer_public_room_code, detail.roomCode)
+            }
+            b.buttonJoinPublicRoom.setText(
+                if (detail.isCloudPublicRoom()) R.string.multiplayer_join_cloud_room
+                else R.string.multiplayer_join_room
             )
-            b.textPublicRoomCode.text = getString(R.string.multiplayer_public_room_code, detail.roomCode)
         }
 
         if (showPublicList) {
@@ -459,6 +749,7 @@ class MultiplayerFragment : Fragment() {
         if (AppContainer.multiplayerAuth.activeLobby.value != null) return
         roomsLeftMode = RoomsLeftMode.PUBLIC_LIST
         renderRoomsPanel()
+        binding.publicRoomSearchAppBar.setExpanded(true, false)
         refreshRooms()
     }
 
@@ -501,21 +792,21 @@ class MultiplayerFragment : Fragment() {
 
     private fun renderRoomMembers(members: List<RoomMember>) {
         val binding = _binding ?: return
-        val inRoom = AppContainer.multiplayerAuth.activeLobby.value != null || members.isNotEmpty()
-        if (!binding.panelRoomsInRoom.isVisible) {
+        val inRoom = AppContainer.multiplayerAuth.activeLobby.value != null
+        if (!inRoom) {
             binding.textRoomMembersTitle.isVisible = false
             binding.recyclerRoomMembers.isVisible = false
             binding.textRoomMembersEmpty.isVisible = false
-            if (!inRoom) roomMembersAdapter.submit(emptyList())
-            return
-        }
-        binding.textRoomMembersTitle.isVisible = inRoom
-        binding.recyclerRoomMembers.isVisible = inRoom && members.isNotEmpty()
-        binding.textRoomMembersEmpty.isVisible = inRoom && members.isEmpty()
-        if (!inRoom) {
             roomMembersAdapter.submit(emptyList())
             return
         }
+        // Ensure in-room panel is showing before updating member widgets.
+        if (!binding.panelRoomsInRoom.isVisible) {
+            binding.panelRoomsInRoom.isVisible = true
+        }
+        binding.textRoomMembersTitle.isVisible = true
+        binding.recyclerRoomMembers.isVisible = members.isNotEmpty()
+        binding.textRoomMembersEmpty.isVisible = members.isEmpty()
         binding.textRoomMembersTitle.text = getString(
             R.string.multiplayer_room_members
         ) + "（${members.size}）"
@@ -540,25 +831,62 @@ class MultiplayerFragment : Fragment() {
 
     private fun setupTabs() {
         // Landscape: rooms stay on the left; right rail switches social pages.
-        val tabs = listOf(
-            R.string.multiplayer_tab_friends,
-            R.string.multiplayer_tab_lobby,
-            R.string.multiplayer_tab_messages,
-            R.string.multiplayer_tab_account
+        // Cloud tab is inserted between Friends and Lobby when whitelisted.
+        rebuildSocialTabs(
+            showCloud = false,
+            prefer = if (AppContainer.multiplayerAuth.current() == null) {
+                SocialPage.ACCOUNT
+            } else {
+                SocialPage.FRIENDS
+            }
         )
-        tabs.forEach { binding.tabMultiplayer.addTab(binding.tabMultiplayer.newTab().setText(it)) }
-        binding.tabMultiplayer.addOnTabSelectedListener(object : TabLayout.OnTabSelectedListener {
+    }
+
+    private fun rebuildSocialTabs(showCloud: Boolean, prefer: SocialPage? = null) {
+        val b = _binding ?: return
+        val keep = prefer ?: currentSocialPage()
+        cloudTabVisible = showCloud
+        socialPages = buildList {
+            add(SocialPage.FRIENDS)
+            if (showCloud) add(SocialPage.CLOUD)
+            add(SocialPage.LOBBY)
+            add(SocialPage.MESSAGES)
+            add(SocialPage.ACCOUNT)
+        }
+
+        socialTabListener?.let { b.tabMultiplayer.removeOnTabSelectedListener(it) }
+        b.tabMultiplayer.removeAllTabs()
+        socialPages.forEach { page ->
+            val title = when (page) {
+                SocialPage.FRIENDS -> R.string.multiplayer_tab_friends
+                SocialPage.CLOUD -> R.string.multiplayer_tab_cloud
+                SocialPage.LOBBY -> R.string.multiplayer_tab_lobby
+                SocialPage.MESSAGES -> R.string.multiplayer_tab_messages
+                SocialPage.ACCOUNT -> R.string.multiplayer_tab_account
+            }
+            b.tabMultiplayer.addTab(b.tabMultiplayer.newTab().setText(title))
+        }
+        val listener = object : TabLayout.OnTabSelectedListener {
             override fun onTabSelected(tab: TabLayout.Tab) = showSocialPage(tab.position)
             override fun onTabUnselected(tab: TabLayout.Tab) = Unit
             override fun onTabReselected(tab: TabLayout.Tab) = Unit
-        })
-        if (AppContainer.multiplayerAuth.current() == null) {
-            binding.tabMultiplayer.getTabAt(3)?.select()
-            showSocialPage(3)
-        } else {
-            binding.tabMultiplayer.getTabAt(0)?.select()
-            showSocialPage(0)
         }
+        socialTabListener = listener
+        b.tabMultiplayer.addOnTabSelectedListener(listener)
+
+        val target = when {
+            keep == SocialPage.CLOUD && !showCloud -> SocialPage.FRIENDS
+            keep in socialPages -> keep
+            else -> SocialPage.FRIENDS
+        }
+        val index = socialPages.indexOf(target).coerceAtLeast(0)
+        b.tabMultiplayer.getTabAt(index)?.select()
+        showSocialPage(index)
+    }
+
+    private fun currentSocialPage(): SocialPage {
+        val idx = _binding?.tabMultiplayer?.selectedTabPosition ?: 0
+        return socialPages.getOrNull(idx) ?: SocialPage.FRIENDS
     }
 
     private fun setupFriendsSubTabs() {
@@ -578,14 +906,26 @@ class MultiplayerFragment : Fragment() {
     }
 
     private fun showSocialPage(index: Int) {
-        binding.pageFriends.isVisible = index == 0
-        binding.pageLobby.isVisible = index == 1
-        binding.pageMessages.isVisible = index == 2
-        binding.pageAccount.isVisible = index == 3
+        val page = socialPages.getOrNull(index) ?: SocialPage.FRIENDS
+        binding.pageFriends.isVisible = page == SocialPage.FRIENDS
+        binding.pageCloud.isVisible = page == SocialPage.CLOUD
+        binding.pageLobby.isVisible = page == SocialPage.LOBBY
+        binding.pageMessages.isVisible = page == SocialPage.MESSAGES
+        binding.pageAccount.isVisible = page == SocialPage.ACCOUNT
     }
 
     private fun selectAccountTab() {
-        binding.tabMultiplayer.getTabAt(3)?.select()
+        val index = socialPages.indexOf(SocialPage.ACCOUNT)
+        if (index >= 0) {
+            binding.tabMultiplayer.getTabAt(index)?.select()
+        }
+    }
+
+    private fun selectFriendsTab() {
+        val index = socialPages.indexOf(SocialPage.FRIENDS)
+        if (index >= 0) {
+            binding.tabMultiplayer.getTabAt(index)?.select()
+        }
     }
 
     private fun showFriendsSubPage(index: Int) {
@@ -939,6 +1279,472 @@ class MultiplayerFragment : Fragment() {
         }
     }
 
+    // region 一键云服（白名单一期）
+
+    private fun refreshCloudServerUi() {
+        val session = AppContainer.multiplayerAuth.current()
+        val localWhitelist = CloudServerService.isLocallyWhitelisted(session?.user?.username)
+        if (session == null || !localWhitelist) {
+            hideCloudServerUi()
+            return
+        }
+        viewLifecycleOwner.lifecycleScope.launch {
+            val ui = _binding ?: return@launch
+            setCloudTabVisible(true)
+            ensureCloudVersionSpinner(CloudServerService.DEFAULT_VERSIONS)
+            try {
+                val capacity = cloudServerService.getCapacity()
+                if (!capacity.isWhitelisted) {
+                    hideCloudServerUi()
+                    return@launch
+                }
+                setCloudTabVisible(true)
+                val versions = capacity.allowedVersions.ifEmpty { CloudServerService.DEFAULT_VERSIONS }
+                ensureCloudVersionSpinner(versions)
+                ui.textCloudCapacity.text = getString(
+                    R.string.multiplayer_cloud_capacity,
+                    capacity.used,
+                    capacity.max,
+                    getString(
+                        if (capacity.canCreate) R.string.multiplayer_cloud_capacity_ok
+                        else R.string.multiplayer_cloud_capacity_full
+                    )
+                )
+                val mine = cloudServerService.listMine()
+                currentCloudServer = mine.firstOrNull { it.isActive }
+                    ?: mine.firstOrNull()
+                updateCloudServerInstanceUi(currentCloudServer)
+                val running = currentCloudServer
+                if (running != null && running.isRunning) {
+                    startCloudServerHeartbeat(running.instanceId)
+                } else {
+                    stopCloudServerHeartbeat()
+                }
+            } catch (ex: Exception) {
+                if (!CloudServerService.isLocallyWhitelisted(
+                        AppContainer.multiplayerAuth.current()?.user?.username
+                    )
+                ) {
+                    hideCloudServerUi()
+                    return@launch
+                }
+                setCloudTabVisible(true)
+                ensureCloudVersionSpinner(CloudServerService.DEFAULT_VERSIONS)
+                ui.textCloudCapacity.text = getString(R.string.multiplayer_cloud_capacity_unreachable)
+                ui.textCloudStatus.text = getString(
+                    R.string.multiplayer_cloud_control_unavailable,
+                    ex.message ?: "unknown"
+                )
+            }
+        }
+    }
+
+    private fun setCloudTabVisible(visible: Boolean) {
+        if (_binding == null) return
+        if (cloudTabVisible == visible && socialPages.isNotEmpty()) return
+        rebuildSocialTabs(showCloud = visible, prefer = currentSocialPage())
+    }
+
+    private fun hideCloudServerUi() {
+        stopCloudServerHeartbeat()
+        currentCloudServer = null
+        setCloudTabVisible(false)
+        val b = _binding ?: return
+        b.pageCloud.isVisible = false
+        updateCloudServerInstanceUi(null)
+    }
+
+    private fun ensureCloudVersionSpinner(versions: List<String>) {
+        val b = _binding ?: return
+        val selected = b.spinnerCloudVersion.selectedItem as? String
+        val adapter = cloudVersionAdapter ?: ArrayAdapter(
+            requireContext(),
+            android.R.layout.simple_spinner_dropdown_item,
+            mutableListOf<String>()
+        ).also {
+            cloudVersionAdapter = it
+            b.spinnerCloudVersion.adapter = it
+        }
+        adapter.clear()
+        adapter.addAll(versions)
+        adapter.notifyDataSetChanged()
+        val index = when {
+            !selected.isNullOrBlank() ->
+                versions.indexOfFirst { it.equals(selected, ignoreCase = true) }
+            else -> -1
+        }
+        b.spinnerCloudVersion.setSelection(
+            when {
+                index >= 0 -> index
+                versions.isNotEmpty() -> minOf(1, versions.lastIndex)
+                else -> 0
+            }
+        )
+    }
+
+    private fun updateCloudServerInstanceUi(info: CloudServerInfo?) {
+        val b = _binding ?: return
+        val running = info?.isRunning == true
+        val active = info?.isActive == true
+        b.buttonCloudJoin.isEnabled = running && !cloudServerBusy && !cloudJoinInProgress
+        b.buttonCloudStop.isEnabled = active && !cloudServerBusy
+        b.buttonCloudCreate.isEnabled = !cloudServerBusy
+        b.buttonCloudRefresh.isEnabled = !cloudServerBusy
+        b.progressCloudServer.isVisible = cloudServerBusy
+
+        if (info == null) {
+            b.textCloudStatus.text = getString(R.string.multiplayer_cloud_idle)
+            b.rowCloudAddress.isVisible = false
+            b.textCloudAddress.text = ""
+            return
+        }
+
+        val title = info.name?.takeIf { it.isNotBlank() } ?: getString(R.string.multiplayer_cloud_title)
+        b.textCloudStatus.text = buildString {
+            append(
+                getString(
+                    R.string.multiplayer_cloud_instance_line,
+                    title,
+                    info.gameVersion,
+                    info.status
+                )
+            )
+            if (!info.errorMessage.isNullOrBlank()) {
+                append('\n')
+                append(info.errorMessage)
+            }
+            if (!info.expiresAtUtc.isNullOrBlank()) {
+                append('\n')
+                append(getString(R.string.multiplayer_cloud_expires, info.expiresAtUtc))
+            }
+        }
+        val address = info.resolvedAddress
+        if ((running || active) && address.isNotBlank()) {
+            b.rowCloudAddress.isVisible = true
+            b.textCloudAddress.text = address
+        } else {
+            b.rowCloudAddress.isVisible = false
+        }
+    }
+
+    private fun setCloudServerBusy(busy: Boolean) {
+        cloudServerBusy = busy
+        updateCloudServerInstanceUi(currentCloudServer)
+    }
+
+    private fun createCloudServer() {
+        if (cloudServerBusy) return
+        val version = (_binding?.spinnerCloudVersion?.selectedItem as? String)?.trim().orEmpty()
+        if (version.isEmpty()) {
+            toast(R.string.multiplayer_cloud_need_version)
+            return
+        }
+        setCloudServerBusy(true)
+        cloudPollJob?.cancel()
+        cloudPollJob = viewLifecycleOwner.lifecycleScope.launch {
+            try {
+                val ui = _binding ?: return@launch
+                ui.textCloudStatus.text = getString(R.string.multiplayer_cloud_creating)
+                val created = cloudServerService.create(version)
+                currentCloudServer = created
+                updateCloudServerInstanceUi(created)
+                ui.textCloudStatus.text = getString(R.string.multiplayer_cloud_waiting)
+                val running = cloudServerService.waitUntilRunning(created.instanceId) { info ->
+                    currentCloudServer = info
+                    viewLifecycleOwner.lifecycleScope.launch {
+                        updateCloudServerInstanceUi(info)
+                    }
+                }
+                currentCloudServer = running
+                updateCloudServerInstanceUi(running)
+                startCloudServerHeartbeat(running.instanceId)
+                refreshCloudServerUi()
+                val joinNow = suspendCancellableCoroutine { cont ->
+                    MaterialAlertDialogBuilder(requireContext())
+                        .setTitle(R.string.multiplayer_cloud_title)
+                        .setMessage(
+                            getString(
+                                R.string.multiplayer_cloud_ready_join,
+                                running.resolvedAddress,
+                                running.gameVersion
+                            )
+                        )
+                        .setPositiveButton(android.R.string.ok) { _, _ ->
+                            if (cont.isActive) cont.resume(true)
+                        }
+                        .setNegativeButton(android.R.string.cancel) { _, _ ->
+                            if (cont.isActive) cont.resume(false)
+                        }
+                        .setOnCancelListener {
+                            if (cont.isActive) cont.resume(false)
+                        }
+                        .show()
+                }
+                if (joinNow) {
+                    joinCloudServer(running)
+                }
+            } catch (ex: CloudServerApiException) {
+                if (ex.code.equals("SLOT_FULL", ignoreCase = true)) {
+                    MaterialAlertDialogBuilder(requireContext())
+                        .setTitle(R.string.multiplayer_cloud_title)
+                        .setMessage(ex.message)
+                        .setPositiveButton(android.R.string.ok, null)
+                        .show()
+                } else {
+                    Toast.makeText(
+                        requireContext(),
+                        getString(R.string.multiplayer_cloud_create_failed, ex.message),
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (ex: Exception) {
+                Toast.makeText(
+                    requireContext(),
+                    getString(
+                        R.string.multiplayer_cloud_create_failed,
+                        ex.message ?: "unknown"
+                    ),
+                    Toast.LENGTH_LONG
+                ).show()
+            } finally {
+                setCloudServerBusy(false)
+            }
+        }
+    }
+
+    private fun joinCloudServer(target: CloudServerInfo? = null) {
+        if (cloudJoinInProgress || cloudServerBusy) {
+            toast(R.string.multiplayer_cloud_busy)
+            return
+        }
+        viewLifecycleOwner.lifecycleScope.launch {
+            var server = target ?: currentCloudServer
+            if (server == null) {
+                refreshCloudServerUi()
+                delay(300)
+                server = currentCloudServer
+            }
+            if (server == null || !server.isRunning) {
+                toast(R.string.multiplayer_cloud_need_running)
+                return@launch
+            }
+            val address = server.resolvedAddress
+            if (address.isBlank()) {
+                toast(R.string.multiplayer_cloud_need_running)
+                return@launch
+            }
+            joinCloudServerAddress(server.gameVersion, address, server.name)
+        }
+    }
+
+    private fun joinCloudServerAddress(
+        gameVersion: String,
+        serverAddress: String,
+        displayName: String?
+    ) {
+        cloudJoinInProgress = true
+        updateCloudServerInstanceUi(currentCloudServer)
+        viewLifecycleOwner.lifecycleScope.launch {
+            try {
+                val installed = AppContainer.repository.installedVersions.value.any {
+                    it.id.equals(gameVersion, ignoreCase = true)
+                }
+                if (!installed) {
+                    val confirm = suspendCancellableCoroutine { cont ->
+                        MaterialAlertDialogBuilder(requireContext())
+                            .setTitle(R.string.multiplayer_cloud_join)
+                            .setMessage(
+                                getString(R.string.multiplayer_cloud_install_confirm, gameVersion)
+                            )
+                            .setPositiveButton(android.R.string.ok) { _, _ ->
+                                if (cont.isActive) cont.resume(true)
+                            }
+                            .setNegativeButton(android.R.string.cancel) { _, _ ->
+                                if (cont.isActive) cont.resume(false)
+                            }
+                            .setOnCancelListener {
+                                if (cont.isActive) cont.resume(false)
+                            }
+                            .show()
+                    }
+                    if (!confirm) return@launch
+                }
+
+                val probe = OfficialServerInfo(
+                    name = displayName?.takeIf { it.isNotBlank() }
+                        ?: getString(R.string.multiplayer_cloud_title) + " " + gameVersion,
+                    host = serverAddress.substringBeforeLast(':').ifBlank { serverAddress },
+                    port = serverAddress.substringAfterLast(':', "25565").toIntOrNull() ?: 25565,
+                    version = gameVersion,
+                    forgeVersion = ""
+                )
+                // Force host:port via serverAddress override after prepare.
+                val prepared = officialJoinService.prepare(requireContext(), probe) { _, message ->
+                    viewLifecycleOwner.lifecycleScope.launch {
+                        _binding?.textCloudStatus?.text = message
+                    }
+                }
+                if (prepared.isFailure) {
+                    throw prepared.exceptionOrNull()
+                        ?: IllegalStateException("prepare failed")
+                }
+                val target = prepared.getOrThrow()
+                val account = prepareCloudLaunchAccount()
+                    ?: return@launch
+                val launch = AppContainer.gameRuntime.launch(
+                    requireContext(),
+                    target.versionId,
+                    account,
+                    serverAddress = serverAddress
+                )
+                if (launch.isFailure) {
+                    val err = launch.exceptionOrNull()
+                    if (err is CancellationException) return@launch
+                    Toast.makeText(
+                        requireContext(),
+                        getString(
+                            R.string.multiplayer_cloud_join_failed,
+                            err?.message ?: "unknown"
+                        ),
+                        Toast.LENGTH_LONG
+                    ).show()
+                } else {
+                    copyText(serverAddress)
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (ex: Exception) {
+                Toast.makeText(
+                    requireContext(),
+                    getString(
+                        R.string.multiplayer_cloud_join_failed,
+                        ex.message ?: "unknown"
+                    ),
+                    Toast.LENGTH_LONG
+                ).show()
+            } finally {
+                cloudJoinInProgress = false
+                updateCloudServerInstanceUi(currentCloudServer)
+            }
+        }
+    }
+
+    /**
+     * Cloud dedicated is online-mode=false; prefer offline account named as 联机 username.
+     */
+    private fun prepareCloudLaunchAccount(): LauncherAccount? {
+        val mpName = AppContainer.multiplayerAuth.current()?.user?.username?.trim().orEmpty()
+        if (mpName.isNotEmpty()) {
+            return LauncherAccount(
+                id = "cloud-offline-$mpName",
+                name = mpName,
+                type = AccountType.OFFLINE,
+                selected = true
+            )
+        }
+        return AppContainer.repository.selectedAccount()
+    }
+
+    private fun stopCloudServer() {
+        val server = currentCloudServer ?: return
+        if (cloudServerBusy) return
+        viewLifecycleOwner.lifecycleScope.launch {
+            val confirm = suspendCancellableCoroutine { cont ->
+                MaterialAlertDialogBuilder(requireContext())
+                    .setTitle(R.string.multiplayer_cloud_stop)
+                    .setMessage(R.string.multiplayer_cloud_stop_confirm)
+                    .setPositiveButton(android.R.string.ok) { _, _ ->
+                        if (cont.isActive) cont.resume(true)
+                    }
+                    .setNegativeButton(android.R.string.cancel) { _, _ ->
+                        if (cont.isActive) cont.resume(false)
+                    }
+                    .setOnCancelListener {
+                        if (cont.isActive) cont.resume(false)
+                    }
+                    .show()
+            }
+            if (!confirm) return@launch
+            setCloudServerBusy(true)
+            try {
+                stopCloudServerHeartbeat()
+                cloudServerService.stop(server.instanceId)
+                currentCloudServer = null
+                updateCloudServerInstanceUi(null)
+                refreshCloudServerUi()
+            } catch (ex: Exception) {
+                Toast.makeText(
+                    requireContext(),
+                    getString(
+                        R.string.multiplayer_cloud_stop_failed,
+                        ex.message ?: "unknown"
+                    ),
+                    Toast.LENGTH_LONG
+                ).show()
+            } finally {
+                setCloudServerBusy(false)
+            }
+        }
+    }
+
+    private fun copyCloudAddress() {
+        val address = currentCloudServer?.resolvedAddress
+            ?: _binding?.textCloudAddress?.text?.toString().orEmpty()
+        if (address.isBlank()) return
+        copyText(address)
+        toast(R.string.multiplayer_cloud_copied)
+    }
+
+    private fun showCloudWorldPcOnlyDialog(actionLabelRes: Int) {
+        if (_binding == null) return
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle(R.string.multiplayer_cloud_title)
+            .setMessage(
+                getString(
+                    R.string.multiplayer_cloud_world_pc_only,
+                    getString(actionLabelRes)
+                )
+            )
+            .setPositiveButton(android.R.string.ok, null)
+            .show()
+    }
+
+    private fun copyText(text: String) {
+        val cm = requireContext().getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        cm.setPrimaryClip(ClipData.newPlainText("cloud-server", text))
+    }
+
+    private fun startCloudServerHeartbeat(instanceId: String) {
+        stopCloudServerHeartbeat()
+        val id = instanceId.trim()
+        if (id.isEmpty()) return
+        cloudHeartbeatJob = viewLifecycleOwner.lifecycleScope.launch {
+            while (isActive) {
+                delay(TimeUnit.MINUTES.toMillis(2))
+                try {
+                    val updated = cloudServerService.heartbeat(id)
+                    currentCloudServer = updated
+                    updateCloudServerInstanceUi(updated)
+                    if (!updated.isRunning) {
+                        stopCloudServerHeartbeat()
+                        break
+                    }
+                } catch (_: Exception) {
+                    // Keep trying next interval; control plane may flap.
+                }
+            }
+        }
+    }
+
+    private fun stopCloudServerHeartbeat() {
+        cloudHeartbeatJob?.cancel()
+        cloudHeartbeatJob = null
+    }
+
+    // endregion
+
     private fun joinRoom(roomCode: String? = null) {
         val code = roomCode?.trim().orEmpty()
             .ifBlank { binding.inputRoomCode.text?.toString().orEmpty().trim() }
@@ -954,27 +1760,55 @@ class MultiplayerFragment : Fragment() {
         viewLifecycleOwner.lifecycleScope.launch {
             binding.buttonJoinRoom.isEnabled = false
             binding.buttonJoinPublicRoom.isEnabled = false
-            val result = AppContainer.multiplayerAuth.joinRoomCode(code)
-            val ui = _binding ?: return@launch
-            ui.buttonJoinRoom.isEnabled = true
-            ui.buttonJoinPublicRoom.isEnabled = true
-            if (result.isSuccess) {
-                selectedPublicRoom = null
-                roomsLeftMode = RoomsLeftMode.BROWSE
-                clearHostDepsCache()
-                renderRoomsPanel()
-                val joined = result.getOrThrow()
-                Toast.makeText(
-                    requireContext(),
-                    getString(R.string.multiplayer_join_ok, joined.directConnectAddress),
-                    Toast.LENGTH_LONG
-                ).show()
-            } else {
-                Toast.makeText(
-                    requireContext(),
-                    result.exceptionOrNull()?.message ?: "加入失败",
-                    Toast.LENGTH_LONG
-                ).show()
+            try {
+                // Cloud dedicated rooms: direct join (no EasyTier / LAN tunnel), aligned with PC.
+                val selected = selectedPublicRoom?.takeIf {
+                    it.roomCode.equals(code, ignoreCase = true)
+                }
+                val room = selected
+                    ?: AppContainer.multiplayerAuth.getPublicRoom(code).getOrNull()
+                    ?: cachedPublicRooms.firstOrNull { it.roomCode.equals(code, ignoreCase = true) }
+                if (room != null && room.isCloudPublicRoom()) {
+                    val address = room.resolveCloudDedicatedAddress()
+                    if (address.isNullOrBlank()) {
+                        Toast.makeText(
+                            requireContext(),
+                            R.string.multiplayer_cloud_room_missing_address,
+                            Toast.LENGTH_LONG
+                        ).show()
+                        return@launch
+                    }
+                    val version = room.version?.trim().orEmpty().ifBlank { "1.20.1" }
+                    val displayName = room.motd.trim().ifBlank {
+                        room.hostName.ifBlank { getString(R.string.multiplayer_cloud_title) }
+                    }
+                    joinCloudServerAddress(version, address, displayName)
+                    return@launch
+                }
+
+                val result = AppContainer.multiplayerAuth.joinRoomCode(code)
+                val ui = _binding ?: return@launch
+                if (result.isSuccess) {
+                    selectedPublicRoom = null
+                    roomsLeftMode = RoomsLeftMode.BROWSE
+                    clearHostDepsCache()
+                    renderRoomsPanel()
+                    val joined = result.getOrThrow()
+                    Toast.makeText(
+                        requireContext(),
+                        getString(R.string.multiplayer_join_ok, joined.directConnectAddress),
+                        Toast.LENGTH_LONG
+                    ).show()
+                } else {
+                    Toast.makeText(
+                        requireContext(),
+                        result.exceptionOrNull()?.message ?: "加入失败",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            } finally {
+                _binding?.buttonJoinRoom?.isEnabled = true
+                _binding?.buttonJoinPublicRoom?.isEnabled = true
             }
         }
     }
@@ -996,6 +1830,14 @@ class MultiplayerFragment : Fragment() {
             return
         }
         val roomCode = lobby.roomCode
+        // Always keep the one-click action visible while in a room.
+        b.buttonDownloadHostDeps.isVisible = true
+        b.buttonDownloadHostDeps.isEnabled = !hostDepsDownloadInProgress
+        if (hostDepsDownloadInProgress) {
+            b.buttonDownloadHostDeps.setText(R.string.multiplayer_download_host_deps_busy)
+        } else {
+            b.buttonDownloadHostDeps.setText(R.string.multiplayer_download_host_deps)
+        }
         val cached = cachedHostDeps
         if (cached != null &&
             roomCode.equals(cachedHostDepsRoomCode, ignoreCase = true)
@@ -1003,7 +1845,6 @@ class MultiplayerFragment : Fragment() {
             applyHostDepsButton(cached)
             return
         }
-        b.buttonDownloadHostDeps.isVisible = false
         b.textHostDepsInfo.isVisible = false
         hostDepsJob?.cancel()
         hostDepsJob = viewLifecycleOwner.lifecycleScope.launch {
@@ -1026,33 +1867,45 @@ class MultiplayerFragment : Fragment() {
 
     private fun applyHostDepsButton(snapshot: RoomDependencySnapshot) {
         val b = _binding ?: return
-        val hasContent = RoomHostDependencyInstaller.hasDownloadableContent(snapshot)
-        b.buttonDownloadHostDeps.isVisible = hasContent
-        b.buttonDownloadHostDeps.isEnabled = hasContent && !hostDepsDownloadInProgress
-        b.textHostDepsInfo.isVisible = hasContent
-        if (!hasContent) return
-
-        val version = snapshot.gameVersion?.ifBlank { null } ?: "未知版本"
-        val loader = snapshot.loader?.ifBlank { null } ?: "原版"
-        val summary = buildString {
-            append(version)
-            append(" · ")
-            append(loader)
-            if (snapshot.mods.isNotEmpty()) {
-                append(" · ")
-                append(snapshot.mods.size)
-                append(" 个模组")
-            } else if (!snapshot.modpackUrl.isNullOrBlank()) {
-                append(" · 整合包")
-            }
+        if (AppContainer.multiplayerAuth.activeLobby.value == null) {
+            b.buttonDownloadHostDeps.isVisible = false
+            b.textHostDepsInfo.isVisible = false
+            return
         }
-        b.textHostDepsInfo.text = getString(R.string.multiplayer_host_deps_summary, summary)
+        b.buttonDownloadHostDeps.isVisible = true
+        b.buttonDownloadHostDeps.isEnabled = !hostDepsDownloadInProgress
+
+        val hasContent = RoomHostDependencyInstaller.hasDownloadableContent(snapshot)
+        val exact = if (hasContent) {
+            RoomHostDependencyInstaller.findExactMatchVersion(snapshot)
+        } else {
+            null
+        }
+        if (hasContent) {
+            val version = snapshot.gameVersion?.ifBlank { null } ?: "未知版本"
+            val loader = snapshot.loader?.ifBlank { null } ?: "原版"
+            val summary = buildString {
+                append(version)
+                append(" · ")
+                append(loader)
+                if (snapshot.mods.isNotEmpty()) {
+                    append(" · ")
+                    append(snapshot.mods.size)
+                    append(" 个模组")
+                } else if (!snapshot.modpackUrl.isNullOrBlank()) {
+                    append(" · 整合包")
+                }
+            }
+            b.textHostDepsInfo.text = getString(R.string.multiplayer_host_deps_summary, summary)
+            b.textHostDepsInfo.isVisible = true
+        } else {
+            b.textHostDepsInfo.isVisible = false
+        }
 
         if (hostDepsDownloadInProgress) {
             b.buttonDownloadHostDeps.setText(R.string.multiplayer_download_host_deps_busy)
             return
         }
-        val exact = RoomHostDependencyInstaller.findExactMatchVersion(snapshot)
         b.buttonDownloadHostDeps.setText(
             if (exact != null) R.string.multiplayer_download_host_deps_launch
             else R.string.multiplayer_download_host_deps
@@ -1229,15 +2082,19 @@ class MultiplayerFragment : Fragment() {
             AppContainer.repository.selectVersion(versionId)
             RoomSessionTracker.track(versionId)
             val account = prepareLaunchAccount() ?: return@launch
-            val server = if (forceDirectConnect) {
-                AppContainer.multiplayerAuth.directConnectAddress.value
-            } else {
-                null
-            }
+            // Default: LAN only. Direct --server is online-only opt-in backup.
+            val allowDirect = forceDirectConnect &&
+                account.type != AccountType.OFFLINE &&
+                account.type != AccountType.THIRD_PARTY
+            val server = AppContainer.multiplayerAuth.directConnectAddress.value
+                ?.takeIf { allowDirect && it.isNotBlank() }
             Toast.makeText(
                 ctx,
-                if (forceDirectConnect && !server.isNullOrBlank()) {
-                    getString(R.string.multiplayer_download_host_deps_ok, "直连备用启动：$versionId")
+                if (!server.isNullOrBlank()) {
+                    getString(
+                        R.string.multiplayer_download_host_deps_ok,
+                        getString(R.string.multiplayer_tunnel_launch_hint, server)
+                    )
                 } else {
                     getString(
                         R.string.multiplayer_download_host_deps_ok,
@@ -1268,10 +2125,22 @@ class MultiplayerFragment : Fragment() {
     }
 
     /**
-     * Explicit backup path: inject 127.0.0.1 tunnel via --server.
-     * Prefer LAN list; only use when the list does not appear.
+     * Online-only backup: inject 127.0.0.1 via --server / quickPlay.
+     * Offline accounts must use servers.dat / LAN (never this path).
      */
     private fun launchDirectBackup() {
+        val account = AppContainer.repository.selectedAccount()
+        if (account == null ||
+            account.type == AccountType.OFFLINE ||
+            account.type == AccountType.THIRD_PARTY
+        ) {
+            Toast.makeText(
+                requireContext(),
+                R.string.multiplayer_direct_backup_offline_blocked,
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
         val server = AppContainer.multiplayerAuth.directConnectAddress.value
         if (server.isNullOrBlank()) {
             toast(R.string.multiplayer_need_room_code)
@@ -1301,10 +2170,10 @@ class MultiplayerFragment : Fragment() {
                 selected = true
             )
         val joiningRoom = AppContainer.multiplayerAuth.activeLobby.value != null
-        if (joiningRoom && account.type == AccountType.OFFLINE) {
+        if (joiningRoom) {
             Toast.makeText(
                 requireContext(),
-                R.string.multiplayer_offline_join_hint,
+                R.string.multiplayer_lan_join_hint,
                 Toast.LENGTH_LONG
             ).show()
         }
@@ -1326,6 +2195,21 @@ class MultiplayerFragment : Fragment() {
             }
             account = refreshed.getOrThrow()
             AppContainer.repository.upsertMicrosoftAccount(account)
+        } else if (account.type == AccountType.THIRD_PARTY) {
+            val refreshed = com.booxin.launcher.core.auth.ThirdPartyAuthService.ensureSession(account)
+            if (refreshed.isFailure) {
+                Toast.makeText(
+                    requireContext(),
+                    getString(
+                        R.string.accounts_third_party_refresh_failed,
+                        refreshed.exceptionOrNull()?.message ?: "请重新登录"
+                    ),
+                    Toast.LENGTH_LONG
+                ).show()
+                return null
+            }
+            account = refreshed.getOrThrow()
+            AppContainer.repository.upsertThirdPartyAccount(account)
         }
         return account
     }
@@ -2005,7 +2889,7 @@ class MultiplayerFragment : Fragment() {
         b.inputRoomCode.setText(pending.roomCode)
         // Show invites sub-tab so the list refreshes after accept.
         runCatching {
-            binding.tabMultiplayer.getTabAt(0)?.select()
+            selectFriendsTab()
             binding.tabFriendsSub.getTabAt(2)?.select()
         }
         pending.inviteId?.let { id ->
@@ -2071,6 +2955,9 @@ class MultiplayerFragment : Fragment() {
         hostDepsJob?.cancel()
         hostDepsJob = null
         clearHostDepsCache()
+        stopCloudServerHeartbeat()
+        cloudPollJob?.cancel()
+        cloudPollJob = null
         super.onDestroyView()
         _binding = null
     }

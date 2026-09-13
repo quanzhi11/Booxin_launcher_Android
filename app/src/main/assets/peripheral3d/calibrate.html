@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <style>
+    html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: transparent; }
+    #c { display: block; width: 100%; height: 100%; touch-action: none; }
+    #hint {
+      position: absolute; left: 0; right: 0; bottom: 6px; text-align: center;
+      color: rgba(17, 26, 42, 0.45); font: 11px/1.3 sans-serif; pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hint">拖动旋转 · 校准朝向</div>
+<script src="../home3d/three.min.js"></script>
+<script src="../home3d/GLTFLoader.legacy.js"></script>
+<script>
+(function () {
+  var params = new URLSearchParams(location.search);
+  var kind = (params.get('kind') || 'gamepad').toLowerCase();
+
+  var canvas = document.getElementById('c');
+  var renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true, alpha: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setClearColor(0x000000, 0);
+  if (renderer.outputEncoding !== undefined) renderer.outputEncoding = THREE.sRGBEncoding;
+
+  var scene = new THREE.Scene();
+  var camera = new THREE.PerspectiveCamera(40, 1, 0.05, 100);
+  // Look slightly downward so the model sits higher in the viewport.
+  camera.position.set(0, 0.55, 3.6);
+  camera.lookAt(0, 0.35, 0);
+
+  scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+  var hemi = new THREE.HemisphereLight(0xffffff, 0x334455, 0.9);
+  scene.add(hemi);
+  var key = new THREE.DirectionalLight(0xffffff, 0.9);
+  key.position.set(3, 6, 4);
+  scene.add(key);
+  var rim = new THREE.DirectionalLight(0x2ec8f0, 0.4);
+  rim.position.set(-4, 2, -3);
+  scene.add(rim);
+
+  var root = new THREE.Group();
+  scene.add(root);
+
+  var matBody = new THREE.MeshStandardMaterial({ color: 0x1c2433, metalness: 0.35, roughness: 0.45 });
+  var matAccent = new THREE.MeshStandardMaterial({ color: 0x2ec8f0, metalness: 0.2, roughness: 0.35, emissive: 0x0a3a48, emissiveIntensity: 0.35 });
+  var matKey = new THREE.MeshStandardMaterial({ color: 0x2a3448, metalness: 0.15, roughness: 0.55 });
+
+  function addBox(w, h, d, mat, x, y, z) {
+    var m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+    m.position.set(x || 0, y || 0, z || 0);
+    root.add(m);
+    return m;
+  }
+
+  function fitObject(obj, targetSize) {
+    var box = new THREE.Box3().setFromObject(obj);
+    var size = new THREE.Vector3();
+    var center = new THREE.Vector3();
+    box.getSize(size);
+    box.getCenter(center);
+    obj.position.sub(center);
+    var maxDim = Math.max(size.x, size.y, size.z) || 1;
+    obj.scale.multiplyScalar((targetSize || 2.4) / maxDim);
+  }
+
+  function paintMeshes(obj) {
+    obj.traverse(function (n) {
+      if (!n.isMesh) return;
+      n.castShadow = false;
+      n.receiveShadow = false;
+      if (!n.material) {
+        n.material = matBody.clone();
+        return;
+      }
+      var mats = Array.isArray(n.material) ? n.material : [n.material];
+      mats.forEach(function (m) {
+        if (!m) return;
+        if (m.color) m.color.setHex(0x1c2433);
+        if (m.metalness !== undefined) m.metalness = 0.28;
+        if (m.roughness !== undefined) m.roughness = 0.48;
+        m.needsUpdate = true;
+      });
+    });
+  }
+
+  function buildFallback() {
+    if (kind === 'keyboard') {
+      addBox(3.4, 0.18, 1.25, matBody, 0, 0, 0);
+      for (var r = 0; r < 4; r++) {
+        for (var c = 0; c < 12; c++) {
+          addBox(0.22, 0.08, 0.22, matKey, -1.45 + c * 0.26, 0.14, -0.42 + r * 0.28);
+        }
+      }
+      addBox(0.7, 0.06, 0.28, matAccent, 0, 0.14, 0.42);
+    } else if (kind === 'mouse') {
+      addBox(0.7, 0.35, 1.15, matBody, 0, 0.05, 0);
+      addBox(0.28, 0.08, 0.45, matKey, -0.16, 0.28, -0.15);
+      addBox(0.28, 0.08, 0.45, matKey, 0.16, 0.28, -0.15);
+      addBox(0.12, 0.18, 0.22, matAccent, 0, 0.32, -0.05);
+      addBox(0.35, 0.08, 0.35, matKey, 0, -0.05, 0.35);
+    } else {
+      addBox(2.2, 0.35, 1.1, matBody, 0, 0, 0);
+      addBox(0.55, 0.55, 0.55, matBody, -1.35, -0.15, 0.15);
+      addBox(0.55, 0.55, 0.55, matBody, 1.35, -0.15, 0.15);
+      addBox(0.35, 0.08, 0.35, matAccent, -0.55, 0.22, 0.15);
+      addBox(0.35, 0.08, 0.35, matAccent, 0.55, 0.22, 0.15);
+    }
+  }
+
+  var modelUrl =
+    kind === 'keyboard' ? 'models/keyboard.glb' :
+    kind === 'mouse' ? 'models/mouse.glb' :
+    'models/gamepad.glb';
+
+  var targetSize = kind === 'keyboard' ? 3.0 : (kind === 'mouse' ? 1.7 : 2.5);
+  var yawBias = kind === 'keyboard' ? 0 : (kind === 'mouse' ? 0.2 : 0.15);
+
+  if (typeof THREE.GLTFLoader === 'function') {
+    var loader = new THREE.GLTFLoader();
+    loader.load(
+      modelUrl,
+      function (gltf) {
+        var obj = gltf.scene || gltf.scenes[0];
+        // DualSense merge has no materials; tint so it reads as a controller.
+        if (kind === 'gamepad') paintMeshes(obj);
+        fitObject(obj, targetSize);
+        obj.rotation.y = yawBias;
+        // Nudge model upward in the viewport.
+        obj.position.y += kind === 'mouse' ? 0.25 : 0.35;
+        root.add(obj);
+      },
+      undefined,
+      function () {
+        buildFallback();
+      }
+    );
+  } else {
+    buildFallback();
+  }
+
+  var dragging = false;
+  var lastX = 0, lastY = 0;
+  var rotY = 0.35, rotX = 0.22;
+
+  function onPointerDown(e) {
+    dragging = true;
+    lastX = e.clientX || (e.touches && e.touches[0].clientX) || 0;
+    lastY = e.clientY || (e.touches && e.touches[0].clientY) || 0;
+  }
+  function onPointerMove(e) {
+    if (!dragging) return;
+    var x = e.clientX || (e.touches && e.touches[0].clientX) || lastX;
+    var y = e.clientY || (e.touches && e.touches[0].clientY) || lastY;
+    rotY += (x - lastX) * 0.01;
+    rotX += (y - lastY) * 0.008;
+    rotX = Math.max(-0.85, Math.min(0.85, rotX));
+    lastX = x; lastY = y;
+  }
+  function onPointerUp() { dragging = false; }
+
+  canvas.addEventListener('pointerdown', onPointerDown);
+  canvas.addEventListener('pointermove', onPointerMove);
+  window.addEventListener('pointerup', onPointerUp);
+  canvas.addEventListener('touchstart', onPointerDown, { passive: true });
+  canvas.addEventListener('touchmove', onPointerMove, { passive: true });
+  canvas.addEventListener('touchend', onPointerUp);
+
+  function resize() {
+    var w = canvas.clientWidth || window.innerWidth;
+    var h = canvas.clientHeight || window.innerHeight;
+    renderer.setSize(w, h, false);
+    camera.aspect = w / Math.max(h, 1);
+    camera.updateProjectionMatrix();
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  var t0 = performance.now();
+  function frame(now) {
+    requestAnimationFrame(frame);
+    var auto = !dragging ? (now - t0) * 0.00032 : 0;
+    root.rotation.y = rotY + auto;
+    root.rotation.x = rotX;
+    renderer.render(scene, camera);
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

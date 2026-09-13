@@ -1,8 +1,10 @@
 package com.booxin.launcher.ui.launch.input
 
 import android.content.Context
+import android.text.InputFilter
 import android.view.Gravity
 import android.view.View
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.TextView
 import android.widget.Toast
@@ -95,6 +97,15 @@ class ControlLayoutController(
     fun addButton() {
         if (!editMode) enterEditMode()
         AddControlKeyDialog.show(context) { picked ->
+            val pluginChrome = ControlLayoutStore.findPluginChrome(
+                context = context,
+                kind = picked.kind,
+                code = picked.code,
+                codes = picked.codes
+            )
+            val inheritedStyle = pluginChrome?.style
+                ?: buttonStyle
+                ?: buttons.mapNotNull { it.spec.style }.firstOrNull { !it.isEmpty() }
             val spec = ControlButtonSpec(
                 id = ControlLayoutStore.newId(),
                 label = picked.label,
@@ -103,7 +114,9 @@ class ControlLayoutController(
                 x = 0.85f,
                 y = 0.45f,
                 sizeDp = picked.sizeDp,
-                codes = picked.codes
+                codes = picked.codes,
+                icon = pluginChrome?.icon.orEmpty(),
+                style = inheritedStyle
             )
             attach(spec, select = true)
             persist()
@@ -126,6 +139,147 @@ class ControlLayoutController(
         selectedButton = null
         refreshFollowToggleLabel()
         persist()
+    }
+
+    /** Rename the selected virtual key (joystick has no label). */
+    fun renameSelected() {
+        if (!editMode) return
+        if (joystickSelected) {
+            Toast.makeText(context, context.getString(R.string.control_edit_rename_joystick), Toast.LENGTH_SHORT).show()
+            return
+        }
+        val target = selectedButton
+        if (target == null) {
+            Toast.makeText(context, context.getString(R.string.control_edit_need_select), Toast.LENGTH_SHORT).show()
+            return
+        }
+        val density = context.resources.displayMetrics.density
+        val input = EditText(context).apply {
+            setText(target.spec.label)
+            setSelection(text.length)
+            filters = arrayOf(InputFilter.LengthFilter(12))
+            hint = context.getString(R.string.control_edit_rename_hint)
+            setPadding(
+                (16 * density).toInt(),
+                (12 * density).toInt(),
+                (16 * density).toInt(),
+                (12 * density).toInt()
+            )
+        }
+        AlertDialog.Builder(context)
+            .setTitle(R.string.control_edit_rename)
+            .setView(input)
+            .setPositiveButton(android.R.string.ok) { _, _ ->
+                val next = input.text?.toString()?.trim().orEmpty()
+                if (next.isEmpty()) {
+                    Toast.makeText(
+                        context,
+                        context.getString(R.string.control_edit_rename_empty),
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    return@setPositiveButton
+                }
+                target.applySpec(target.spec.copy(label = next))
+                if (host.width > 0) target.layoutInParent(host.width, host.height)
+                persist()
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    /**
+     * Pick a preset color/chrome for the selected key.
+     * 「透明」clears style back to the hollow stock look.
+     */
+    fun colorSelected() {
+        if (!editMode) return
+        if (joystickSelected) {
+            Toast.makeText(context, context.getString(R.string.control_edit_color_joystick), Toast.LENGTH_SHORT).show()
+            return
+        }
+        val target = selectedButton
+        if (target == null) {
+            Toast.makeText(context, context.getString(R.string.control_edit_need_select), Toast.LENGTH_SHORT).show()
+            return
+        }
+        data class Preset(val name: String, val style: ControlButtonStyle?)
+        val presets = listOf(
+            Preset(
+                context.getString(R.string.control_edit_color_outline),
+                ControlButtonStyle.transparentOutline()
+            ),
+            Preset(
+                context.getString(R.string.control_edit_color_transparent),
+                ControlButtonStyle.transparentOutline(
+                    borderColor = 0x55FFFFFF.toInt(),
+                    borderWidthDp = 1.5f
+                )
+            ),
+            Preset(
+                context.getString(R.string.control_edit_color_dark),
+                ControlButtonStyle.solidFill(0x66000000.toInt(), opacity = 0.85f)
+            ),
+            Preset(
+                context.getString(R.string.control_edit_color_blue),
+                ControlButtonStyle.solidFill(0xAA1B6CA8.toInt())
+            ),
+            Preset(
+                context.getString(R.string.control_edit_color_cyan),
+                ControlButtonStyle.solidFill(0xAA00ACC1.toInt())
+            ),
+            Preset(
+                context.getString(R.string.control_edit_color_green),
+                ControlButtonStyle.solidFill(0xAA2E7D32.toInt())
+            ),
+            Preset(
+                context.getString(R.string.control_edit_color_orange),
+                ControlButtonStyle.solidFill(0xAAEF6C00.toInt())
+            ),
+            Preset(
+                context.getString(R.string.control_edit_color_red),
+                ControlButtonStyle.solidFill(0xAAC62828.toInt())
+            ),
+            Preset(
+                context.getString(R.string.control_edit_color_purple),
+                ControlButtonStyle.solidFill(0xAA6A1B9A.toInt())
+            ),
+            Preset(
+                context.getString(R.string.control_edit_color_pink),
+                ControlButtonStyle.solidFill(0xAAAD1457.toInt())
+            )
+        )
+        val labels = presets.map { it.name }.toTypedArray()
+        AlertDialog.Builder(context)
+            .setTitle(R.string.control_edit_color)
+            .setItems(labels) { _, which ->
+                val preset = presets.getOrNull(which) ?: return@setItems
+                target.applySpec(target.spec.copy(style = preset.style))
+                if (host.width > 0) target.layoutInParent(host.width, host.height)
+                persist()
+            }
+            .setNeutralButton(R.string.control_edit_color_all) { _, _ ->
+                AlertDialog.Builder(context)
+                    .setTitle(R.string.control_edit_color_all)
+                    .setItems(labels) { _, which ->
+                        val preset = presets.getOrNull(which) ?: return@setItems
+                        buttons.forEach { b ->
+                            // Keep plugin icons; only replace style chrome.
+                            b.applySpec(b.spec.copy(style = preset.style))
+                            if (host.width > 0) b.layoutInParent(host.width, host.height)
+                        }
+                        buttonStyle = preset.style
+                        persist()
+                        Toast.makeText(
+                            context,
+                            context.getString(R.string.control_edit_color_all_done),
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                    .setNegativeButton(android.R.string.cancel, null)
+                    .show()
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
     }
 
     /** Toggle follow on the selected button, or on the movement joystick. */

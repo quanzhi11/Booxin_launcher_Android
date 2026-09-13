@@ -35,8 +35,11 @@ import com.booxin.launcher.core.java.JavaInstallState
 import com.booxin.launcher.data.model.GameVersion
 import com.booxin.launcher.data.model.VersionType
 import com.booxin.launcher.databinding.FragmentDownloadBinding
+import com.booxin.launcher.ui.controller.ControllerNavBinder
 import com.booxin.launcher.ui.versions.VersionsAdapter
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.google.android.material.textfield.TextInputEditText
+import com.google.android.material.textfield.TextInputLayout
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -80,6 +83,7 @@ class DownloadFragment : Fragment() {
         super.onViewCreated(view, savedInstanceState)
         binding.recyclerDownload.layoutManager = LinearLayoutManager(requireContext())
         binding.recyclerDownload.adapter = adapter
+        ControllerNavBinder.bindRecycler(binding.recyclerDownload)
 
         binding.buttonBack.setOnClickListener {
             findNavController().navigateUp()
@@ -340,27 +344,33 @@ class DownloadFragment : Fragment() {
     }
 
     private fun startForgeInstall(mcVersion: GameVersion, build: ForgeBuild) {
-        runInstallJob(
-            preparing = {
-                textProgress.text = getString(R.string.download_forge_installing, build.displayName)
+        promptInstanceName(build.displayName) { displayName ->
+            runInstallJob(
+                preparing = {
+                    textProgress.text =
+                        getString(R.string.download_forge_installing, build.displayName)
+                }
+            ) {
+                val runtime = AppContainer.gameRuntime as BooxinGameRuntime
+                val result = runtime.prepareForge(mcVersion.id, build.loaderVersion, mcVersion.url)
+                withContext(Dispatchers.Main) { finishLoaderInstall(result, displayName) }
             }
-        ) {
-            val runtime = AppContainer.gameRuntime as BooxinGameRuntime
-            val result = runtime.prepareForge(mcVersion.id, build.loaderVersion, mcVersion.url)
-            withContext(Dispatchers.Main) { finishLoaderInstall(result) }
         }
     }
 
     private fun startNeoForgeInstall(mcVersion: GameVersion, build: NeoForgeBuild) {
-        runInstallJob(
-            preparing = {
-                textProgress.text =
-                    getString(R.string.download_neoforge_installing, build.displayName)
+        promptInstanceName(build.displayName) { displayName ->
+            runInstallJob(
+                preparing = {
+                    textProgress.text =
+                        getString(R.string.download_neoforge_installing, build.displayName)
+                }
+            ) {
+                val runtime = AppContainer.gameRuntime as BooxinGameRuntime
+                val result =
+                    runtime.prepareNeoForge(mcVersion.id, build.loaderVersion, mcVersion.url)
+                withContext(Dispatchers.Main) { finishLoaderInstall(result, displayName) }
             }
-        ) {
-            val runtime = AppContainer.gameRuntime as BooxinGameRuntime
-            val result = runtime.prepareNeoForge(mcVersion.id, build.loaderVersion, mcVersion.url)
-            withContext(Dispatchers.Main) { finishLoaderInstall(result) }
         }
     }
 
@@ -392,15 +402,17 @@ class DownloadFragment : Fragment() {
     }
 
     private fun startFabricInstall(mcVersion: GameVersion, build: FabricBuild) {
-        runInstallJob(
-            preparing = {
-                textProgress.text =
-                    getString(R.string.download_fabric_installing, build.displayName)
+        promptInstanceName(build.displayName) { displayName ->
+            runInstallJob(
+                preparing = {
+                    textProgress.text =
+                        getString(R.string.download_fabric_installing, build.displayName)
+                }
+            ) {
+                val runtime = AppContainer.gameRuntime as BooxinGameRuntime
+                val result = runtime.prepareFabric(mcVersion.id, build.loaderVersion, mcVersion.url)
+                withContext(Dispatchers.Main) { finishLoaderInstall(result, displayName) }
             }
-        ) {
-            val runtime = AppContainer.gameRuntime as BooxinGameRuntime
-            val result = runtime.prepareFabric(mcVersion.id, build.loaderVersion, mcVersion.url)
-            withContext(Dispatchers.Main) { finishLoaderInstall(result) }
         }
     }
 
@@ -432,15 +444,17 @@ class DownloadFragment : Fragment() {
     }
 
     private fun startQuiltInstall(mcVersion: GameVersion, build: QuiltBuild) {
-        runInstallJob(
-            preparing = {
-                textProgress.text =
-                    getString(R.string.download_quilt_installing, build.displayName)
+        promptInstanceName(build.displayName) { displayName ->
+            runInstallJob(
+                preparing = {
+                    textProgress.text =
+                        getString(R.string.download_quilt_installing, build.displayName)
+                }
+            ) {
+                val runtime = AppContainer.gameRuntime as BooxinGameRuntime
+                val result = runtime.prepareQuilt(mcVersion.id, build.loaderVersion, mcVersion.url)
+                withContext(Dispatchers.Main) { finishLoaderInstall(result, displayName) }
             }
-        ) {
-            val runtime = AppContainer.gameRuntime as BooxinGameRuntime
-            val result = runtime.prepareQuilt(mcVersion.id, build.loaderVersion, mcVersion.url)
-            withContext(Dispatchers.Main) { finishLoaderInstall(result) }
         }
     }
 
@@ -472,20 +486,22 @@ class DownloadFragment : Fragment() {
     }
 
     private fun startOptiFineInstall(mcVersion: GameVersion, build: OptiFineBuild) {
-        runInstallJob(
-            preparing = {
-                textProgress.text =
-                    getString(R.string.download_optifine_installing, build.displayName)
+        promptInstanceName(build.displayName) { displayName ->
+            runInstallJob(
+                preparing = {
+                    textProgress.text =
+                        getString(R.string.download_optifine_installing, build.displayName)
+                }
+            ) {
+                val runtime = AppContainer.gameRuntime as BooxinGameRuntime
+                val result = runtime.prepareOptiFine(
+                    mcVersion.id,
+                    build.type,
+                    build.patch,
+                    mcVersion.url
+                )
+                withContext(Dispatchers.Main) { finishLoaderInstall(result, displayName) }
             }
-        ) {
-            val runtime = AppContainer.gameRuntime as BooxinGameRuntime
-            val result = runtime.prepareOptiFine(
-                mcVersion.id,
-                build.type,
-                build.patch,
-                mcVersion.url
-            )
-            withContext(Dispatchers.Main) { finishLoaderInstall(result) }
         }
     }
 
@@ -506,15 +522,19 @@ class DownloadFragment : Fragment() {
         }
     }
 
-    private fun finishLoaderInstall(result: Result<String>) {
+    private fun finishLoaderInstall(result: Result<String>, displayName: String? = null) {
         installing = false
         val end = _binding
         val appCtx = BooxinApp.getAppContext()
         if (result.isSuccess) {
+            val versionId = result.getOrThrow()
+            if (!displayName.isNullOrBlank()) {
+                AppContainer.repository.setVersionDisplayName(versionId, displayName)
+            }
             end?.progressPanel?.isVisible = false
             Toast.makeText(
                 appCtx,
-                appCtx.getString(R.string.download_install_done, result.getOrThrow()),
+                appCtx.getString(R.string.download_install_done, versionId),
                 Toast.LENGTH_SHORT
             ).show()
             end?.let { adapter.notifyDataSetChanged() }
@@ -527,6 +547,32 @@ class DownloadFragment : Fragment() {
                 Toast.LENGTH_LONG
             ).show()
         }
+    }
+
+    /** Optional display name before install; skip keeps the default version id label. */
+    private fun promptInstanceName(defaultHint: String, onProceed: (displayName: String?) -> Unit) {
+        val input = TextInputEditText(requireContext()).apply {
+            hint = getString(R.string.download_instance_name_hint)
+            setText(defaultHint)
+            setSelection(text?.length ?: 0)
+        }
+        val layout = TextInputLayout(requireContext()).apply {
+            hint = getString(R.string.download_instance_name_title)
+            setPadding(48, 24, 48, 0)
+            addView(input)
+        }
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle(R.string.download_instance_name_title)
+            .setMessage(R.string.download_instance_name_message)
+            .setView(layout)
+            .setPositiveButton(R.string.download_instance_name_ok) { _, _ ->
+                onProceed(input.text?.toString()?.trim()?.takeIf { it.isNotBlank() })
+            }
+            .setNeutralButton(R.string.download_instance_name_skip) { _, _ ->
+                onProceed(null)
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
     }
 
     /**
@@ -564,50 +610,55 @@ class DownloadFragment : Fragment() {
     }
 
     private fun startInstall(version: GameVersion) {
-        runInstallJob(
-            preparing = { textProgress.text = getString(R.string.download_installing) }
-        ) {
-            val alreadyInstalled = AppContainer.repository.installedVersions.value
-                .any { it.id == version.id } || version.installed
-            AppContainer.javaEnvironment.ensureForMinecraft(version.id).getOrElse {
+        promptInstanceName(version.id) { displayName ->
+            runInstallJob(
+                preparing = { textProgress.text = getString(R.string.download_installing) }
+            ) {
+                val alreadyInstalled = AppContainer.repository.installedVersions.value
+                    .any { it.id == version.id } || version.installed
+                AppContainer.javaEnvironment.ensureForMinecraft(version.id).getOrElse {
+                    withContext(Dispatchers.Main) {
+                        installing = false
+                        val message = it.message ?: "unknown"
+                        _binding?.textProgress?.text = message
+                        Toast.makeText(
+                            BooxinApp.getAppContext(),
+                            BooxinApp.getAppContext()
+                                .getString(R.string.download_install_failed, message),
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                    return@runInstallJob
+                }
+                val result = AppContainer.repository.installVersion(version.id)
                 withContext(Dispatchers.Main) {
                     installing = false
-                    val message = it.message ?: "unknown"
-                    _binding?.textProgress?.text = message
-                    Toast.makeText(
-                        BooxinApp.getAppContext(),
-                        BooxinApp.getAppContext()
-                            .getString(R.string.download_install_failed, message),
-                        Toast.LENGTH_LONG
-                    ).show()
-                }
-                return@runInstallJob
-            }
-            val result = AppContainer.repository.installVersion(version.id)
-            withContext(Dispatchers.Main) {
-                installing = false
-                val end = _binding
-                val appCtx = BooxinApp.getAppContext()
-                if (result.isSuccess) {
-                    end?.progressPanel?.isVisible = false
-                    Toast.makeText(
-                        appCtx,
-                        if (alreadyInstalled) {
-                            appCtx.getString(R.string.download_reinstall_done, version.id)
-                        } else {
-                            appCtx.getString(R.string.download_install_done, version.id)
-                        },
-                        Toast.LENGTH_SHORT
-                    ).show()
-                    end?.let { adapter.notifyDataSetChanged() }
-                } else {
-                    val message = result.exceptionOrNull()?.message ?: "unknown"
-                    end?.textProgress?.text = message
-                    Toast.makeText(
-                        appCtx,
-                        appCtx.getString(R.string.download_install_failed, message),
-                        Toast.LENGTH_LONG
-                    ).show()
+                    val end = _binding
+                    val appCtx = BooxinApp.getAppContext()
+                    if (result.isSuccess) {
+                        if (!displayName.isNullOrBlank()) {
+                            AppContainer.repository.setVersionDisplayName(version.id, displayName)
+                        }
+                        end?.progressPanel?.isVisible = false
+                        Toast.makeText(
+                            appCtx,
+                            if (alreadyInstalled) {
+                                appCtx.getString(R.string.download_reinstall_done, version.id)
+                            } else {
+                                appCtx.getString(R.string.download_install_done, version.id)
+                            },
+                            Toast.LENGTH_SHORT
+                        ).show()
+                        end?.let { adapter.notifyDataSetChanged() }
+                    } else {
+                        val message = result.exceptionOrNull()?.message ?: "unknown"
+                        end?.textProgress?.text = message
+                        Toast.makeText(
+                            appCtx,
+                            appCtx.getString(R.string.download_install_failed, message),
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
                 }
             }
         }

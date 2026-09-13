@@ -57,7 +57,9 @@ class VersionManageFragment : Fragment() {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
         binding.buttonBack.setOnClickListener { findNavController().navigateUp() }
-        binding.textVersionTitle.text = versionId
+        refreshHeaderTitle()
+        binding.buttonRenameDisplay.setOnClickListener { showRenameDialog() }
+        binding.buttonSetDefault.setOnClickListener { toggleDefault() }
 
         setupTabs()
         setupModsList()
@@ -70,6 +72,67 @@ class VersionManageFragment : Fragment() {
         refreshMods()
         refreshPacks()
         refreshShaders()
+    }
+
+    private fun refreshHeaderTitle() {
+        val version = com.booxin.launcher.AppContainer.repository.installedVersions.value
+            .firstOrNull { it.id == versionId }
+        binding.textVersionTitle.text = version?.displayName ?: versionId
+        binding.textDisplayName.text = version?.displayName ?: versionId
+        binding.buttonSetDefault.setText(
+            if (version?.isDefault == true) R.string.versions_clear_default
+            else R.string.versions_set_default
+        )
+    }
+
+    private fun showRenameDialog() {
+        val version = com.booxin.launcher.AppContainer.repository.installedVersions.value
+            .firstOrNull { it.id == versionId }
+        val density = resources.displayMetrics.density
+        val pad = (20 * density).toInt()
+        val inputLayout = TextInputLayout(requireContext()).apply {
+            hint = getString(R.string.versions_rename_hint)
+            setPadding(pad, pad / 2, pad, 0)
+        }
+        val edit = TextInputEditText(inputLayout.context).apply {
+            inputType = InputType.TYPE_CLASS_TEXT
+            maxLines = 1
+            setText(version?.customDisplayName ?: versionId)
+            setSelectAllOnFocus(true)
+        }
+        inputLayout.addView(edit)
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle(R.string.versions_rename_title)
+            .setMessage("ID: $versionId")
+            .setView(inputLayout)
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(android.R.string.ok) { _, _ ->
+                com.booxin.launcher.AppContainer.repository.setVersionDisplayName(
+                    versionId,
+                    edit.text?.toString()
+                )
+                refreshHeaderTitle()
+                Toast.makeText(requireContext(), R.string.versions_rename_done, Toast.LENGTH_SHORT)
+                    .show()
+            }
+            .show()
+        edit.requestFocus()
+    }
+
+    private fun toggleDefault() {
+        val version = com.booxin.launcher.AppContainer.repository.installedVersions.value
+            .firstOrNull { it.id == versionId }
+        if (version?.isDefault == true) {
+            com.booxin.launcher.AppContainer.repository.setDefaultVersion(null)
+        } else {
+            com.booxin.launcher.AppContainer.repository.setDefaultVersion(versionId)
+            Toast.makeText(
+                requireContext(),
+                getString(R.string.versions_set_default_done, version?.displayName ?: versionId),
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+        refreshHeaderTitle()
     }
 
     override fun onResume() {

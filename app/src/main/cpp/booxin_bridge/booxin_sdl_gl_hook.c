@@ -97,8 +97,20 @@ static void *g_swap_prev = NULL;
 static void *g_create_win_prev = NULL;
 static EGLBoolean (*g_mg_egl_swap)(EGLDisplay, EGLSurface) = NULL;
 static EGLSurface (*g_mg_egl_create_win)(EGLDisplay, EGLConfig, EGLNativeWindowType, const EGLint *) = NULL;
+static EGLSurface (*g_mg_egl_create_pbuffer)(EGLDisplay, EGLConfig, const EGLint *) = NULL;
 static EGLint (*g_mg_egl_get_error)(void) = NULL;
 static void *(*g_mg_egl_get_proc)(const char *name) = NULL;
+static EGLDisplay (*g_mg_egl_get_display_cur)(void) = NULL;
+static EGLContext (*g_mg_egl_get_context_cur)(void) = NULL;
+static EGLSurface (*g_mg_egl_get_surface_cur)(EGLint) = NULL;
+static EGLBoolean (*g_mg_egl_make_current)(EGLDisplay, EGLSurface, EGLSurface, EGLContext) = NULL;
+static EGLBoolean (*g_mg_egl_destroy_surface)(EGLDisplay, EGLSurface) = NULL;
+static EGLBoolean (*g_mg_egl_query_context)(EGLDisplay, EGLContext, EGLint, EGLint *) = NULL;
+static EGLBoolean (*g_mg_egl_get_config_attrib)(EGLDisplay, EGLConfig, EGLint, EGLint *) = NULL;
+static EGLBoolean (*g_mg_egl_get_configs)(EGLDisplay, EGLConfig *, EGLint, EGLint *) = NULL;
+static atomic_ullong g_window_surface_creates = 0;
+static atomic_ullong g_pbuffer_surface_creates = 0;
+static EGLSurface g_forced_window_surface = EGL_NO_SURFACE;
 static void *g_get_proc_prev = NULL;
 
 typedef int (*sdl_gl_swap_window_fn)(void *window);
@@ -167,12 +179,12 @@ static EGLBoolean booxin_egl_swap_buffers(EGLDisplay dpy, EGLSurface surface) {
 static EGLSurface booxin_egl_create_window_surface(
     EGLDisplay dpy, EGLConfig config, EGLNativeWindowType win, const EGLint *attrib) {
     /*
-     * SDL may pass a transient/probe ANW; TextureView BufferQueues often never
-     * deliver consumer updates under MG. Always prefer the launcher-retained
-     * SurfaceView/TextureView window from setupBridgeWindow.
+     * Always paint into the launcher-retained Surface (TextureView/SurfaceView).
+     * Keeping a "full-size" SDL ANW that is not the retained producer explains
+     * present>0 with TextureView texUpdated=0 (black screen + audio).
      */
     ANativeWindow *retained = booxin_ensure_native_window();
-    if (retained) {
+    if (retained && win != (EGLNativeWindowType)retained) {
         int rw = ANativeWindow_getWidth(retained);
         int rh = ANativeWindow_getHeight(retained);
         int aw = 0, ah = 0;
@@ -180,17 +192,9 @@ static EGLSurface booxin_egl_create_window_surface(
             aw = ANativeWindow_getWidth((ANativeWindow *)win);
             ah = ANativeWindow_getHeight((ANativeWindow *)win);
         }
-        /* Prefer launcher TextureView ANW over SDL probe/transient windows. */
-        int substitute = !win || win != (EGLNativeWindowType)retained;
-        if (substitute && win && aw >= rw && ah >= rh && aw > 64 && ah > 64) {
-            /* Caller already has a full-size window — keep it. */
-            substitute = 0;
-        }
-        if (substitute) {
-            LOGI("eglCreateWindowSurface: substitute retained=%p %dx%d for win=%p %dx%d",
-                 (void *)retained, rw, rh, (void *)win, aw, ah);
-            win = (EGLNativeWindowType)retained;
-        }
+        LOGI("eglCreateWindowSurface: force retained=%p %dx%d (was win=%p %dx%d)",
+             (void *)retained, rw, rh, (void *)win, aw, ah);
+        win = (EGLNativeWindowType)retained;
     }
     EGLSurface (*real)(EGLDisplay, EGLConfig, EGLNativeWindowType, const EGLint *) = NULL;
     if (g_create_win_prev)
@@ -198,16 +202,195 @@ static EGLSurface booxin_egl_create_window_surface(
             g_create_win_prev;
     else if (g_mg_egl_create_win)
         real = g_mg_egl_create_win;
-    EGLSurface s = real ? real(dpy, config, win, attrib) : EGL_NO_SURFACE;
+
+    /*
+     * Prefer LINEAR default FB. Forcing EGL_GL_COLORSPACE_SRGB on Adreno+MG
+     * double-applies gamma (Minecraft already writes display-referred colors) → 发白.
+     * Strip any sRGB colorspace request from the caller and use linear / NULL.
+     */
+    EGLint linear_attribs[8];
+    const EGLint *use_attrib = attrib;
+    int stripped_srgb = 0;
+    if (attrib) {
+        int n = 0;
+        for (int i = 0; attrib[i] != EGL_NONE && n < 6; i += 2) {
+            if (attrib[i] == 0x309D /* EGL_GL_COLORSPACE_KHR */) {
+                stripped_srgb = 1;
+                continue;
+            }
+            linear_attribs[n++] = attrib[i];
+            linear_attribs[n++] = attrib[i + 1];
+        }
+        if (stripped_srgb) {
+            linear_attribs[n++] = 0x309D;
+            linear_attribs[n++] = 0x308A; /* EGL_GL_COLORSPACE_LINEAR_KHR */
+            linear_attribs[n++] = EGL_NONE;
+            use_attrib = linear_attribs;
+        }
+    }
+
+    EGLSurface s = real ? real(dpy, config, win, use_attrib) : EGL_NO_SURFACE;
+    if (s == EGL_NO_SURFACE && use_attrib != attrib) {
+        EGLint err0 = g_mg_egl_get_error ? g_mg_egl_get_error() : -1;
+        LOGW("eglCreateWindowSurface linear failed err=0x%x — retry plain", (int)err0);
+        s = real ? real(dpy, config, win, NULL) : EGL_NO_SURFACE;
+        use_attrib = NULL;
+    }
     EGLint err = g_mg_egl_get_error ? g_mg_egl_get_error() : -1;
     int aw = 0, ah = 0;
     if (win) {
         aw = ANativeWindow_getWidth((ANativeWindow *)win);
         ah = ANativeWindow_getHeight((ANativeWindow *)win);
     }
-    LOGI("eglCreateWindowSurface win=%p %dx%d -> surf=%p err=0x%x real=%p",
-         (void *)win, aw, ah, (void *)s, (int)err, (void *)real);
+    if (s != EGL_NO_SURFACE) {
+        atomic_fetch_add_explicit(&g_window_surface_creates, 1ULL, memory_order_relaxed);
+        g_forced_window_surface = s;
+    }
+    LOGI("eglCreateWindowSurface win=%p %dx%d -> surf=%p err=0x%x linear=%d real=%p",
+         (void *)win, aw, ah, (void *)s, (int)err, stripped_srgb ? 1 : 0, (void *)real);
     return s;
+}
+
+static EGLSurface booxin_egl_create_pbuffer_surface(
+    EGLDisplay dpy, EGLConfig config, const EGLint *attrib) {
+    EGLSurface (*real)(EGLDisplay, EGLConfig, const EGLint *) = g_mg_egl_create_pbuffer;
+    if (!real && g_mg_handle) {
+        real = (EGLSurface (*)(EGLDisplay, EGLConfig, const EGLint *))
+            dlsym(g_mg_handle, "eglCreatePbufferSurface");
+        if (real && real != &booxin_egl_create_pbuffer_surface)
+            g_mg_egl_create_pbuffer = real;
+        else
+            real = g_mg_egl_create_pbuffer;
+    }
+    EGLSurface s = real ? real(dpy, config, attrib) : EGL_NO_SURFACE;
+    atomic_fetch_add_explicit(&g_pbuffer_surface_creates, 1ULL, memory_order_relaxed);
+    EGLint w = 0, h = 0;
+    if (attrib) {
+        for (int i = 0; attrib[i] != EGL_NONE; i += 2) {
+            if (attrib[i] == EGL_WIDTH) w = attrib[i + 1];
+            if (attrib[i] == EGL_HEIGHT) h = attrib[i + 1];
+        }
+    }
+    LOGI("eglCreatePbufferSurface %dx%d -> surf=%p (winCreates=%llu)",
+         w, h, (void *)s,
+         (unsigned long long)atomic_load_explicit(&g_window_surface_creates, memory_order_relaxed));
+    return s;
+}
+
+/** After CreateContext: if MG/SDL never hit our window-surface wrapper, bind retained ANW. */
+static void booxin_force_drawable_on_retained(void) {
+    ANativeWindow *retained = booxin_ensure_native_window();
+    if (!retained || !g_mg_handle) return;
+
+    if (!g_mg_egl_get_display_cur)
+        g_mg_egl_get_display_cur = (EGLDisplay (*)(void))dlsym(g_mg_handle, "eglGetCurrentDisplay");
+    if (!g_mg_egl_get_context_cur)
+        g_mg_egl_get_context_cur = (EGLContext (*)(void))dlsym(g_mg_handle, "eglGetCurrentContext");
+    if (!g_mg_egl_get_surface_cur)
+        g_mg_egl_get_surface_cur =
+            (EGLSurface (*)(EGLint))dlsym(g_mg_handle, "eglGetCurrentSurface");
+    if (!g_mg_egl_make_current)
+        g_mg_egl_make_current =
+            (EGLBoolean (*)(EGLDisplay, EGLSurface, EGLSurface, EGLContext))
+                dlsym(g_mg_handle, "eglMakeCurrent");
+    if (!g_mg_egl_destroy_surface)
+        g_mg_egl_destroy_surface =
+            (EGLBoolean (*)(EGLDisplay, EGLSurface))dlsym(g_mg_handle, "eglDestroySurface");
+    if (!g_mg_egl_query_context)
+        g_mg_egl_query_context =
+            (EGLBoolean (*)(EGLDisplay, EGLContext, EGLint, EGLint *))
+                dlsym(g_mg_handle, "eglQueryContext");
+    if (!g_mg_egl_get_configs)
+        g_mg_egl_get_configs =
+            (EGLBoolean (*)(EGLDisplay, EGLConfig *, EGLint, EGLint *))
+                dlsym(g_mg_handle, "eglGetConfigs");
+    if (!g_mg_egl_get_config_attrib)
+        g_mg_egl_get_config_attrib =
+            (EGLBoolean (*)(EGLDisplay, EGLConfig, EGLint, EGLint *))
+                dlsym(g_mg_handle, "eglGetConfigAttrib");
+    if (!g_mg_egl_create_win)
+        g_mg_egl_create_win =
+            (EGLSurface (*)(EGLDisplay, EGLConfig, EGLNativeWindowType, const EGLint *))
+                dlsym(g_mg_handle, "eglCreateWindowSurface");
+
+    if (!g_mg_egl_get_display_cur || !g_mg_egl_get_context_cur ||
+        !g_mg_egl_make_current || !g_mg_egl_create_win) {
+        LOGW("force_drawable: missing EGL procs");
+        return;
+    }
+
+    EGLDisplay dpy = g_mg_egl_get_display_cur();
+    EGLContext ctx = g_mg_egl_get_context_cur();
+    if (dpy == EGL_NO_DISPLAY || ctx == EGL_NO_CONTEXT) {
+        LOGW("force_drawable: no current display/context");
+        return;
+    }
+
+    unsigned long long wins =
+        atomic_load_explicit(&g_window_surface_creates, memory_order_relaxed);
+    EGLSurface cur = g_mg_egl_get_surface_cur
+        ? g_mg_egl_get_surface_cur(EGL_DRAW)
+        : EGL_NO_SURFACE;
+    LOGI("force_drawable: retained=%p %dx%d curSurf=%p winCreates=%llu pbufferCreates=%llu",
+         (void *)retained,
+         ANativeWindow_getWidth(retained),
+         ANativeWindow_getHeight(retained),
+         (void *)cur, wins,
+         (unsigned long long)atomic_load_explicit(&g_pbuffer_surface_creates, memory_order_relaxed));
+
+    /* Already created at least one window surface through our wrapper — keep it. */
+    if (wins > 0 && cur != EGL_NO_SURFACE && cur == g_forced_window_surface) {
+        LOGI("force_drawable: already on tracked window surface");
+        return;
+    }
+
+    EGLint cfg_id = 0;
+    EGLConfig config = NULL;
+    if (g_mg_egl_query_context)
+        g_mg_egl_query_context(dpy, ctx, EGL_CONFIG_ID, &cfg_id);
+    if (cfg_id > 0 && g_mg_egl_get_configs) {
+        EGLConfig configs[64];
+        EGLint n = 0;
+        if (g_mg_egl_get_configs(dpy, configs, 64, &n) && n > 0 && g_mg_egl_get_config_attrib) {
+            for (EGLint i = 0; i < n; i++) {
+                EGLint id = 0;
+                if (g_mg_egl_get_config_attrib(dpy, configs[i], EGL_CONFIG_ID, &id) &&
+                    id == cfg_id) {
+                    config = configs[i];
+                    break;
+                }
+            }
+        }
+    }
+    if (!config && g_mg_egl_get_configs) {
+        EGLint n = 0;
+        EGLConfig one;
+        if (g_mg_egl_get_configs(dpy, &one, 1, &n) && n > 0) config = one;
+    }
+    if (!config) {
+        LOGW("force_drawable: cannot resolve EGLConfig (id=%d)", cfg_id);
+        return;
+    }
+
+    EGLSurface news = booxin_egl_create_window_surface(
+        dpy, config, (EGLNativeWindowType)retained, NULL);
+    if (news == EGL_NO_SURFACE) {
+        LOGW("force_drawable: create window surface failed err=0x%x",
+             g_mg_egl_get_error ? g_mg_egl_get_error() : -1);
+        return;
+    }
+    if (!g_mg_egl_make_current(dpy, news, news, ctx)) {
+        LOGW("force_drawable: MakeCurrent failed err=0x%x",
+             g_mg_egl_get_error ? g_mg_egl_get_error() : -1);
+        if (g_mg_egl_destroy_surface) g_mg_egl_destroy_surface(dpy, news);
+        return;
+    }
+    if (cur != EGL_NO_SURFACE && cur != news && g_mg_egl_destroy_surface) {
+        /* Best-effort: drop old pbuffer/orphan drawable. */
+        g_mg_egl_destroy_surface(dpy, cur);
+    }
+    g_forced_window_surface = news;
+    LOGI("force_drawable: MakeCurrent retained window surf=%p ok", (void *)news);
 }
 
 /*
@@ -221,6 +404,8 @@ static void *booxin_egl_get_proc_address(const char *name) {
             return (void *)&booxin_egl_swap_buffers;
         if (strcmp(name, "eglCreateWindowSurface") == 0)
             return (void *)&booxin_egl_create_window_surface;
+        if (strcmp(name, "eglCreatePbufferSurface") == 0)
+            return (void *)&booxin_egl_create_pbuffer_surface;
         if (strcmp(name, "eglGetProcAddress") == 0)
             return (void *)&booxin_egl_get_proc_address;
     }
@@ -313,6 +498,10 @@ static void *booxin_dlsym(void *handle, const char *name) {
         LOGI("dlsym(%s) -> wrapper (real=%p)", name, p);
         return (void *)&booxin_egl_create_window_surface;
     }
+    if (strcmp(name, "eglCreatePbufferSurface") == 0) {
+        LOGI("dlsym(%s) -> wrapper (real=%p)", name, p);
+        return (void *)&booxin_egl_create_pbuffer_surface;
+    }
     return p;
 }
 
@@ -390,6 +579,10 @@ static int redirect_egl_symbol(bytehook_hook_single_fn hook, const char *name) {
         g_mg_egl_create_win =
             (EGLSurface (*)(EGLDisplay, EGLConfig, EGLNativeWindowType, const EGLint *))mg_sym;
         target = (void *)&booxin_egl_create_window_surface;
+    } else if (strcmp(name, "eglCreatePbufferSurface") == 0) {
+        g_mg_egl_create_pbuffer =
+            (EGLSurface (*)(EGLDisplay, EGLConfig, const EGLint *))mg_sym;
+        target = (void *)&booxin_egl_create_pbuffer_surface;
     } else if (strcmp(name, "eglGetProcAddress") == 0) {
         g_mg_egl_get_proc = (void *(*)(const char *))mg_sym;
         target = (void *)&booxin_egl_get_proc_address;
@@ -422,6 +615,7 @@ static int redirect_egl_symbol(bytehook_hook_single_fn hook, const char *name) {
 
     if (strcmp(name, "eglSwapBuffers") == 0 ||
         strcmp(name, "eglCreateWindowSurface") == 0 ||
+        strcmp(name, "eglCreatePbufferSurface") == 0 ||
         strcmp(name, "eglGetProcAddress") == 0) {
         void *bh = load_bytehook();
         bytehook_hook_all_fn hook_all =
@@ -522,9 +716,11 @@ static int booxin_sdl_gl_set_attribute(int attr, int value) {
         value &= ~BOOXIN_SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG;
     } else if (attr >= BOOXIN_SDL_GL_ACCUM_RED_SIZE && attr <= BOOXIN_SDL_GL_STEREO) {
         return 1;
-    } else if (attr == BOOXIN_SDL_GL_FRAMEBUFFER_SRGB_CAPABLE ||
-               attr == BOOXIN_SDL_GL_CONTEXT_NO_ERROR) {
+    } else if (attr == BOOXIN_SDL_GL_CONTEXT_NO_ERROR) {
         return 1;
+    } else if (attr == BOOXIN_SDL_GL_FRAMEBUFFER_SRGB_CAPABLE) {
+        /* Keep default FB non-sRGB; SRGB capable=1 + linear pixels → 发白. */
+        value = 0;
     }
     if (value != orig) {
         LOGI("SDL_GL_SetAttribute remap attr=%d %d→%d", attr, orig, value);
@@ -533,14 +729,73 @@ static int booxin_sdl_gl_set_attribute(int attr, int value) {
     return g_real_gl_set_attr(attr, value);
 }
 
+static void booxin_disable_framebuffer_srgb(void) {
+    /* If the window FB is sRGB and the game writes display-referred colors,
+     * EXT_sRGB_write_control conversion washes the image. Force it off. */
+    typedef void *(*get_proc_fn)(const char *);
+    typedef void (*gl_disable_fn)(unsigned int);
+    typedef unsigned char (*gl_is_enabled_fn)(unsigned int);
+    typedef const unsigned char *(*gl_get_string_fn)(unsigned int);
+    get_proc_fn get_proc = NULL;
+    if (g_mg_egl_get_proc)
+        get_proc = (get_proc_fn)g_mg_egl_get_proc;
+    else if (g_get_proc_prev)
+        get_proc = (get_proc_fn)g_get_proc_prev;
+    if (!get_proc) return;
+
+    gl_disable_fn glDisable = (gl_disable_fn)get_proc("glDisable");
+    gl_is_enabled_fn glIsEnabled = (gl_is_enabled_fn)get_proc("glIsEnabled");
+    gl_get_string_fn glGetString = (gl_get_string_fn)get_proc("glGetString");
+    if (!glDisable) return;
+
+    const unsigned int GL_FRAMEBUFFER_SRGB = 0x8DB9u;
+    int was = glIsEnabled ? (int)glIsEnabled(GL_FRAMEBUFFER_SRGB) : -1;
+    glDisable(GL_FRAMEBUFFER_SRGB);
+    int now = glIsEnabled ? (int)glIsEnabled(GL_FRAMEBUFFER_SRGB) : -1;
+    const char *ext = glGetString ? (const char *)glGetString(0x1F03u /* GL_EXTENSIONS */) : NULL;
+    int has_ctrl = 0;
+    if (ext && strstr(ext, "GL_EXT_sRGB_write_control")) has_ctrl = 1;
+    LOGI("FRAMEBUFFER_SRGB disable was=%d now=%d write_control=%d", was, now, has_ctrl);
+
+    /* Log EGL colorspace of the current draw surface if queryable. */
+    typedef EGLBoolean (*query_surf_fn)(EGLDisplay, EGLSurface, EGLint, EGLint *);
+    query_surf_fn query = NULL;
+    if (g_mg_handle)
+        query = (query_surf_fn)dlsym(g_mg_handle, "eglQuerySurface");
+    if (query && g_mg_egl_get_display_cur && g_mg_egl_get_surface_cur) {
+        EGLDisplay dpy = g_mg_egl_get_display_cur();
+        EGLSurface surf = g_mg_egl_get_surface_cur(EGL_DRAW);
+        if (dpy != EGL_NO_DISPLAY && surf != EGL_NO_SURFACE) {
+            EGLint cs = -1;
+            if (query(dpy, surf, 0x309D /* EGL_GL_COLORSPACE_KHR */, &cs))
+                LOGI("eglQuerySurface COLORSPACE=0x%x (3089=sRGB 308A=linear)", (int)cs);
+            else
+                LOGI("eglQuerySurface COLORSPACE unsupported/err");
+        }
+    }
+}
+
 static void *booxin_sdl_gl_create_context(void *window) {
     void *ctx = g_real_gl_create_ctx ? g_real_gl_create_ctx(window) : NULL;
     LOGI("SDL_GL_CreateContext window=%p → %p mg_egl=%d", window, ctx, g_use_mg_egl);
+    if (ctx) {
+        /* MG often creates drawable without going through our CreateWindowSurface
+         * wrapper — rebind to launcher TextureView/SurfaceView ANW. */
+        booxin_force_drawable_on_retained();
+        booxin_disable_framebuffer_srgb();
+    }
     return ctx;
 }
 
 static int booxin_sdl_gl_make_current(void *window, void *context) {
-    return g_real_gl_make_current ? g_real_gl_make_current(window, context) : 0;
+    int rc = g_real_gl_make_current ? g_real_gl_make_current(window, context) : 0;
+    if (rc == 1 && context) {
+        unsigned long long wins =
+            atomic_load_explicit(&g_window_surface_creates, memory_order_relaxed);
+        if (wins == 0) booxin_force_drawable_on_retained();
+        booxin_disable_framebuffer_srgb();
+    }
+    return rc;
 }
 
 static int rebind_long_field(JNIEnv *env, jclass fnCls, const char *name, void *fn) {
@@ -573,31 +828,58 @@ static int rebind_long_field(JNIEnv *env, jclass fnCls, const char *name, void *
  * to the launcher-retained ANativeWindow from setupBridgeWindow.
  */
 static ANativeWindow *booxin_android_jni_get_native_window(void) {
+    /* Prefer launcher-retained producer so SDL/MG never bind a different BufferQueue. */
+    ANativeWindow *retained = booxin_ensure_native_window();
+    if (retained) {
+        ANativeWindow_acquire(retained); /* CreateWindow / DestroyWindow own one release */
+        static int logged;
+        if (!logged) {
+            logged = 1;
+            LOGI("GetNativeWindow prefer retained=%p %dx%d",
+                 (void *)retained,
+                 ANativeWindow_getWidth(retained),
+                 ANativeWindow_getHeight(retained));
+        }
+        return retained;
+    }
     ANativeWindow *win = NULL;
     if (g_real_android_get_nw) {
         win = g_real_android_get_nw();
         if (win) return win;
     }
-    win = booxin_ensure_native_window();
-    if (win) {
-        ANativeWindow_acquire(win); /* CreateWindow / DestroyWindow own one release */
-        LOGI("GetNativeWindow fallback retained=%p %dx%d",
-             (void *)win, ANativeWindow_getWidth(win), ANativeWindow_getHeight(win));
-        return win;
-    }
     LOGW("GetNativeWindow: Java null and no retained window");
     return NULL;
+}
+
+static void on_nw_hooked(
+    void *task_stub, int status_code,
+    const char *caller_path_name, const char *sym_name,
+    void *new_func, void *prev_func, void *hooked_arg) {
+    (void)task_stub;
+    (void)status_code;
+    (void)caller_path_name;
+    (void)sym_name;
+    (void)new_func;
+    (void)hooked_arg;
+    if (prev_func) {
+        g_real_android_get_nw = (android_jni_get_nw_fn)prev_func;
+        LOGI("GetNativeWindow trampoline=%p", prev_func);
+    }
 }
 
 static int install_get_native_window_hook(void *sdl_handle) {
     if (g_nw_hooked) return 0;
     if (!sdl_handle) return -1;
     void *sym = dlsym(sdl_handle, "Android_JNI_GetNativeWindow");
-    if (!sym) {
-        LOGW("Android_JNI_GetNativeWindow not exported");
-        return -2;
+    if (!sym)
+        sym = dlsym(RTLD_DEFAULT, "Android_JNI_GetNativeWindow");
+    if (sym) {
+        g_real_android_get_nw = (android_jni_get_nw_fn)sym;
+        LOGI("Android_JNI_GetNativeWindow dlsym=%p", sym);
+    } else {
+        /* SDL3 often keeps this as a local symbol — bytehook still finds it by name. */
+        LOGW("Android_JNI_GetNativeWindow not in dlsym — hook_all by name");
     }
-    g_real_android_get_nw = (android_jni_get_nw_fn)sym;
 
     void *bh = load_bytehook();
     if (!bh) return -3;
@@ -619,23 +901,25 @@ static int install_get_native_window_hook(void *sdl_handle) {
 
     if (hook_all) {
         stub = hook_all(NULL, "Android_JNI_GetNativeWindow",
-                        (void *)&booxin_android_jni_get_native_window, NULL, NULL);
+                        (void *)&booxin_android_jni_get_native_window,
+                        (void *)&on_nw_hooked, NULL);
         LOGI("hook_all Android_JNI_GetNativeWindow stub=%p", stub);
     }
     if (!stub && hook_single && sdl_path[0]) {
         stub = hook_single(sdl_path, NULL, "Android_JNI_GetNativeWindow",
-                           (void *)&booxin_android_jni_get_native_window, NULL, NULL);
+                           (void *)&booxin_android_jni_get_native_window,
+                           (void *)&on_nw_hooked, NULL);
         LOGI("hook_single path Android_JNI_GetNativeWindow stub=%p", stub);
     }
     if (!stub && hook_single) {
         stub = hook_single("libSDL3.so", NULL, "Android_JNI_GetNativeWindow",
-                           (void *)&booxin_android_jni_get_native_window, NULL, NULL);
+                           (void *)&booxin_android_jni_get_native_window,
+                           (void *)&on_nw_hooked, NULL);
         LOGI("hook_single soname Android_JNI_GetNativeWindow stub=%p", stub);
     }
     g_nw_hooked = stub ? 1 : 0;
     if (!g_nw_hooked) {
-        /* Still keep g_real_android_get_nw — may call fallback only from our path. */
-        LOGW("GetNativeWindow hook failed — recreate may need retained fallback via other path");
+        LOGW("GetNativeWindow hook failed — recreate will use retained ANW + resync");
         return -4;
     }
     return 0;
@@ -833,27 +1117,14 @@ static void *booxin_sdl_create_window(const char *title, int w, int h, uint64_t 
         return NULL;
     }
 
+    /*
+     * Android SDL: only one window. First create is already upgraded to full
+     * TextureView size (upgrade_probe_size). Destroy+recreate here would kill
+     * an active GL context mid-MobileGlues init → instant native flash-exit.
+     * Always reuse + show/resize.
+     */
     void *existing = existing_sdl_window();
-    ANativeWindow *retained = booxin_ensure_native_window();
-    /* Destroy only when GetNativeWindow is hooked — otherwise recreate
-     * hits "Could not fetch native window" and the probe is already gone. */
-    if (existing && retained && g_nw_hooked) {
-        destroy_existing_sdl_windows("CreateWindow one-window");
-        resync_sdl_android_surface();
-        win = g_real_create_window(title, w, h, flags);
-        LOGI("CreateWindow recreate → %p %dx%d flags=0x%llx err=%s nw_hook=%d",
-             win, w, h, (unsigned long long)flags,
-             g_real_get_error ? g_real_get_error() : "?", g_nw_hooked);
-        if (win) {
-            if (g_real_show_window) g_real_show_window(win);
-            return win;
-        }
-        LOGW("CreateWindow recreate failed after destroy");
-        return NULL;
-    }
-    return reuse_existing_window(
-        existing, w, h,
-        g_nw_hooked ? "no retained NW" : "GetNativeWindow not hooked");
+    return reuse_existing_window(existing, w, h, "one-window reuse (no destroy)");
 }
 
 static void *booxin_sdl_create_window_with_properties(uint32_t props) {
@@ -868,23 +1139,8 @@ static void *booxin_sdl_create_window_with_properties(uint32_t props) {
              g_real_get_error ? g_real_get_error() : "?");
         return NULL;
     }
-
     void *existing = existing_sdl_window();
-    ANativeWindow *retained = booxin_ensure_native_window();
-    if (existing && retained && g_nw_hooked) {
-        destroy_existing_sdl_windows("CreateWindowWithProperties one-window");
-        resync_sdl_android_surface();
-        win = g_real_create_window_props(props);
-        LOGI("CreateWindowWithProperties recreate → %p props=%u err=%s nw_hook=%d",
-             win, (unsigned)props, g_real_get_error ? g_real_get_error() : "?",
-             g_nw_hooked);
-        if (win) return win;
-        LOGW("CreateWindowWithProperties recreate failed after destroy");
-        return NULL;
-    }
-    return reuse_existing_window(
-        existing, 0, 0,
-        g_nw_hooked ? "no retained NW" : "GetNativeWindow not hooked");
+    return reuse_existing_window(existing, 0, 0, "one-window Props reuse (no destroy)");
 }
 
 int booxin_sdl_force_gles(void *sdl_handle) {

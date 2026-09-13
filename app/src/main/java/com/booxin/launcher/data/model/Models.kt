@@ -13,12 +13,24 @@ data class GameVersion(
     val installed: Boolean = false,
     val releaseTime: String? = null,
     /** Mojang/BMCL version.json URL from the manifest. */
-    val url: String? = null
-)
+    val url: String? = null,
+    /** Launcher-only display alias (does not rename versions folder). */
+    val customDisplayName: String? = null,
+    /** User sort index; lower = higher in list. Null = unordered. */
+    val sortIndex: Int? = null,
+    /** Launcher-only default instance badge. */
+    val isDefault: Boolean = false
+) {
+    /** PC-aligned: CustomDisplayName ?: VersionId */
+    val displayName: String
+        get() = customDisplayName?.trim()?.takeIf { it.isNotEmpty() } ?: id
+}
 
 enum class AccountType {
     MICROSOFT,
-    OFFLINE
+    OFFLINE,
+    /** Yggdrasil / authlib-injector (LittleSkin, Ely.by, …). */
+    THIRD_PARTY
 }
 
 data class LauncherAccount(
@@ -32,8 +44,12 @@ data class LauncherAccount(
     val refreshToken: String? = null,
     val accessTokenExpiresAtMs: Long? = null,
     val xuid: String? = null,
-    /** Minecraft --userType: msa / legacy */
-    val userType: String = if (type == AccountType.MICROSOFT) "msa" else "legacy",
+    /** Minecraft --userType: msa / legacy / mojang (third-party). */
+    val userType: String = when (type) {
+        AccountType.MICROSOFT -> "msa"
+        AccountType.THIRD_PARTY -> "mojang"
+        AccountType.OFFLINE -> "legacy"
+    },
     val hasMinecraft: Boolean = type != AccountType.MICROSOFT,
     /** Absolute path to imported / fetched offline skin PNG, if any. */
     val skinPath: String? = null,
@@ -47,7 +63,9 @@ data class LauncherAccount(
     /** Mojang player name when [skinMode] is player. */
     val skinPlayerName: String? = null,
     /** Mojang UUID (no dashes) when [skinMode] is player. */
-    val skinPlayerUuid: String? = null
+    val skinPlayerUuid: String? = null,
+    /** Yggdrasil API root for [AccountType.THIRD_PARTY]. */
+    val thirdPartyServerUrl: String? = null
 )
 
 data class LauncherSession(

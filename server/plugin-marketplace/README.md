@@ -43,6 +43,18 @@ location ^~ /plugin-api/ {
 
 开发者搜索依赖联机 Auth；本地密码登录时可另配 `BOOXIN_AUTH_USERNAME` / `BOOXIN_AUTH_PASSWORD`。
 
+## AI 代理（DeepSeek）
+
+给 `booxin-plugin-web` 用的后端 AI 代理接口：
+
+- `POST /api/ai/generate-plugin`
+
+需要用户 Bearer 登录态，并在服务端配置：
+
+- `DEEPSEEK_API_KEY`
+- 可选 `DEEPSEEK_API_BASE`，默认 `https://api.deepseek.com`
+- 可选 `DEEPSEEK_MODEL`，默认 `deepseek-chat`
+
 ## 主要接口
 
 - `GET /api/plugins` 已上架列表（`?type=ui` 可筛选）

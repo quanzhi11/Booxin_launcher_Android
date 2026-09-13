@@ -22,6 +22,7 @@ import com.booxin.launcher.data.model.AccountType
 import com.booxin.launcher.data.model.LauncherAccount
 import com.booxin.launcher.databinding.FragmentHomeBinding
 import com.booxin.launcher.ui.auth.MicrosoftAuthErrorDialog
+import com.booxin.launcher.ui.controller.ControllerNavBinder
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -76,6 +77,9 @@ class HomeFragment : Fragment() {
             findNavController().navigate(R.id.action_home_to_accounts)
         }
         binding.buttonRefreshSkin.setOnClickListener { refreshHomeSkin() }
+        ControllerNavBinder.bindButton(binding.buttonLaunch, primary = true)
+        ControllerNavBinder.bindButton(binding.buttonSwitchVersion)
+        ControllerNavBinder.bindButton(binding.buttonAccountManage)
 
         binding.buttonLaunch.setOnClickListener {
             val version = AppContainer.repository.selectedVersion()
@@ -246,17 +250,14 @@ class HomeFragment : Fragment() {
                 selected = true
             )
         val joiningRoom = AppContainer.multiplayerAuth.activeLobby.value != null
-        // 离线进房可以；主机需关正版验证，否则会「无效会话」。
-        if (joiningRoom && account.type == AccountType.OFFLINE) {
+        if (joiningRoom) {
             Toast.makeText(
                 requireContext(),
-                R.string.multiplayer_offline_join_hint,
+                R.string.multiplayer_lan_join_hint,
                 Toast.LENGTH_LONG
             ).show()
         }
         if (account.type == AccountType.MICROSOFT) {
-            // Prefer fresher MSA in a Booxin room (stale →「无效会话」).
-            // ensureSession softens forceRefresh and falls back on Mojang HTTP 429.
             val refreshed = MicrosoftAuthService.ensureSession(
                 account,
                 forceRefresh = joiningRoom
@@ -274,6 +275,21 @@ class HomeFragment : Fragment() {
             }
             account = refreshed.getOrThrow()
             AppContainer.repository.upsertMicrosoftAccount(account)
+        } else if (account.type == AccountType.THIRD_PARTY) {
+            val refreshed = com.booxin.launcher.core.auth.ThirdPartyAuthService.ensureSession(account)
+            if (refreshed.isFailure) {
+                Toast.makeText(
+                    requireContext(),
+                    getString(
+                        R.string.accounts_third_party_refresh_failed,
+                        refreshed.exceptionOrNull()?.message ?: "请重新登录"
+                    ),
+                    Toast.LENGTH_LONG
+                ).show()
+                return null
+            }
+            account = refreshed.getOrThrow()
+            AppContainer.repository.upsertThirdPartyAccount(account)
         }
         return account
     }
@@ -284,7 +300,7 @@ class HomeFragment : Fragment() {
             Toast.makeText(requireContext(), R.string.home_no_installed, Toast.LENGTH_SHORT).show()
             return
         }
-        val labels = installed.map { it.id }.toTypedArray()
+        val labels = installed.map { it.displayName }.toTypedArray()
         val selectedId = AppContainer.repository.session.value.selectedVersionId
         val checked = installed.indexOfFirst { it.id == selectedId }.coerceAtLeast(0)
 
@@ -295,7 +311,7 @@ class HomeFragment : Fragment() {
                 AppContainer.repository.selectVersion(version.id)
                 Toast.makeText(
                     requireContext(),
-                    getString(R.string.home_switched, version.id),
+                    getString(R.string.home_switched, version.displayName),
                     Toast.LENGTH_SHORT
                 ).show()
                 dialog.dismiss()
@@ -307,7 +323,7 @@ class HomeFragment : Fragment() {
     private fun refreshSelectedVersion() {
         val b = _binding ?: return
         val version = AppContainer.repository.selectedVersion()
-        b.textSelectedVersion.text = version?.id ?: getString(R.string.home_no_version)
+        b.textSelectedVersion.text = version?.displayName ?: getString(R.string.home_no_version)
         b.textLaunchStatus.text = when {
             version == null || !version.installed -> getString(R.string.home_status_placeholder)
             else -> getString(R.string.home_status_ready)

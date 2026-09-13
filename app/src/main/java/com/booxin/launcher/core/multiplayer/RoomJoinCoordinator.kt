@@ -26,6 +26,7 @@ class RoomJoinCoordinator(
     private var easyTier: EasyTierSession? = null
     private var scaffolding: ScaffoldingClient? = null
     private var lanBroadcast: LanBroadcast? = null
+    private var mcRelay: LocalTcpRelay? = null
 
     suspend fun join(roomCode: String, playerName: String): RoomJoinResult {
         leave()
@@ -46,6 +47,7 @@ class RoomJoinCoordinator(
         onStatus("已发现房主 ${host.hostname}，转发 Scaffolding…")
 
         val localScaffoldingPort = session.addPortForward(host.ipv4Host, scaffoldingPort)
+        onStatus("等待本机 Scaffolding 转发 $localScaffoldingPort…")
         waitForLocalTcp(localScaffoldingPort)
 
         onStatus("Scaffolding 握手…")
@@ -64,13 +66,26 @@ class RoomJoinCoordinator(
             onMembersChanged(updated)
         }
 
+        // EasyTier MC forward may not accept until host Open-to-LAN is up.
+        // LocalTcpRelay accepts immediately (LAN MOTD / servers.dat / offline-safe).
         onStatus("转发 Minecraft 端口 ${lobby.minecraftPort}…")
-        val localMcPort = session.addPortForward(host.ipv4Host, lobby.minecraftPort)
-        waitForLocalTcp(localMcPort)
+        val etMcPort = session.addPortForward(host.ipv4Host, lobby.minecraftPort)
+        val relay = LocalTcpRelay(
+            listenHost = "0.0.0.0",
+            targetHost = "127.0.0.1",
+            targetPort = etMcPort
+        )
+        val publicPort = relay.start()
+        mcRelay = relay
+        onStatus("已建立本机联机入口 127.0.0.1:$publicPort（局域网也可发现）")
+        DiagEventLog.i(
+            TAG,
+            "mc relay public=$publicPort -> et=$etMcPort -> remote=${lobby.minecraftPort}"
+        )
 
-        val address = if (localMcPort == 25565) "127.0.0.1" else "127.0.0.1:$localMcPort"
+        val address = if (publicPort == 25565) "127.0.0.1" else "127.0.0.1:$publicPort"
         val description = LanBroadcast.buildDescription(members)
-        val broadcastStarted = startLanBroadcastBestEffort(description, localMcPort)
+        val broadcastStarted = startLanBroadcastBestEffort(description, publicPort)
 
         onStatus(JOIN_SUCCESS_STATUS)
         DiagEventLog.i(
@@ -90,6 +105,11 @@ class RoomJoinCoordinator(
     fun leave() {
         stopLanBroadcast()
         try {
+            mcRelay?.close()
+        } catch (_: Throwable) {
+        }
+        mcRelay = null
+        try {
             scaffolding?.close()
         } catch (_: Throwable) {
         }
@@ -101,6 +121,12 @@ class RoomJoinCoordinator(
         easyTier = null
         EasyTierSessionHolder.stop()
         onMembersChanged(emptyList())
+    }
+
+    suspend fun refreshMembers() {
+        val client = scaffolding ?: return
+        val members = runCatching { client.refreshMembers() }.getOrDefault(emptyList())
+        onMembersChanged(members)
     }
 
     private fun startLanBroadcastBestEffort(description: String, localMcPort: Int): Boolean {
@@ -148,6 +174,6 @@ class RoomJoinCoordinator(
     companion object {
         private const val TAG = "RoomJoin"
         const val JOIN_SUCCESS_STATUS =
-            "加入成功。请打开游戏 → 多人游戏 → 在局域网列表中进入房间（不要手动填 127.0.0.1，除非局域网列表没有出现）"
+            "加入成功。请启动游戏 →「多人游戏 → 局域网」进入房间（离线/外置账号均可）。勿选手动局域网里房主真实 IP。"
     }
 }

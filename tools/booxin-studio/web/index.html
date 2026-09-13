@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Booxin Studio</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <script src="/config.js"></script>
+</head>
+<body>
+  <div id="app">
+    <header class="topbar">
+      <div class="brand">Booxin Studio</div>
+      <div class="top-actions">
+        <button type="button" data-act="open">打开项目</button>
+        <div class="menu">
+          <button type="button" class="menu-btn">新建插件 ▾</button>
+          <div class="menu-pop">
+            <button type="button" data-act="new" data-kind="greeting" data-default="my-greeting">问候语</button>
+            <button type="button" data-act="new" data-kind="font" data-default="my-ui-font">字体插件</button>
+            <button type="button" data-act="new" data-kind="icon" data-default="my-brand-icon">主页图标</button>
+            <button type="button" data-act="new" data-kind="theme" data-default="my-full-theme">完整主题包</button>
+          </div>
+        </div>
+        <button type="button" data-act="save" class="primary" disabled id="btn-save">保存</button>
+        <button type="button" data-act="format" disabled id="btn-format">格式化</button>
+        <button type="button" data-act="goto" disabled id="btn-goto">转到行</button>
+        <button type="button" data-act="search" disabled id="btn-search">搜索</button>
+        <button type="button" data-act="pack" class="accent" disabled id="btn-pack">一键打包</button>
+        <button type="button" data-act="validate" disabled id="btn-validate">校验</button>
+        <button type="button" data-act="toggle-agent" id="btn-agent">Agent</button>
+        <button type="button" data-act="update">检查更新</button>
+        <button type="button" data-act="close" disabled id="btn-close">关闭项目</button>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <section class="welcome" id="welcome">
+        <div class="welcome-inner">
+          <div class="welcome-title">打开一个插件项目开始编辑</div>
+          <div class="welcome-actions">
+            <button type="button" class="primary" data-act="open">打开项目</button>
+            <button type="button" data-act="new" data-kind="theme" data-default="my-full-theme">新建主题包</button>
+          </div>
+          <div class="recent-head">
+            <span>最近</span>
+            <button type="button" class="link" data-act="clear-recent">清空</button>
+          </div>
+          <ul class="recent-list" id="recent-list"></ul>
+          <p class="hint" id="recent-empty">暂无历史</p>
+        </div>
+      </section>
+
+      <section class="ide hidden" id="ide">
+        <aside class="sidebar" id="sidebar">
+          <div class="side-head">
+            <span>文件</span>
+            <div class="side-btns">
+              <button type="button" title="新建文件" data-act="new-file">＋文件</button>
+              <button type="button" title="新建文件夹" data-act="new-folder">＋夹</button>
+              <button type="button" title="刷新" data-act="refresh-tree">↻</button>
+            </div>
+          </div>
+          <div class="tree" id="tree"></div>
+        </aside>
+        <div class="split-v" id="split-sidebar"></div>
+        <section class="editor-pane">
+          <div class="tabs" id="tabs"></div>
+          <div class="editor-path" id="editor-path">未打开文件</div>
+          <div id="monaco"></div>
+          <div class="split-h" id="split-log"></div>
+          <div class="bottom-pane">
+            <div class="bottom-tabs">
+              <button type="button" class="bottom-tab active" data-bottom="log">输出</button>
+              <button type="button" class="bottom-tab" data-bottom="search">搜索</button>
+              <button type="button" class="bottom-tab" data-bottom="terminal" title="Windows PowerShell（管道模式）">终端 · PS</button>
+              <div class="bottom-actions">
+                <button type="button" data-act="term-new" title="新建终端">＋</button>
+                <button type="button" data-act="term-restart" title="重启终端">↻</button>
+                <button type="button" data-act="term-clear" title="清屏">⌫</button>
+              </div>
+            </div>
+            <div class="bottom-body">
+              <pre id="log" class="bottom-panel active"></pre>
+              <div id="search-panel" class="bottom-panel">
+                <div class="search-bar">
+                  <input id="search-query" placeholder="在项目中搜索…" />
+                  <button type="button" data-act="run-search">查找</button>
+                </div>
+                <div id="search-results" class="search-results"></div>
+              </div>
+              <div id="terminal" class="bottom-panel"></div>
+            </div>
+          </div>
+        </section>
+        <div class="split-v" id="split-agent"></div>
+        <aside class="agent" id="agent">
+          <div class="agent-head">
+            <div>
+              <div class="agent-title" id="agent-title">Agent</div>
+              <div class="agent-quota" id="agent-quota">未登录</div>
+            </div>
+          <div class="agent-btns">
+              <button type="button" data-act="ai-logout" id="btn-ai-logout" class="hidden">退出</button>
+              <button type="button" data-act="toggle-agent">×</button>
+            </div>
+          </div>
+          <div class="agent-login" id="agent-login">
+            <p>登录 Booxin 账号后使用 Agent</p>
+            <label>用户名<input id="ai-user" autocomplete="username" /></label>
+            <label>密码<input id="ai-pass" type="password" autocomplete="current-password" /></label>
+            <button type="button" class="primary" data-act="ai-login">登录</button>
+            <p class="agent-note">会员请在启动器或官网管理，Studio 内不提供升级。</p>
+          </div>
+          <div class="agent-chat hidden" id="agent-chat">
+            <div class="agent-toolbar">
+              <select id="ai-chat-list" title="历史对话"></select>
+              <button type="button" data-act="ai-new" title="新对话">＋</button>
+              <button type="button" data-act="ai-del-chat" title="删除当前对话">删</button>
+            </div>
+            <div class="agent-ctx" id="agent-ctx">
+              <label class="chk"><input type="checkbox" id="ai-context" checked /> 当前文件</label>
+              <label class="chk"><input type="checkbox" id="ai-ctx-manifest" checked /> 项目清单</label>
+              <label class="chk"><input type="checkbox" id="ai-auto-write" checked /> 直接写文件</label>
+              <span class="ctx-meta" id="ai-ctx-meta">历史 0 轮</span>
+            </div>
+            <div class="feed" id="ai-feed"></div>
+            <div class="composer">
+              <textarea id="ai-ask" rows="3" placeholder="描述要改什么… Ctrl+Enter 发送"></textarea>
+              <div class="composer-row">
+                <select id="ai-model" title="模型（按会员解锁）"></select>
+                <button type="button" class="primary" data-act="ai-send">发送</button>
+              </div>
+            </div>
+          </div>
+        </aside>
+      </section>
+    </main>
+
+    <footer class="status" id="status">就绪</footer>
+  </div>
+
+  <div id="toast-root" class="toast-root" aria-live="polite"></div>
+  <div id="modal-root" class="modal-root hidden" role="dialog" aria-modal="true">
+    <div class="modal-card">
+      <div class="modal-title" id="modal-title">提示</div>
+      <div class="modal-body" id="modal-body"></div>
+      <div class="modal-field hidden" id="modal-field-wrap">
+        <input id="modal-input" type="text" />
+      </div>
+      <div class="modal-actions">
+        <button type="button" id="modal-cancel" class="hidden">取消</button>
+        <button type="button" id="modal-ok" class="primary">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="folder-picker" class="folder-picker hidden" role="dialog" aria-modal="true">
+    <div class="folder-card">
+      <div class="folder-head">
+        <div class="folder-title" id="folder-title">选择文件夹</div>
+        <button type="button" id="folder-close" title="关闭">×</button>
+      </div>
+      <div class="folder-path-row">
+        <button type="button" id="folder-up" title="上级">↑</button>
+        <button type="button" id="folder-roots" title="根目录">盘符</button>
+        <input id="folder-path" type="text" spellcheck="false" />
+        <button type="button" id="folder-go">转到</button>
+      </div>
+      <div class="folder-list" id="folder-list"></div>
+      <div class="folder-foot">
+        <span class="folder-hint" id="folder-hint">双击进入文件夹</span>
+        <div class="folder-actions">
+          <button type="button" id="folder-cancel">取消</button>
+          <button type="button" class="primary" id="folder-ok">选择此文件夹</button>
+        </div>
+      </div>
+      <div class="folder-save-row hidden" id="folder-save-row">
+        <label>文件名 <input id="folder-filename" type="text" /></label>
+      </div>
+    </div>
+  </div>
+
+  <script src="/vendor/monaco/vs/loader.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

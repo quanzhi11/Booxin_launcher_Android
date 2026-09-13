@@ -12,25 +12,20 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.net.DatagramPacket
+import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.MulticastSocket
 import java.nio.charset.StandardCharsets
 
 /**
- * Guest-side Minecraft LAN MOTD rebroadcast, aligned with PC BroadcastLocal.
+ * Guest-side Minecraft LAN MOTD rebroadcast.
  *
- * Protocol:
- * - IPv4 multicast `224.0.2.60:4445`
- * - IPv6 multicast `ff75:230::60:4445` (best-effort)
- * - UTF-8 payload `[MOTD]{description}[/MOTD][AD]{localPort}[/AD]`
- * - ~1.5s interval; [localPort] is the locally forwarded Minecraft TCP port
+ * Protocol payload: `[MOTD]{description}[/MOTD][AD]{localPort}[/AD]` on UDP 4445.
  *
- * Android notes:
- * - Needs [android.permission.CHANGE_WIFI_MULTICAST_MODE] so Wi-Fi chipsets deliver
- *   multicast to the local Minecraft client (same-device discovery).
- * - Holds [WifiManager.MulticastLock] while broadcasting.
- * - Failures are logged only; callers must treat start as best-effort.
+ * Android same-device note: multicast loopback is flaky (worse under Forge load), so we
+ * **also unicast to 127.0.0.1:4445**. Minecraft's LanServerDetector binds that port and
+ * will treat the source as 127.0.0.1 — which matches our LocalTcpRelay.
  */
 class LanBroadcast(
     context: Context,
@@ -42,7 +37,8 @@ class LanBroadcast(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var job: Job? = null
     private var multicastLock: WifiManager.MulticastLock? = null
-    @Volatile private var socket: MulticastSocket? = null
+    @Volatile private var multicastSocket: MulticastSocket? = null
+    @Volatile private var unicastSocket: DatagramSocket? = null
 
     val isRunning: Boolean
         get() = job?.isActive == true
@@ -58,46 +54,71 @@ class LanBroadcast(
                 "LAN broadcast start desc=\"$description\" localPort=$localPort"
             )
             val ipv4 = runCatching { InetAddress.getByName(MULTICAST_V4) }.getOrNull()
-            val ipv6 = runCatching { InetAddress.getByName(MULTICAST_V6) }.getOrNull()
-            if (ipv4 == null && ipv6 == null) {
-                DiagEventLog.w(TAG, "LAN broadcast aborted: no multicast address resolved")
+            val loopback = runCatching { InetAddress.getByName("127.0.0.1") }.getOrNull()
+            if (ipv4 == null && loopback == null) {
+                DiagEventLog.w(TAG, "LAN broadcast aborted: no send address")
                 return@launch
             }
 
-            val sock = try {
-                MulticastSocket().also {
+            val mcast = if (ipv4 != null) {
+                runCatching {
+                    MulticastSocket().also {
+                        it.reuseAddress = true
+                        runCatching { it.loopbackMode = false }
+                        runCatching { it.timeToLive = 2 }
+                        runCatching { it.joinGroup(ipv4) }
+                        multicastSocket = it
+                    }
+                }.onFailure {
+                    DiagEventLog.w(TAG, "multicast socket open failed: ${it.message}")
+                }.getOrNull()
+            } else null
+
+            val ucast = runCatching {
+                DatagramSocket().also {
                     it.reuseAddress = true
-                    // TTL 2 matches PC BroadcastLocal MulticastTimeToLive.
-                    runCatching { it.timeToLive = 2 }
-                    socket = it
+                    unicastSocket = it
                 }
-            } catch (t: Throwable) {
-                DiagEventLog.w(TAG, "LAN broadcast socket open failed: ${t.message}")
+            }.onFailure {
+                DiagEventLog.w(TAG, "unicast socket open failed: ${it.message}")
+            }.getOrNull()
+
+            if (mcast == null && ucast == null) {
+                DiagEventLog.w(TAG, "LAN broadcast aborted: no sockets")
                 return@launch
             }
 
+            var ticks = 0
             while (isActive) {
                 try {
-                    if (ipv4 != null) {
-                        sock.send(
+                    // Prefer loopback unicast — reliable on Android / Forge.
+                    if (ucast != null && loopback != null) {
+                        ucast.send(
                             DatagramPacket(
                                 payload,
                                 payload.size,
-                                InetSocketAddress(ipv4, broadcastPort)
+                                InetSocketAddress(loopback, broadcastPort)
                             )
                         )
                     }
-                    if (ipv6 != null) {
+                    if (mcast != null && ipv4 != null) {
                         runCatching {
-                            sock.send(
+                            mcast.send(
                                 DatagramPacket(
                                     payload,
                                     payload.size,
-                                    InetSocketAddress(ipv6, broadcastPort)
+                                    InetSocketAddress(ipv4, broadcastPort)
                                 )
                             )
                         }
                     }
+                    if (ticks == 0 || ticks % 10 == 0) {
+                        DiagEventLog.i(
+                            TAG,
+                            "LAN MOTD tick#$ticks port=$localPort unicast=${ucast != null} mcast=${mcast != null}"
+                        )
+                    }
+                    ticks++
                     delay(INTERVAL_MS)
                 } catch (t: Throwable) {
                     if (!isActive) break
@@ -105,16 +126,20 @@ class LanBroadcast(
                     delay(RETRY_MS)
                 }
             }
-            runCatching { sock.close() }
-            if (socket === sock) socket = null
+            runCatching { mcast?.close() }
+            runCatching { ucast?.close() }
+            if (multicastSocket === mcast) multicastSocket = null
+            if (unicastSocket === ucast) unicastSocket = null
         }
     }
 
     fun stop() {
         job?.cancel()
         job = null
-        runCatching { socket?.close() }
-        socket = null
+        runCatching { multicastSocket?.close() }
+        runCatching { unicastSocket?.close() }
+        multicastSocket = null
+        unicastSocket = null
         releaseMulticastLock()
         DiagEventLog.i(TAG, "LAN broadcast stopped localPort=$localPort")
     }
@@ -153,11 +178,9 @@ class LanBroadcast(
         private const val TAG = "LanBroadcast"
         const val DEFAULT_BROADCAST_PORT = 4445
         private const val MULTICAST_V4 = "224.0.2.60"
-        private const val MULTICAST_V6 = "ff75:230::60"
-        private const val INTERVAL_MS = 1_500L
-        private const val RETRY_MS = 5_000L
+        private const val INTERVAL_MS = 800L
+        private const val RETRY_MS = 2_000L
 
-        /** Same wording as PC LobbyService.BuildLocalBroadcastDescription. */
         fun buildDescription(members: List<RoomMember>): String {
             val hostName = members.firstOrNull { it.isHost }?.name?.trim()
             return if (hostName.isNullOrBlank()) {

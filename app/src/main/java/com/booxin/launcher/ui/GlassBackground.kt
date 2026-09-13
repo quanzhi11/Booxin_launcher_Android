@@ -129,6 +129,11 @@ object GlassBackground {
         private var backgroundAlpha: Float = 0.85f
         private var started = false
         private var playGeneration = 0
+        /** Prevent applyFill → layoutParams → OnLayoutChange → applyFill loops (闪退). */
+        private var applyingFill = false
+        private var cachedVideoW = 0
+        private var cachedVideoH = 0
+        private var lastFillKey = ""
 
         init {
             Log.i(TAG, "bind oem=${OemLaunchProfile.describe()} vivoDefault=$vivoDefault")
@@ -136,8 +141,10 @@ object GlassBackground {
             textureView.isOpaque = false
 
             (textureView.parent as? ViewGroup)?.let { parent ->
-                parent.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
-                    applyFill()
+                parent.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
+                    if (right - left != oldRight - oldLeft || bottom - top != oldBottom - oldTop) {
+                        applyFill()
+                    }
                 }
             }
 
@@ -146,8 +153,11 @@ object GlassBackground {
             resetMatchParent(textureView)
             clearViewScale()
 
-            textureView.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
-                applyFill()
+            textureView.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
+                // Only react to real size changes — applyFill itself may assign layoutParams.
+                if (right - left != oldRight - oldLeft || bottom - top != oldBottom - oldTop) {
+                    applyFill()
+                }
             }
             textureView.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
                 override fun onSurfaceTextureAvailable(st: SurfaceTexture, width: Int, height: Int) {
@@ -261,6 +271,13 @@ object GlassBackground {
 
         private fun resetMatchParent(view: View) {
             val lp = view.layoutParams as? FrameLayout.LayoutParams ?: return
+            val need =
+                lp.width != FrameLayout.LayoutParams.MATCH_PARENT ||
+                    lp.height != FrameLayout.LayoutParams.MATCH_PARENT ||
+                    lp.gravity != Gravity.FILL ||
+                    lp.leftMargin != 0 ||
+                    lp.topMargin != 0
+            if (!need) return
             lp.width = FrameLayout.LayoutParams.MATCH_PARENT
             lp.height = FrameLayout.LayoutParams.MATCH_PARENT
             lp.gravity = Gravity.FILL
@@ -339,6 +356,8 @@ object GlassBackground {
                     mp.setVolume(0f, 0f)
                     mp.setOnVideoSizeChangedListener { _, vw, vh ->
                         Log.i(TAG, "videoSize ${vw}x$vh")
+                        cachedVideoW = vw
+                        cachedVideoH = vh
                         textureView.post { applyFill() }
                     }
                     mp.setOnErrorListener { _, what, extra ->
@@ -388,6 +407,9 @@ object GlassBackground {
         private fun releasePlayer() {
             val p = player
             player = null
+            cachedVideoW = 0
+            cachedVideoH = 0
+            lastFillKey = ""
             runCatching {
                 p?.setOnPreparedListener(null)
                 p?.setOnErrorListener(null)
@@ -399,64 +421,91 @@ object GlassBackground {
         }
 
         private fun applyFill() {
-            val (coverW, coverH) = coverSize()
-            if (coverW <= 0 || coverH <= 0) return
-            val align = LauncherPrefs.backgroundAlign()
-            val viewScale = usesViewScale(align.mode)
-            (textureView.parent as? ViewGroup)?.let { parent ->
-                parent.clipChildren = !viewScale
-                parent.clipToPadding = !viewScale
-            }
-            applyImageAlign()
-
-            val videoW = player?.videoWidth ?: 0
-            val videoH = player?.videoHeight ?: 0
-            if (videoW <= 0 || videoH <= 0) {
-                if (!viewScale) {
-                    resetMatchParent(textureView)
-                    clearViewScale()
-                    textureView.setTransform(Matrix())
+            if (applyingFill) return
+            applyingFill = true
+            try {
+                val (coverW, coverH) = coverSize()
+                if (coverW <= 0 || coverH <= 0) return
+                val align = LauncherPrefs.backgroundAlign()
+                val viewScale = usesViewScale(align.mode)
+                (textureView.parent as? ViewGroup)?.let { parent ->
+                    parent.clipChildren = !viewScale
+                    parent.clipToPadding = !viewScale
                 }
-                return
-            }
+                applyImageAlign()
 
-            when (align.mode) {
-                LauncherBackgroundAlignMode.AUTO -> {
-                    if (vivoDefault) {
+                // Prefer cached size — player.videoWidth during layout spams MediaPlayer
+                // and can contribute to thrash / OEM kills.
+                var videoW = cachedVideoW
+                var videoH = cachedVideoH
+                if (videoW <= 0 || videoH <= 0) {
+                    videoW = player?.videoWidth ?: 0
+                    videoH = player?.videoHeight ?: 0
+                    if (videoW > 0 && videoH > 0) {
+                        cachedVideoW = videoW
+                        cachedVideoH = videoH
+                    }
+                }
+                if (videoW <= 0 || videoH <= 0) {
+                    if (!viewScale) {
+                        resetMatchParent(textureView)
+                        clearViewScale()
+                        textureView.setTransform(Matrix())
+                    }
+                    return
+                }
+
+                val fillKey = buildString {
+                    append(align.mode).append('|')
+                    append(coverW).append('x').append(coverH).append('|')
+                    append(videoW).append('x').append(videoH).append('|')
+                    append(align.scaleX).append(',').append(align.scaleY).append('|')
+                    append(align.offsetX).append(',').append(align.offsetY).append('|')
+                    append(vivoDefault)
+                }
+                if (fillKey == lastFillKey) return
+                lastFillKey = fillKey
+
+                when (align.mode) {
+                    LauncherBackgroundAlignMode.AUTO -> {
+                        if (vivoDefault) {
+                            applyViewScaleFill(
+                                coverW, coverH, videoW, videoH,
+                                scaleX = 1f, scaleY = 1f,
+                                offsetX = 0f, offsetY = 0f,
+                                keepAspect = false
+                            )
+                        } else {
+                            applyBufferFill(coverW, coverH)
+                        }
+                    }
+                    LauncherBackgroundAlignMode.STRETCH -> {
                         applyViewScaleFill(
                             coverW, coverH, videoW, videoH,
                             scaleX = 1f, scaleY = 1f,
                             offsetX = 0f, offsetY = 0f,
                             keepAspect = false
                         )
-                    } else {
-                        applyBufferFill(coverW, coverH)
+                    }
+                    LauncherBackgroundAlignMode.CROP -> {
+                        applyViewScaleFill(
+                            coverW, coverH, videoW, videoH,
+                            scaleX = 1f, scaleY = 1f,
+                            offsetX = 0f, offsetY = 0f,
+                            keepAspect = true
+                        )
+                    }
+                    LauncherBackgroundAlignMode.MANUAL -> {
+                        applyViewScaleFill(
+                            coverW, coverH, videoW, videoH,
+                            scaleX = align.scaleX, scaleY = align.scaleY,
+                            offsetX = align.offsetX, offsetY = align.offsetY,
+                            keepAspect = false
+                        )
                     }
                 }
-                LauncherBackgroundAlignMode.STRETCH -> {
-                    applyViewScaleFill(
-                        coverW, coverH, videoW, videoH,
-                        scaleX = 1f, scaleY = 1f,
-                        offsetX = 0f, offsetY = 0f,
-                        keepAspect = false
-                    )
-                }
-                LauncherBackgroundAlignMode.CROP -> {
-                    applyViewScaleFill(
-                        coverW, coverH, videoW, videoH,
-                        scaleX = 1f, scaleY = 1f,
-                        offsetX = 0f, offsetY = 0f,
-                        keepAspect = true
-                    )
-                }
-                LauncherBackgroundAlignMode.MANUAL -> {
-                    applyViewScaleFill(
-                        coverW, coverH, videoW, videoH,
-                        scaleX = align.scaleX, scaleY = align.scaleY,
-                        offsetX = align.offsetX, offsetY = align.offsetY,
-                        keepAspect = false
-                    )
-                }
+            } finally {
+                applyingFill = false
             }
         }
 

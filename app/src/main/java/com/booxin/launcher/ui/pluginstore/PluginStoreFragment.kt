@@ -35,6 +35,7 @@ import com.booxin.launcher.databinding.DialogMyApplicationsBinding
 import com.booxin.launcher.databinding.DialogPluginApplyBinding
 import com.booxin.launcher.databinding.DialogPluginQqBinding
 import com.booxin.launcher.databinding.FragmentPluginStoreBinding
+import com.booxin.launcher.ui.controller.ControllerNavBinder
 import com.booxin.launcher.ui.plugin.PluginsFragment
 import com.booxin.launcher.ui.uiplugin.UiPluginsFragment
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
@@ -104,6 +105,7 @@ class PluginStoreFragment : Fragment() {
         storeAdapter = StorePluginAdapter(::showPluginDetail, ::downloadPlugin)
         binding.recyclerStore.layoutManager = LinearLayoutManager(requireContext())
         binding.recyclerStore.adapter = storeAdapter
+        ControllerNavBinder.bindRecycler(binding.recyclerStore)
 
         setupFilterSpinner()
         binding.togglePluginSide.check(R.id.tabStore)

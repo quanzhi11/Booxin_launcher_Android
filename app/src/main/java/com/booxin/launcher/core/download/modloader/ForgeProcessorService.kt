@@ -74,8 +74,11 @@ class ForgeProcessorService : Service() {
                 Log.e(TAG, "processor thread failed", error)
                 code = 1
             } finally {
+                // Exit file first (durable), then UDP. Brief pause so the UI process
+                // can observe the file before this process is killed.
                 writeExitFile(exitFile, code)
                 sendExitCode(code)
+                Thread.sleep(250)
                 stopSelf(startId)
                 Process.killProcess(Process.myPid())
             }
@@ -138,6 +141,10 @@ class ForgeProcessorService : Service() {
         runCatching {
             exitFile.parentFile?.mkdirs()
             exitFile.writeText(code.toString())
+            // Force durable write — UI process may race killProcess().
+            runCatching {
+                java.io.FileOutputStream(exitFile, true).use { it.fd.sync() }
+            }
         }.onFailure { Log.e(TAG, "write exit file failed", it) }
     }
 
@@ -147,9 +154,9 @@ class ForgeProcessorService : Service() {
                 socket.connect(InetSocketAddress("127.0.0.1", ForgeInstallSocketServer.PORT))
                 val data = code.toString().toByteArray()
                 // Retry a few times in case the listener binds slightly late.
-                repeat(5) { attempt ->
+                repeat(8) { attempt ->
                     socket.send(DatagramPacket(data, data.size))
-                    if (attempt < 4) Thread.sleep(100)
+                    if (attempt < 7) Thread.sleep(80)
                 }
             }
         }.onFailure { error ->

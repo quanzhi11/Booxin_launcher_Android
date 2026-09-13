@@ -15,19 +15,19 @@ object ControlCatalog {
     val entries: List<Entry> = listOf(
         Entry("键盘", ControlButtonSpec.Kind.SOFT_KEYBOARD, 0, 48),
         Entry("跳", ControlButtonSpec.Kind.KEY_HOLD, GlfwKeys.KEY_SPACE, 64),
-        Entry("潜", ControlButtonSpec.Kind.KEY_HOLD, GlfwKeys.KEY_LEFT_SHIFT),
-        Entry("跑", ControlButtonSpec.Kind.KEY_HOLD, GlfwKeys.KEY_LEFT_CONTROL),
+        Entry("Shift", ControlButtonSpec.Kind.KEY_HOLD, GlfwKeys.KEY_LEFT_SHIFT),
+        Entry("Ctrl", ControlButtonSpec.Kind.KEY_HOLD, GlfwKeys.KEY_LEFT_CONTROL),
         Entry("E", ControlButtonSpec.Kind.KEY_TAP, GlfwKeys.KEY_E),
         Entry("T", ControlButtonSpec.Kind.KEY_TAP, GlfwKeys.KEY_T),
         Entry("Q", ControlButtonSpec.Kind.KEY_TAP, GlfwKeys.KEY_Q),
         Entry("ESC", ControlButtonSpec.Kind.KEY_TAP, GlfwKeys.KEY_ESCAPE, 48),
         Entry("Tab", ControlButtonSpec.Kind.KEY_HOLD, GlfwKeys.KEY_TAB, 48),
         Entry("F5", ControlButtonSpec.Kind.KEY_TAP, GlfwKeys.KEY_F5, 48),
-        Entry("回车", ControlButtonSpec.Kind.KEY_TAP, GlfwKeys.KEY_ENTER, 48),
+        Entry("Enter", ControlButtonSpec.Kind.KEY_TAP, GlfwKeys.KEY_ENTER, 48),
         Entry("左键", ControlButtonSpec.Kind.MOUSE_HOLD, GlfwKeys.MOUSE_LEFT, 56),
         Entry("右键", ControlButtonSpec.Kind.MOUSE_HOLD, GlfwKeys.MOUSE_RIGHT, 56),
-        Entry("攻击·跟手", ControlButtonSpec.Kind.MOUSE_FOLLOW, GlfwKeys.MOUSE_LEFT, 58),
-        Entry("使用·跟手", ControlButtonSpec.Kind.MOUSE_FOLLOW, GlfwKeys.MOUSE_RIGHT, 54),
+        Entry("左键·跟手", ControlButtonSpec.Kind.MOUSE_FOLLOW, GlfwKeys.MOUSE_LEFT, 58),
+        Entry("右键·跟手", ControlButtonSpec.Kind.MOUSE_FOLLOW, GlfwKeys.MOUSE_RIGHT, 54),
         Entry("跳·跟手", ControlButtonSpec.Kind.KEY_FOLLOW, GlfwKeys.KEY_SPACE, 66),
         Entry("▲", ControlButtonSpec.Kind.SCROLL, 1, 44),
         Entry("▼", ControlButtonSpec.Kind.SCROLL, -1, 44),
@@ -62,14 +62,37 @@ object ControlCatalog {
         ControlButtonSpec("chat", "T", ControlButtonSpec.Kind.KEY_TAP, GlfwKeys.KEY_T, 0.94f, 0.14f, 48),
         ControlButtonSpec("inv", "E", ControlButtonSpec.Kind.KEY_TAP, GlfwKeys.KEY_E, 0.94f, 0.22f, 48),
         softKeyboardButton(0.94f, 0.30f, 48),
-        // Right combat / interact column
-        ControlButtonSpec("lmb", "攻击", ControlButtonSpec.Kind.MOUSE_HOLD, GlfwKeys.MOUSE_LEFT, 0.90f, 0.58f, 58),
-        ControlButtonSpec("rmb", "使用", ControlButtonSpec.Kind.MOUSE_HOLD, GlfwKeys.MOUSE_RIGHT, 0.78f, 0.58f, 54),
+        // Right combat / interact column — labels are concrete keys (jump stays 跳)
+        ControlButtonSpec("lmb", "左键", ControlButtonSpec.Kind.MOUSE_HOLD, GlfwKeys.MOUSE_LEFT, 0.90f, 0.58f, 58),
+        ControlButtonSpec("rmb", "右键", ControlButtonSpec.Kind.MOUSE_HOLD, GlfwKeys.MOUSE_RIGHT, 0.78f, 0.58f, 54),
         ControlButtonSpec("jump", "跳", ControlButtonSpec.Kind.KEY_HOLD, GlfwKeys.KEY_SPACE, 0.90f, 0.74f, 66),
-        ControlButtonSpec("sneak", "潜", ControlButtonSpec.Kind.KEY_HOLD, GlfwKeys.KEY_LEFT_SHIFT, 0.78f, 0.86f, 52),
+        ControlButtonSpec("sneak", "Shift", ControlButtonSpec.Kind.KEY_HOLD, GlfwKeys.KEY_LEFT_SHIFT, 0.78f, 0.86f, 52),
         // Hotbar helpers (left of jump column)
         ControlButtonSpec("scup", "▲", ControlButtonSpec.Kind.SCROLL, 1, 0.66f, 0.74f, 42),
         ControlButtonSpec("scdn", "▼", ControlButtonSpec.Kind.SCROLL, -1, 0.66f, 0.86f, 42),
         ControlButtonSpec("drop", "Q", ControlButtonSpec.Kind.KEY_TAP, GlfwKeys.KEY_Q, 0.54f, 0.90f, 44),
     )
+
+    /**
+     * Old functional Chinese labels → concrete key names for stock ids.
+     * Jump (`jump`) and custom renames are left alone.
+     */
+    fun migratedStockLabel(id: String, label: String): String {
+        val trimmed = label.trim()
+        return when (id) {
+            "lmb" -> when (trimmed) {
+                "攻击", "攻击·跟手" -> "左键"
+                else -> label
+            }
+            "rmb" -> when (trimmed) {
+                "使用", "使用·跟手" -> "右键"
+                else -> label
+            }
+            "sneak" -> when (trimmed) {
+                "潜", "潜行" -> "Shift"
+                else -> label
+            }
+            else -> label
+        }
+    }
 }

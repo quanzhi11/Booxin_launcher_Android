@@ -73,6 +73,7 @@ class AccountsAdapter(
                 when (item.type) {
                     AccountType.MICROSOFT -> R.string.accounts_microsoft
                     AccountType.OFFLINE -> R.string.accounts_offline
+                    AccountType.THIRD_PARTY -> R.string.accounts_third_party
                 }
             )
             binding.buttonAccountSkin.isVisible = item.type == AccountType.OFFLINE
@@ -96,7 +97,7 @@ class AccountsAdapter(
                         applyHeadPreview(binding.imageAccountSkin, path, item.id)
                     }
                 }
-                AccountType.MICROSOFT -> {
+                AccountType.MICROSOFT, AccountType.THIRD_PARTY -> {
                     val appCtx = binding.root.context.applicationContext
                     skinJob = scope.launch {
                         val file = withContext(Dispatchers.IO) {

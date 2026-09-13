@@ -57,10 +57,10 @@ object BooxinGluesEnv {
                     env["allow_higher_compat_version"] = "true"
                     env["allow_glsl_extension_directive_midshader"] = "true"
                     env["force_glsl_extensions_warn"] = "true"
-                    env.putIfAbsent(
-                        "FCL_VERSION_CODE",
-                        com.booxin.launcher.BuildConfig.VERSION_CODE.toString()
-                    )
+                    // Same MG handshake as MOBILE_GLUES path — not claiming to be FCL.
+                    val vc = com.booxin.launcher.BuildConfig.VERSION_CODE.toString()
+                    env.putIfAbsent("FCL_VERSION_CODE", vc)
+                    env.putIfAbsent("ZALITH_VERSION_CODE", vc)
                     MobileGluesConfig.writeProfile(
                         context,
                         runCatching {
@@ -103,11 +103,12 @@ object BooxinGluesEnv {
             env["allow_glsl_extension_directive_midshader"] = "true"
             env["force_glsl_extensions_warn"] = "true"
             env["BOOXIN_GL_LICENSE"] = "LGPL-2.1"
-            // MG refuses config.json unless a known launcher version env is set.
-            env.putIfAbsent(
-                "FCL_VERSION_CODE",
-                com.booxin.launcher.BuildConfig.VERSION_CODE.toString()
-            )
+            // MobileGlues only loads config.json when it sees a "known launcher" env
+            // key (FCL_VERSION_CODE / ZALITH_VERSION_CODE). Booxin is NOT FCL/Zalith —
+            // we reuse those key names so MG accepts our config. Value = our versionCode.
+            val vc = com.booxin.launcher.BuildConfig.VERSION_CODE.toString()
+            env.putIfAbsent("FCL_VERSION_CODE", vc)
+            env.putIfAbsent("ZALITH_VERSION_CODE", vc)
             // Official translator reads config.json from MG_DIR_PATH for its own perf paths.
             MobileGluesConfig.writeProfile(
                 context,

@@ -5,6 +5,7 @@ import android.annotation.SuppressLint
 import android.app.KeyguardManager
 import android.content.BroadcastReceiver
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -14,14 +15,20 @@ import android.os.SystemClock
 import android.util.Log
 import android.view.Gravity
 import android.view.KeyEvent
+import android.view.LayoutInflater
 import android.view.MotionEvent
 import android.graphics.SurfaceTexture
 import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.TextureView
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.FrameLayout
+import android.widget.GridLayout
+import android.widget.ImageView
+import android.widget.LinearLayout
+import android.widget.TextView
 import android.widget.Toast
 import org.lwjgl.glfw.CallbackBridge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -50,12 +57,14 @@ import com.booxin.launcher.core.launch.NativeJvmLauncher
 import com.booxin.launcher.core.launch.OemLaunchProfile
 import com.booxin.launcher.core.runtime.GameRuntimeBackends
 import com.booxin.launcher.databinding.ActivityLaunchBinding
+import com.booxin.launcher.ui.launch.input.BooxinSdlInput
 import com.booxin.launcher.ui.launch.input.ControlLayoutController
 import com.booxin.launcher.ui.launch.input.GameGyroscope
 import com.booxin.launcher.ui.launch.input.GameInput
 import com.booxin.launcher.ui.launch.input.GestureMode
 import com.booxin.launcher.ui.launch.input.LaunchControlPrefs
 import com.booxin.launcher.ui.launch.input.MouseMoveMode
+import com.booxin.launcher.ui.launch.input.PhysicalInputController
 import com.booxin.runtime.BooxinBridge
 import java.util.Locale
 import kotlin.math.abs
@@ -88,6 +97,7 @@ class LaunchActivity : AppCompatActivity() {
     private var pendingUserType: String? = null
     private var pendingServerAddress: String? = null
     private var pendingOfflineSkinPath: String? = null
+    private var pendingAuthServerUrl: String? = null
     private var canRetryLaunch = false
     private var surfaceWidth = 0
     private var surfaceHeight = 0
@@ -169,6 +179,8 @@ class LaunchActivity : AppCompatActivity() {
 
     /** TextureView producer frames — proves GL actually swapped into the surface. */
     private var textureFrameCount = 0L
+    /** onSurfaceTextureUpdated only — real BufferQueue consumer frames (not SDL present poll). */
+    private var textureUpdatedCount = 0L
     private var forceEnterWatchingFrames = false
     private var forceEnterBaselineFrames = 0L
     private var forceRebindAttempts = 0
@@ -379,8 +391,21 @@ class LaunchActivity : AppCompatActivity() {
         ) {
             onForceEnterFramesDetected()
         }
-        if (!overlayHidden) {
+        if (overlayHidden) return
+        // Prefer TextureView; fall back to presents once the client is clearly up
+        // (user can hear sound while glass still says 92%).
+        if (textureUpdatedCount >= 3L ||
+            (gameProgressSeen && n >= 8L) ||
+            n >= 20L
+        ) {
             onGameSurfaceFrame()
+        } else if (n == 1L) {
+            appendLog("SDL SwapBuffers 已开始（present=$n）…")
+        }
+        // Heal: presents without consumer frames → rebind Surface producer.
+        if (!overlayHidden && n >= 12L && textureUpdatedCount == 0L && n % 24L == 0L) {
+            appendLog("SDL：present=$n 但 Surface 未出帧，强制重绑…")
+            performForceRenderRebind("sdl-present-no-tex")
         }
     }
 
@@ -491,7 +516,10 @@ class LaunchActivity : AppCompatActivity() {
         }
 
         override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {
-            textureFrameCount++
+            textureUpdatedCount++
+            if (textureUpdatedCount > textureFrameCount) {
+                textureFrameCount = textureUpdatedCount
+            }
             if (forceEnterWatchingFrames &&
                 !forceFrameNotified &&
                 textureFrameCount > forceEnterBaselineFrames
@@ -511,6 +539,17 @@ class LaunchActivity : AppCompatActivity() {
     private var frameHideRunnable: Runnable? = null
     private var firstPaintFrameAtMs = 0L
 
+    /** Frames that count toward peeling the loading glass. */
+    private fun visibleFrameCount(): Long {
+        if (!isSdlLaunch) return textureFrameCount
+        if (textureUpdatedCount >= 3L) return textureUpdatedCount
+        // MobileGlues often never fires TextureView updates; SwapBuffers + client-ready
+        // (Sound engine etc.) means the title screen is up — don't stick at 92%.
+        if (gameProgressSeen && textureFrameCount >= 8L) return textureFrameCount
+        if (textureFrameCount >= 20L) return textureFrameCount
+        return textureUpdatedCount
+    }
+
     private fun onGameSurfaceFrame() {
         if (overlayHidden || isFinishing) return
         // Ignore early clear/black frames before the process has really started.
@@ -519,7 +558,7 @@ class LaunchActivity : AppCompatActivity() {
             firstPaintFrameAtMs = SystemClock.uptimeMillis()
             appendLog(
                 if (isSdlLaunch) {
-                    "检测到游戏画面开始绘制（SDL present=$textureFrameCount）"
+                    "检测到游戏画面开始绘制（Texture=$textureUpdatedCount present=$textureFrameCount）"
                 } else {
                     "检测到游戏画面开始绘制（Texture 出帧）"
                 }
@@ -530,17 +569,22 @@ class LaunchActivity : AppCompatActivity() {
             )
         }
         // Enough continuous paints → treat as title/menu ready.
-        if (textureFrameCount < 6L) return
+        val readyFrames = visibleFrameCount()
+        if (readyFrames < 6L) return
         if (frameHideArmed) return
         frameHideArmed = true
         frameHideRunnable?.let { mainHandler.removeCallbacks(it) }
         val delayMs = when {
-            loadingPercent >= 90 || softHideScheduled || gameProgressSeen -> 600L
+            loadingPercent >= 90 || softHideScheduled || gameProgressSeen -> 400L
             isModLoaderLaunch -> 1_800L
             else -> 900L
         }
         frameHideRunnable = Runnable {
             if (overlayHidden || isFinishing) return@Runnable
+            if (visibleFrameCount() < 6L) {
+                frameHideArmed = false
+                return@Runnable
+            }
             gameProgressSeen = true
             appendLog("画面已持续绘制，自动关闭加载遮罩")
             updateLoadingUi(100, "进入游戏")
@@ -706,6 +750,7 @@ class LaunchActivity : AppCompatActivity() {
             )
         }
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        OemLaunchProfile.applyGameProcessBoost(this)
         runCatching {
             getSystemService(KeyguardManager::class.java)
                 ?.requestDismissKeyguard(this, null)
@@ -727,6 +772,8 @@ class LaunchActivity : AppCompatActivity() {
         pendingServerAddress = intent.getStringExtra(EXTRA_SERVER_ADDRESS)
             ?.takeIf { it.isNotBlank() }
         pendingOfflineSkinPath = intent.getStringExtra(EXTRA_OFFLINE_SKIN_PATH)
+            ?.takeIf { it.isNotBlank() }
+        pendingAuthServerUrl = intent.getStringExtra(EXTRA_AUTH_SERVER_URL)
             ?.takeIf { it.isNotBlank() }
         if (pendingVersionId.isBlank()) {
             appendLog("缺少版本 ID")
@@ -803,26 +850,45 @@ class LaunchActivity : AppCompatActivity() {
                 mainHandler.post { applyGameBufferSize(w, h) }
             }
         }
-        // Keep TextureView for SDL too: SurfaceView caused :game exit(1) during
-        // JNI_CreateJavaVM on this OEM. Present-count + egl ANW substitute handle frames=0.
-        binding.surfaceGameSdl.visibility = View.GONE
-        binding.surfaceGame.visibility = View.VISIBLE
-        binding.surfaceGame.isOpaque = true
-        binding.surfaceGame.surfaceTextureListener = textureListener
+        // SDL+MG: TextureView BufferQueue often stays texUpdated=0 while SwapBuffers
+        // still succeeds (black + audio). Use SurfaceView; SDL lib load stays deferred
+        // until after CreateJavaVM (that was the OEM exit(1), not SurfaceView itself).
         if (isSdlLaunch) {
-            appendLog("SDL 模式：TextureView + present 计数（SurfaceView 在本机闪退，已禁用）")
-            // Do not poll until HotSpot exists — JNI during CreateJavaVM is unsafe here.
-        }
-        // Already available (e.g. after config change) — bind immediately.
-        if (binding.surfaceGame.isAvailable) {
-            val st = binding.surfaceGame.surfaceTexture
-            if (st != null) {
-                bindTextureSurface(
-                    st,
-                    binding.surfaceGame.width.coerceAtLeast(1),
-                    binding.surfaceGame.height.coerceAtLeast(1),
-                    "already-available"
-                )
+            binding.surfaceGame.visibility = View.GONE
+            binding.surfaceGame.surfaceTextureListener = null
+            binding.surfaceGameSdl.visibility = View.VISIBLE
+            binding.surfaceGameSdl.isClickable = false
+            binding.surfaceGameSdl.isFocusable = false
+            binding.surfaceGameSdl.setZOrderOnTop(false)
+            binding.surfaceGameSdl.setZOrderMediaOverlay(false)
+            // RGBA_8888 makes the Surface translucent → compositor blends with the
+            // dark activity bg and washes Mojang red into pale pink (发白).
+            runCatching {
+                binding.surfaceGameSdl.holder.setFormat(android.graphics.PixelFormat.OPAQUE)
+            }
+            if (Build.VERSION.SDK_INT >= 26) {
+                runCatching { window.colorMode = ActivityInfo.COLOR_MODE_DEFAULT }
+            }
+            binding.surfaceGameSdl.holder.addCallback(sdlSurfaceCallback)
+            binding.panelControls.elevation = 8f
+            BooxinSdlInput.setEnabled(true)
+            appendLog("SDL 模式：SurfaceView + SDL 输入镜像")
+        } else {
+            BooxinSdlInput.setEnabled(false)
+            binding.surfaceGameSdl.visibility = View.GONE
+            binding.surfaceGame.visibility = View.VISIBLE
+            binding.surfaceGame.isOpaque = true
+            binding.surfaceGame.surfaceTextureListener = textureListener
+            if (binding.surfaceGame.isAvailable) {
+                val st = binding.surfaceGame.surfaceTexture
+                if (st != null) {
+                    bindTextureSurface(
+                        st,
+                        binding.surfaceGame.width.coerceAtLeast(1),
+                        binding.surfaceGame.height.coerceAtLeast(1),
+                        "already-available"
+                    )
+                }
             }
         }
 
@@ -981,6 +1047,8 @@ class LaunchActivity : AppCompatActivity() {
 
         binding.btnEditAdd.setOnClickListener { controlLayout.addButton() }
         binding.btnEditDelete.setOnClickListener { controlLayout.deleteSelected() }
+        binding.btnEditRename.setOnClickListener { controlLayout.renameSelected() }
+        binding.btnEditColor.setOnClickListener { controlLayout.colorSelected() }
         binding.btnEditFollow.setOnClickListener { controlLayout.toggleFollowSelected() }
         binding.btnEditShrink.setOnClickListener { controlLayout.resizeSelected(-8) }
         binding.btnEditGrow.setOnClickListener { controlLayout.resizeSelected(8) }
@@ -994,6 +1062,19 @@ class LaunchActivity : AppCompatActivity() {
         gyroscope = GameGyroscope(this, LaunchControlPrefs.gyroSensitivity(this))
         if (LaunchControlPrefs.isGyroEnabled(this)) {
             gyroscope.enable()
+        }
+
+        PhysicalInputController.loadFromPrefs(this)
+        PhysicalInputController.onGamepadActive = {
+            if (controlsVisible && LaunchControlPrefs.hideControlsOnGamepad(this)) {
+                runOnUiThread {
+                    if (controlsVisible) {
+                        setControlsVisible(false)
+                        Toast.makeText(this, R.string.control_physical_toast_hidden, Toast.LENGTH_SHORT)
+                            .show()
+                    }
+                }
+            }
         }
 
         // 仅 grab=true 时藏遮罩。
@@ -1045,15 +1126,15 @@ class LaunchActivity : AppCompatActivity() {
         if (ready) {
             gameProgressSeen = true
             updateLoadingUi(100, line.trim().take(80))
-            if (isSdlLaunch && textureFrameCount < 6L) {
-                // SDL/MobileGlues often logs GL ready while still black — wait for presents.
-                appendLog("SDL：已检测到客户端就绪日志，等待画面呈现再关遮罩…")
-                scheduleSoftHideAfterRender(8_000L)
+            if (isSdlLaunch && visibleFrameCount() < 6L) {
+                // Wait briefly for presents; Sound engine + SwapBuffers → peel (not forever @ 92%).
+                appendLog("SDL：客户端就绪（${line.trim().take(48)}），等待呈现后关遮罩…")
+                scheduleSoftHideAfterRender(2_500L)
                 startSdlPresentPoll()
                 return
             }
             // Modpacks: never peel to black Surface before real frames.
-            if (isModLoaderLaunch && textureFrameCount < 3L) {
+            if (isModLoaderLaunch && visibleFrameCount() < 3L) {
                 appendLog("已接近就绪，等待画面出帧后再关遮罩…")
                 binding.textLoadingHint.text = getString(R.string.launch_loading_hint_wait_frames)
                 scheduleSoftHideAfterRender(12_000L)
@@ -1122,7 +1203,7 @@ class LaunchActivity : AppCompatActivity() {
             bumpOverlayKeepAlive()
             // Mods still arriving — push soft-hide out so we don't flash black.
             // But once TextureView is painting, prefer frame-based peel (don't delay forever).
-            if (softHideScheduled && textureFrameCount < 3L) {
+            if (softHideScheduled && visibleFrameCount() < 3L) {
                 scheduleSoftHideAfterRender(15_000L)
             }
             return
@@ -1403,20 +1484,35 @@ class LaunchActivity : AppCompatActivity() {
 
     /** Same path as onResume: rebind Surface → setupBridgeWindow → EGL stale → size nudge. */
     private fun performForceRenderRebind(reason: String) {
-        val st = binding.surfaceGame.surfaceTexture
-        val viewW = binding.surfaceGame.width.coerceAtLeast(surfaceWidth).coerceAtLeast(1)
-        val viewH = binding.surfaceGame.height.coerceAtLeast(surfaceHeight).coerceAtLeast(1)
+        val viewW = if (isSdlLaunch) {
+            binding.surfaceGameSdl.width.coerceAtLeast(surfaceWidth).coerceAtLeast(1)
+        } else {
+            binding.surfaceGame.width.coerceAtLeast(surfaceWidth).coerceAtLeast(1)
+        }
+        val viewH = if (isSdlLaunch) {
+            binding.surfaceGameSdl.height.coerceAtLeast(surfaceHeight).coerceAtLeast(1)
+        } else {
+            binding.surfaceGame.height.coerceAtLeast(surfaceHeight).coerceAtLeast(1)
+        }
         val w = GameSurfaceBridge.bufferWidthOr(
             if (gameBufferWidth > 1) gameBufferWidth else viewW
         )
         val h = GameSurfaceBridge.bufferHeightOr(
             if (gameBufferHeight > 1) gameBufferHeight else viewH
         )
-        if (st != null && binding.surfaceGame.isAvailable) {
-            bindTextureSurface(st, viewW, viewH, "force-rebind-$reason")
+        if (isSdlLaunch) {
+            val holder = binding.surfaceGameSdl.holder
+            if (holder.surface.isValid) {
+                bindSdlHolderSurface(holder.surface, viewW, viewH, "force-rebind-$reason")
+            }
+        } else {
+            val st = binding.surfaceGame.surfaceTexture
+            if (st != null && binding.surfaceGame.isAvailable) {
+                bindTextureSurface(st, viewW, viewH, "force-rebind-$reason")
+            }
         }
         val rebound = runCatching { GameSurfaceBridge.rebindIfPossible() }.getOrDefault(false)
-        if (isSdlLaunch && reason.contains("resume", ignoreCase = true)) {
+        if (isSdlLaunch) {
             val surf = GameSurfaceBridge.currentSurface()
             if (surf != null) {
                 runCatching {
@@ -1442,8 +1538,12 @@ class LaunchActivity : AppCompatActivity() {
                 }, 80L)
             }
         }
-        Log.i(TAG, "performForceRenderRebind reason=$reason rebound=$rebound sdl=$isSdlLaunch ${w}x${h} frames=$textureFrameCount")
-        if (!overlayHidden) {
+        Log.i(
+            TAG,
+            "performForceRenderRebind reason=$reason rebound=$rebound sdl=$isSdlLaunch " +
+                "${w}x${h} frames=$textureFrameCount"
+        )
+        if (!overlayHidden || reason.startsWith("sdl-")) {
             appendLog("强制重绑渲染窗口（$reason） rebound=$rebound sdl=$isSdlLaunch")
         }
     }
@@ -1489,7 +1589,11 @@ class LaunchActivity : AppCompatActivity() {
         // Stop mirroring Minecraft logs onto the UI thread (Binder + TextView).
         GameLaunchLogBus.muteUiLogs(this)
         runCatching { binding.dinoGame.stopGame() }
-        Log.i(TAG, "hideOverlay percent=$loadingPercent frames=$textureFrameCount")
+        Log.i(
+            TAG,
+            "hideOverlay percent=$loadingPercent frames=$textureFrameCount " +
+                "texUpdated=$textureUpdatedCount"
+        )
         updateLoadingUi(100, "进入游戏")
         hideOverlay()
         if (isSdlLaunch) startSdlPresentPoll()
@@ -1505,15 +1609,15 @@ class LaunchActivity : AppCompatActivity() {
             else -> 45_000L
         }
         overlayHideTimeout = Runnable {
-            if (isSdlLaunch && textureFrameCount < 3L) {
+            if (isSdlLaunch && visibleFrameCount() < 3L) {
                 appendLog(
-                    "SDL：超时仍无画面呈现（SurfaceView/present=0）。" +
+                    "SDL：超时仍无 TextureView 出帧（present=${textureFrameCount} tex=${textureUpdatedCount}）。" +
                         "请点「强制进入」或返回重试；勿当已进游戏。"
                 )
                 updateLoadingUi(95, "画面未出帧 — 可强制进入/重试")
                 return@Runnable
             }
-            if (isModLoaderLaunch && textureFrameCount < 3L) {
+            if (isModLoaderLaunch && visibleFrameCount() < 3L) {
                 appendLog("模组仍在加载且尚未出画，继续等待（可玩小恐龙或点「强制进入」）")
                 updateLoadingUi(
                     loadingPercent.coerceAtLeast(85),
@@ -1553,14 +1657,23 @@ class LaunchActivity : AppCompatActivity() {
         overlaySoftHide?.let { mainHandler.removeCallbacks(it) }
         overlaySoftHide = Runnable {
             if (overlayHidden) return@Runnable
-            if (isSdlLaunch && textureFrameCount < 3L) {
+            if (isSdlLaunch) {
                 syncSdlPresentFrames()
-                if (textureFrameCount < 3L) {
-                    appendLog("SDL：仍无画面呈现，保持加载遮罩（不强制重绑，避免抢走 SDL EGL）")
-                    updateLoadingUi(92, "等待画面出帧…")
-                    // Do NOT performForceRenderRebind here: setupBridgeWindow/egl attach
-                    // and maybePrepare fight SDL's window surface → frames stay 0.
-                    scheduleSoftHideAfterRender(8_000L)
+                if (visibleFrameCount() < 3L) {
+                    // Client ready + presents: peel. Don't loop on TextureView forever.
+                    if (gameProgressSeen && textureFrameCount >= 5L) {
+                        appendLog(
+                            "SDL：就绪信号 + present=${textureFrameCount}，关闭加载遮罩"
+                        )
+                        updateLoadingUi(100, "进入游戏")
+                        hideOverlayIfNeeded(force = true, allowWithoutBridge = true)
+                        return@Runnable
+                    }
+                    appendLog(
+                        "SDL：等待呈现（present=${textureFrameCount} tex=${textureUpdatedCount}）…"
+                    )
+                    updateLoadingUi(94, "游戏已就绪，即将进入…")
+                    scheduleSoftHideAfterRender(2_000L)
                     startSdlPresentPoll()
                     return@Runnable
                 }
@@ -1579,12 +1692,16 @@ class LaunchActivity : AppCompatActivity() {
                 return@Runnable
             }
             appendLog("触控桥未就绪，再等一会儿再关遮罩（避免黑屏）")
-            val graceMs = if (textureFrameCount >= 3L) 2_500L else 12_000L
+            val graceMs = if (visibleFrameCount() >= 3L) 2_500L else 12_000L
             overlaySoftHide = Runnable {
                 if (overlayHidden) return@Runnable
-                if (isSdlLaunch && textureFrameCount < 3L) {
-                    appendLog("SDL：仍无画面呈现，保持加载遮罩（避免假进游戏黑屏）")
-                    updateLoadingUi(92, "等待画面出帧…")
+                if (isSdlLaunch && gameProgressSeen && textureFrameCount >= 5L) {
+                    hideOverlayIfNeeded(force = true, allowWithoutBridge = true)
+                    return@Runnable
+                }
+                if (isSdlLaunch && visibleFrameCount() < 3L) {
+                    appendLog("SDL：宽限后仍弱呈现，仍关闭遮罩（可强制进入）")
+                    hideOverlayIfNeeded(force = true, allowWithoutBridge = true)
                     return@Runnable
                 }
                 gameProgressSeen = true
@@ -1683,6 +1800,7 @@ class LaunchActivity : AppCompatActivity() {
         binding.btnGestureQuick.text = when (binding.touchPad.gestureMode) {
             GestureMode.COMBINED -> getString(R.string.control_gesture_quick_combined)
             GestureMode.FIGHT -> getString(R.string.control_gesture_quick_fight)
+            GestureMode.AA -> getString(R.string.control_gesture_quick_aa)
         }
     }
 
@@ -1693,6 +1811,7 @@ class LaunchActivity : AppCompatActivity() {
         val msg = when (mode) {
             GestureMode.COMBINED -> R.string.control_toast_gesture_combined
             GestureMode.FIGHT -> R.string.control_toast_gesture_fight
+            GestureMode.AA -> R.string.control_toast_gesture_aa
         }
         Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
     }
@@ -1700,7 +1819,8 @@ class LaunchActivity : AppCompatActivity() {
     private fun toggleGestureMode() {
         val next = when (binding.touchPad.gestureMode) {
             GestureMode.COMBINED -> GestureMode.FIGHT
-            GestureMode.FIGHT -> GestureMode.COMBINED
+            GestureMode.FIGHT -> GestureMode.AA
+            GestureMode.AA -> GestureMode.COMBINED
         }
         setGestureMode(next)
     }
@@ -1754,6 +1874,74 @@ class LaunchActivity : AppCompatActivity() {
             .show()
     }
 
+    private fun showPhysicalInputSettingsDialog() {
+        val view = layoutInflater.inflate(R.layout.dialog_physical_input_settings, null)
+        val switchKb = view.findViewById<android.widget.Switch>(R.id.switchPhysicalKeyboard)
+        val switchPad = view.findViewById<android.widget.Switch>(R.id.switchPhysicalGamepad)
+        val switchHide = view.findViewById<android.widget.Switch>(R.id.switchHideOnGamepad)
+        val seek = view.findViewById<android.widget.SeekBar>(R.id.seekGamepadLook)
+        val lookLabel = view.findViewById<TextView>(R.id.textGamepadLook)
+        val devices = view.findViewById<TextView>(R.id.textPhysicalDevices)
+
+        fun refreshLookLabel(progress: Int) {
+            lookLabel.text = getString(R.string.control_physical_look_fmt, progress)
+        }
+
+        switchKb.isChecked = LaunchControlPrefs.isKeyboardEnabled(this)
+        switchPad.isChecked = LaunchControlPrefs.isGamepadEnabled(this)
+        switchHide.isChecked = LaunchControlPrefs.hideControlsOnGamepad(this)
+        seek.max = LaunchControlPrefs.GAMEPAD_LOOK_MAX
+        if (Build.VERSION.SDK_INT >= 26) {
+            seek.min = LaunchControlPrefs.GAMEPAD_LOOK_MIN
+        }
+        val initialLook = LaunchControlPrefs.gamepadLookProgress(this)
+        seek.progress = initialLook
+        refreshLookLabel(initialLook)
+        devices.text = getString(R.string.control_physical_devices_header) + "\n" +
+            PhysicalInputController.connectedDeviceSummary(this)
+
+        switchKb.setOnCheckedChangeListener { _, checked ->
+            LaunchControlPrefs.setKeyboardEnabled(this, checked)
+            PhysicalInputController.keyboardEnabled = checked
+        }
+        switchPad.setOnCheckedChangeListener { _, checked ->
+            LaunchControlPrefs.setGamepadEnabled(this, checked)
+            PhysicalInputController.gamepadEnabled = checked
+            if (!checked) PhysicalInputController.releaseAll()
+        }
+        switchHide.setOnCheckedChangeListener { _, checked ->
+            LaunchControlPrefs.setHideControlsOnGamepad(this, checked)
+            PhysicalInputController.hideOnScreenWhenGamepad = checked
+        }
+        seek.setOnSeekBarChangeListener(object : android.widget.SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: android.widget.SeekBar?, progress: Int, fromUser: Boolean) {
+                val p = progress.coerceAtLeast(LaunchControlPrefs.GAMEPAD_LOOK_MIN)
+                refreshLookLabel(p)
+                if (fromUser) {
+                    LaunchControlPrefs.setGamepadLookProgress(this@LaunchActivity, p)
+                    PhysicalInputController.lookSensitivity =
+                        LaunchControlPrefs.progressToGamepadLook(p)
+                }
+            }
+
+            override fun onStartTrackingTouch(seekBar: android.widget.SeekBar?) = Unit
+            override fun onStopTrackingTouch(seekBar: android.widget.SeekBar?) = Unit
+        })
+
+        AlertDialog.Builder(this)
+            .setTitle(R.string.control_physical_title)
+            .setView(view)
+            .setNeutralButton(R.string.control_physical_open_bluetooth) { _, _ ->
+                runCatching {
+                    startActivity(Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS))
+                }.onFailure {
+                    Toast.makeText(this, R.string.control_physical_none, Toast.LENGTH_SHORT).show()
+                }
+            }
+            .setPositiveButton(android.R.string.ok, null)
+            .show()
+    }
+
     private fun showFloatingMenu() {
         if (controlLayout.editMode) {
             controlLayout.exitEditMode(save = true)
@@ -1765,58 +1953,131 @@ class LaunchActivity : AppCompatActivity() {
             getString(R.string.control_menu_show)
         }
         val layouts = controlLayout.availableLayouts()
-        val hasPanels = layouts.size > 1
-        val items = buildList {
-            add(getString(R.string.control_menu_gyro))
-            add(getString(R.string.control_menu_multiplayer))
-            add(getString(R.string.control_menu_community))
-            if (hasPanels) add(getString(R.string.control_menu_panels))
-            add(getString(R.string.control_menu_edit))
-            add(hideLabel)
-            add(getString(R.string.control_menu_exit))
-        }.toTypedArray()
-        AlertDialog.Builder(this)
+        val content = LayoutInflater.from(this).inflate(R.layout.dialog_control_menu, null)
+        val coreGrid = content.findViewById<GridLayout>(R.id.gridControlMenuCore)
+        val pluginColumn = content.findViewById<LinearLayout>(R.id.columnControlMenuPlugin)
+        val dialog = AlertDialog.Builder(this)
             .setTitle(R.string.control_menu_title)
-            .setItems(items) { _, which ->
-                val actions = mutableListOf<() -> Unit>()
-                actions += { showGyroSettingsDialog() }
-                actions += { multiplayerPanel.show() }
-                actions += { communityPanel.show() }
-                if (hasPanels) actions += { showControlPanelPicker(layouts) }
-                actions += {
-                    setControlsVisible(true)
-                    controlLayout.enterEditMode()
-                }
-                actions += { setControlsVisible(!controlsVisible) }
-                actions += { returnToLauncher() }
-                actions.getOrNull(which)?.invoke()
+            .setView(content)
+            .setNegativeButton(android.R.string.cancel, null)
+            .create()
+
+        data class MenuEntry(val label: String, val iconRes: Int, val action: () -> Unit)
+        val coreEntries = listOf(
+            MenuEntry(getString(R.string.control_menu_gyro), R.drawable.ic_control_menu_gyro) {
+                showGyroSettingsDialog()
+            },
+            MenuEntry(getString(R.string.control_menu_physical), R.drawable.ic_control_menu_physical) {
+                showPhysicalInputSettingsDialog()
+            },
+            MenuEntry(getString(R.string.control_menu_multiplayer), R.drawable.ic_nav_multiplayer) {
+                multiplayerPanel.show()
+            },
+            MenuEntry(getString(R.string.control_menu_community), R.drawable.ic_nav_community) {
+                communityPanel.show()
+            },
+            MenuEntry(getString(R.string.control_menu_edit), R.drawable.ic_control_menu_edit) {
+                setControlsVisible(true)
+                controlLayout.enterEditMode()
+            },
+            MenuEntry(hideLabel, R.drawable.ic_control_menu_visibility) {
+                setControlsVisible(!controlsVisible)
+            },
+            MenuEntry(getString(R.string.control_menu_exit), R.drawable.ic_control_menu_exit) {
+                returnToLauncher()
             }
-            .show()
+        )
+        coreEntries.forEach { entry ->
+            coreGrid.addView(
+                inflateControlMenuButton(
+                    parent = coreGrid,
+                    label = entry.label,
+                    iconRes = entry.iconRes,
+                    fullWidth = false
+                ) {
+                    dialog.dismiss()
+                    entry.action()
+                }
+            )
+        }
+
+        if (layouts.size > 1) {
+            pluginColumn.visibility = View.VISIBLE
+            val header = TextView(this).apply {
+                text = getString(R.string.control_menu_plugin_section)
+                setTextColor(0xCCFFFFFF.toInt())
+                textSize = 12f
+                setPadding(8, 0, 8, 8)
+            }
+            pluginColumn.addView(header)
+            val current = controlLayout.currentLayoutId()
+            layouts.forEach { panel ->
+                val mark = if (panel.id.equals(current, ignoreCase = true)) " ✓" else ""
+                pluginColumn.addView(
+                    inflateControlMenuButton(
+                        parent = pluginColumn,
+                        label = panel.name + mark,
+                        iconRes = R.drawable.ic_control_menu_panel,
+                        fullWidth = true
+                    ) {
+                        dialog.dismiss()
+                        if (controlLayout.switchLayout(panel.id)) {
+                            setControlsVisible(true)
+                            Toast.makeText(
+                                this,
+                                getString(R.string.control_panel_switched, panel.name),
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    }.also { btn ->
+                        val lp = btn.layoutParams as? LinearLayout.LayoutParams
+                            ?: LinearLayout.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                ViewGroup.LayoutParams.WRAP_CONTENT
+                            )
+                        lp.width = ViewGroup.LayoutParams.MATCH_PARENT
+                        lp.bottomMargin = (6 * resources.displayMetrics.density).toInt()
+                        btn.layoutParams = lp
+                    }
+                )
+            }
+        } else {
+            pluginColumn.visibility = View.GONE
+        }
+
+        dialog.show()
     }
 
-    private fun showControlPanelPicker(
-        layouts: List<com.booxin.launcher.core.uiplugin.UiPluginExtraLayout>
-    ) {
-        val current = controlLayout.currentLayoutId()
-        val labels = layouts.map { panel ->
-            val mark = if (panel.id.equals(current, ignoreCase = true)) " ✓" else ""
-            panel.name + mark
-        }.toTypedArray()
-        AlertDialog.Builder(this)
-            .setTitle(R.string.control_menu_panels)
-            .setItems(labels) { _, which ->
-                val panel = layouts.getOrNull(which) ?: return@setItems
-                if (controlLayout.switchLayout(panel.id)) {
-                    setControlsVisible(true)
-                    Toast.makeText(
-                        this,
-                        getString(R.string.control_panel_switched, panel.name),
-                        Toast.LENGTH_SHORT
-                    ).show()
-                }
+    private fun inflateControlMenuButton(
+        parent: ViewGroup,
+        label: String,
+        iconRes: Int,
+        fullWidth: Boolean,
+        onClick: () -> Unit
+    ): View {
+        val item = LayoutInflater.from(this)
+            .inflate(R.layout.item_control_menu_button, parent, false)
+        val icon = item.findViewById<ImageView>(R.id.iconControlMenu)
+        icon.setImageResource(iconRes)
+        icon.setColorFilter(0xFFFFFFFF.toInt())
+        item.findViewById<TextView>(R.id.textControlMenu).text = label
+        item.setOnClickListener { onClick() }
+        if (!fullWidth && parent is GridLayout) {
+            val density = resources.displayMetrics.density
+            val lp = GridLayout.LayoutParams().apply {
+                width = 0
+                height = ViewGroup.LayoutParams.WRAP_CONTENT
+                columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1f)
+                setMargins(
+                    (4 * density).toInt(),
+                    (4 * density).toInt(),
+                    (4 * density).toInt(),
+                    (4 * density).toInt()
+                )
             }
-            .setNegativeButton(android.R.string.cancel, null)
-            .show()
+            item.layoutParams = lp
+        }
+        return item
     }
 
     private fun returnToLauncher() {
@@ -2020,7 +2281,8 @@ class LaunchActivity : AppCompatActivity() {
             accessToken = pendingAccessToken,
             userType = pendingUserType,
             serverAddress = pendingServerAddress,
-            offlineSkinPath = pendingOfflineSkinPath
+            offlineSkinPath = pendingOfflineSkinPath,
+            authServerUrl = pendingAuthServerUrl
         )
     }
 
@@ -2076,6 +2338,8 @@ class LaunchActivity : AppCompatActivity() {
         mainHandler.removeCallbacks(sdlPresentPoll)
         BooxinBridge.setGrabListener(null)
         if (::gyroscope.isInitialized) gyroscope.disable()
+        PhysicalInputController.onGamepadActive = null
+        PhysicalInputController.releaseAll()
         if (::controlLayout.isInitialized) {
             controlLayout.releaseAllHolds()
         }
@@ -2111,6 +2375,8 @@ class LaunchActivity : AppCompatActivity() {
         const val EXTRA_SERVER_ADDRESS = "server_address"
         /** Absolute PNG path for offline skin (cross-process to :game). */
         const val EXTRA_OFFLINE_SKIN_PATH = "offline_skin_path"
+        /** Yggdrasil API root for third-party / authlib-injector. */
+        const val EXTRA_AUTH_SERVER_URL = "auth_server_url"
         private const val TAG = "LaunchActivity"
         // GLFW window attribs (standard GLFW numeric values).
         private const val GLFW_FOCUSED = 0x00020001

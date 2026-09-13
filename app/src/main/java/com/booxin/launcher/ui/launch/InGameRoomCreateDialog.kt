@@ -1,138 +1,184 @@
 package com.booxin.launcher.ui.launch
 
-import android.view.LayoutInflater
+import android.util.Log
 import android.widget.Toast
-import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.isVisible
 import androidx.lifecycle.lifecycleScope
 import com.booxin.launcher.R
+import com.booxin.launcher.core.multiplayer.LocalMinecraftPortScanner
 import com.booxin.launcher.core.multiplayer.RoomHostDependencyInfo
 import com.booxin.launcher.core.multiplayer.RoomHostDependencyService
+import com.booxin.launcher.databinding.DialogIngameMultiplayerBinding
 import com.booxin.launcher.databinding.DialogIngameRoomCreateBinding
-import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-object InGameRoomCreateDialog {
+/**
+ * Create-room form hosted inside [InGameMultiplayerPanel] (no nested dialog — :game safe).
+ */
+class InGameRoomCreateForm(
+    private val activity: AppCompatActivity,
+    private val panel: DialogIngameMultiplayerBinding,
+    private val form: DialogIngameRoomCreateBinding,
+    private val versionId: String?,
+    private val suggestedRoomName: String,
+    private val onConfirm: (InGameRoomCreateDialog.Settings) -> Unit,
+    private val onCancel: () -> Unit
+) {
+    private var scannedDeps = RoomHostDependencyInfo()
+    private var scanJob: Job? = null
+    private var portJob: Job? = null
+    private var portManualOverride = false
+    private var readyToCreate = false
 
-    data class Settings(
-        val roomName: String,
-        val roomRemark: String,
-        val modpackUrl: String?,
-        val isPublic: Boolean,
-        val minecraftPort: Int,
-        val dependencyInfo: RoomHostDependencyInfo = RoomHostDependencyInfo()
-    )
-
-    fun show(
-        activity: AppCompatActivity,
-        suggestedRoomName: String,
-        versionId: String? = null,
-        onConfirm: (Settings) -> Unit
-    ) {
-        val binding = DialogIngameRoomCreateBinding.inflate(LayoutInflater.from(activity))
-        binding.inputRoomName.setText(suggestedRoomName)
-        var scannedDeps = RoomHostDependencyInfo()
-        var scanJob: Job? = null
-
-        val dialog = MaterialAlertDialogBuilder(activity)
-            .setTitle(R.string.ingame_mp_create_settings_title)
-            .setView(binding.root)
-            .setPositiveButton(R.string.ingame_mp_create_confirm, null)
-            .setNegativeButton(android.R.string.cancel, null)
-            .create()
-
-        dialog.setOnShowListener {
-            val positive = dialog.getButton(AlertDialog.BUTTON_POSITIVE)
-            positive.isEnabled = false
-
-            val scanId = versionId?.trim().orEmpty()
-            if (scanId.isEmpty()) {
-                binding.textDepsGameVersion.text = "未选择游戏实例"
-                binding.textDepsStatus.text = "请先从启动器选择要联机的版本后再开房。"
-                binding.textDepsVanilla.isVisible = true
-                positive.isEnabled = true
-            } else {
-                binding.textDepsGameVersion.setText(R.string.ingame_mp_deps_scanning)
-                binding.textDepsStatus.setText(R.string.ingame_mp_deps_scanning)
-                scanJob = activity.lifecycleScope.launch {
-                    val info = withContext(Dispatchers.IO) {
-                        runCatching {
-                            RoomHostDependencyService().scanInstance(
-                                versionId = scanId,
-                                onProgress = { status ->
-                                    activity.runOnUiThread {
-                                        if (dialog.isShowing) {
-                                            binding.textDepsStatus.text = status
-                                        }
-                                    }
-                                }
-                            )
-                        }.getOrElse {
-                            RoomHostDependencyInfo()
-                        }
-                    }
-                    if (!dialog.isShowing) return@launch
-                    scannedDeps = info
-                    applyDepsUi(activity, binding, info)
-                    positive.isEnabled = true
-                }
-            }
-
-            positive.setOnClickListener {
-                val port = binding.inputPort.text?.toString()?.trim()?.toIntOrNull()
-                if (port == null || port !in 100..65535) {
-                    Toast.makeText(activity, R.string.ingame_mp_invalid_port, Toast.LENGTH_SHORT).show()
-                    return@setOnClickListener
-                }
-                val modpack = binding.inputModpackUrl.text?.toString()?.trim().orEmpty()
-                onConfirm(
-                    Settings(
-                        roomName = binding.inputRoomName.text?.toString()?.trim().orEmpty(),
-                        roomRemark = binding.inputRoomRemark.text?.toString()?.trim().orEmpty(),
-                        modpackUrl = modpack.takeIf { it.isNotEmpty() },
-                        isPublic = binding.radioPublic.isChecked,
-                        minecraftPort = port,
-                        dependencyInfo = scannedDeps
-                    )
-                )
-                dialog.dismiss()
-            }
+    fun start() {
+        form.inputRoomName.setText(suggestedRoomName)
+        if (form.inputPort.text.isNullOrBlank()) {
+            form.inputPort.setText("25565")
         }
-        dialog.setOnDismissListener { scanJob?.cancel() }
-        dialog.show()
+        panel.buttonConfirmCreate.isEnabled = false
+        panel.buttonBackCreate.setOnClickListener {
+            dispose()
+            onCancel()
+        }
+        form.buttonRescanPort.setOnClickListener {
+            portManualOverride = false
+            runPortScan(force = true)
+        }
+        form.inputPort.setOnFocusChangeListener { _, hasFocus ->
+            if (hasFocus) portManualOverride = true
+        }
+        panel.buttonConfirmCreate.setOnClickListener { submit() }
+
+        runPortScan()
+        startDepsScan()
     }
 
-    private fun applyDepsUi(
-        activity: AppCompatActivity,
-        binding: DialogIngameRoomCreateBinding,
-        info: RoomHostDependencyInfo
-    ) {
+    fun dispose() {
+        scanJob?.cancel()
+        portJob?.cancel()
+        scanJob = null
+        portJob = null
+    }
+
+    private fun runPortScan(force: Boolean = false) {
+        if (!force && portManualOverride) return
+        portJob?.cancel()
+        form.textPortScanStatus.setText(R.string.ingame_mp_port_scanning)
+        form.buttonRescanPort.isEnabled = false
+        portJob = activity.lifecycleScope.launch {
+            val worlds = withContext(Dispatchers.IO) {
+                runCatching {
+                    LocalMinecraftPortScanner.scan(activity.applicationContext)
+                }.getOrDefault(emptyList())
+            }
+            if (panel.panelCreate.isVisible.not()) return@launch
+            form.buttonRescanPort.isEnabled = true
+            if (!force && portManualOverride) return@launch
+            val best = worlds.firstOrNull()
+            if (best != null) {
+                form.inputPort.setText(best.port.toString())
+                form.textPortScanStatus.text = activity.getString(
+                    R.string.ingame_mp_port_found,
+                    best.port,
+                    best.name
+                )
+            } else {
+                if (form.inputPort.text.isNullOrBlank()) {
+                    form.inputPort.setText("25565")
+                }
+                form.textPortScanStatus.setText(R.string.ingame_mp_port_not_found)
+            }
+        }
+    }
+
+    private fun startDepsScan() {
+        val scanId = versionId?.trim().orEmpty()
+        if (scanId.isEmpty()) {
+            form.textDepsGameVersion.text = "未选择游戏实例"
+            form.textDepsStatus.text = "请先从启动器选择要联机的版本后再开房。"
+            form.textDepsVanilla.isVisible = true
+            readyToCreate = true
+            panel.buttonConfirmCreate.isEnabled = true
+            return
+        }
+        form.textDepsGameVersion.setText(R.string.ingame_mp_deps_scanning)
+        form.textDepsStatus.setText(R.string.ingame_mp_deps_scanning)
+        scanJob = activity.lifecycleScope.launch {
+            val info = withContext(Dispatchers.IO) {
+                runCatching {
+                    RoomHostDependencyService().scanInstance(
+                        versionId = scanId,
+                        onProgress = { status ->
+                            activity.runOnUiThread {
+                                if (panel.panelCreate.isVisible) {
+                                    form.textDepsStatus.text = status
+                                }
+                            }
+                        }
+                    )
+                }.getOrElse {
+                    Log.w(TAG, "deps scan failed: ${it.message}")
+                    RoomHostDependencyInfo()
+                }
+            }
+            if (panel.panelCreate.isVisible.not()) return@launch
+            scannedDeps = info
+            applyDepsUi(info)
+            readyToCreate = true
+            panel.buttonConfirmCreate.isEnabled = true
+        }
+    }
+
+    private fun submit() {
+        if (!readyToCreate) {
+            Toast.makeText(activity, R.string.ingame_mp_working, Toast.LENGTH_SHORT).show()
+            return
+        }
+        val port = form.inputPort.text?.toString()?.trim()?.toIntOrNull()
+        if (port == null || port !in 100..65535) {
+            Toast.makeText(activity, R.string.ingame_mp_invalid_port, Toast.LENGTH_SHORT).show()
+            return
+        }
+        val modpack = form.inputModpackUrl.text?.toString()?.trim().orEmpty()
+        val settings = InGameRoomCreateDialog.Settings(
+            roomName = form.inputRoomName.text?.toString()?.trim().orEmpty(),
+            roomRemark = form.inputRoomRemark.text?.toString()?.trim().orEmpty(),
+            modpackUrl = modpack.takeIf { it.isNotEmpty() },
+            isPublic = form.radioPublic.isChecked,
+            minecraftPort = port,
+            dependencyInfo = scannedDeps
+        )
+        dispose()
+        onConfirm(settings)
+    }
+
+    private fun applyDepsUi(info: RoomHostDependencyInfo) {
         val version = info.gameVersion.ifBlank { "未知版本" }
         val loader = info.loader?.ifBlank { null } ?: "原版/未知加载器"
-        binding.textDepsGameVersion.text = "游戏版本：$version（$loader）"
+        form.textDepsGameVersion.text = "游戏版本：$version（$loader）"
         val linked = info.mods.filter { !it.pageUrl.isNullOrBlank() || it.hasDownloadSource }
         val unlinked = info.mods.size - linked.size
         when {
             info.mods.isEmpty() -> {
-                binding.textDepsStatus.text = info.summaryText
-                binding.textDepsMods.isVisible = false
-                binding.textDepsVanilla.isVisible = true
+                form.textDepsStatus.text = info.summaryText
+                form.textDepsMods.isVisible = false
+                form.textDepsVanilla.isVisible = true
             }
             else -> {
-                binding.textDepsStatus.text = buildString {
+                form.textDepsStatus.text = buildString {
                     append(info.summaryText)
                     if (unlinked > 0) {
                         append('\n')
                         append(activity.getString(R.string.ingame_mp_deps_unlinked_hint, unlinked))
                     }
                 }
-                binding.textDepsVanilla.isVisible = false
-                binding.textDepsMods.isVisible = true
-                binding.textDepsMods.text = linked
+                form.textDepsVanilla.isVisible = false
+                form.textDepsMods.isVisible = true
+                form.textDepsMods.text = linked
                     .take(24)
                     .joinToString("\n") { mod ->
                         buildString {
@@ -148,4 +194,20 @@ object InGameRoomCreateDialog {
             }
         }
     }
+
+    companion object {
+        private const val TAG = "InGameRoomCreate"
+    }
+}
+
+/** Kept for Settings type compatibility. */
+object InGameRoomCreateDialog {
+    data class Settings(
+        val roomName: String,
+        val roomRemark: String,
+        val modpackUrl: String?,
+        val isPublic: Boolean,
+        val minecraftPort: Int,
+        val dependencyInfo: RoomHostDependencyInfo = RoomHostDependencyInfo()
+    )
 }

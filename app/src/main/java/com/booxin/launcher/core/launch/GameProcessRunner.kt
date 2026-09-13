@@ -55,7 +55,11 @@ class GameProcessRunner(
             emit("==== Launch command ====")
             emit(command.summarize())
             emit("==== JVM start ====")
-            emit("clientJarHint=${command.jvmArgs.firstOrNull { it.startsWith("-Dminecraft.client.jar=") } ?: command.jvmArgs.firstOrNull { it.startsWith("-Dfabric.gameJarPath=") } ?: "MISSING"}")
+            emit(
+                "clientJarHint=${command.jvmArgs.firstOrNull { it.startsWith("-Dminecraft.client.jar=") }
+                    ?: command.jvmArgs.firstOrNull { it.startsWith("-Dfabric.gameJarPath=") }
+                    ?: "MISSING"}"
+            )
             emit("mainClass=${command.mainClass}")
             emit("jvmArgs=${command.jvmArgs.size} classpathJars=${command.classpath.size}")
 
@@ -69,8 +73,8 @@ class GameProcessRunner(
 
             val jvmCreated = AtomicBoolean(false)
             val gameProgress = AtomicBoolean(false)
+            val fatalSeen = AtomicBoolean(false)
             val tailer = LogcatTailer { line ->
-                // Do NOT treat "JNI_CreateJavaVM starting" as created — vivo can stall there.
                 if (!jvmCreated.get() && (
                         line.contains("JVM created", ignoreCase = true) ||
                             line.contains("Invoking main", ignoreCase = true) ||
@@ -95,17 +99,30 @@ class GameProcessRunner(
                     gameProgress.set(true)
                     jvmCreated.set(true)
                 }
+                if (!fatalSeen.get() && (
+                        line.contains("Failed to load required shader programs", ignoreCase = true) ||
+                            line.contains("Game crashed!", ignoreCase = true) ||
+                            line.contains("#@!@# Game crashed", ignoreCase = true)
+                        )
+                ) {
+                    fatalSeen.set(true)
+                    emitBlocking("检测到游戏致命错误（着色器/崩溃）— 无需再空等")
+                }
                 emitBlocking(line)
             }
             logcatTailer = tailer
             tailer.start()
 
-            emit("正在创建 JVM（Forge/整合包首次可能要 1–3 分钟，请勿以为卡死）…")
+            emit("正在创建 JVM…")
             val tickSec = AtomicInteger(0)
             val heartbeat: Job = launch {
                 while (isActive) {
                     delay(10_000L)
                     val sec = tickSec.addAndGet(10)
+                    if (fatalSeen.get()) {
+                        emitBlocking("游戏已崩溃（约 ${sec}s），请返回重试或查看日志")
+                        break
+                    }
                     if (!jvmCreated.get() || !gameProgress.get()) {
                         runCatching {
                             val file = GameLaunchLogBus.latestLogFile() ?: return@runCatching
@@ -127,19 +144,30 @@ class GameProcessRunner(
                                 gameProgress.set(true)
                                 jvmCreated.set(true)
                             }
+                            if (!fatalSeen.get() && (
+                                    tail.contains("Failed to load required shader programs", ignoreCase = true) ||
+                                        tail.contains("Game crashed!", ignoreCase = true)
+                                    )
+                            ) {
+                                fatalSeen.set(true)
+                            }
                         }
                     }
-                    // launch() blocks until the game exits — do not keep saying "创建虚拟机".
                     when {
+                        fatalSeen.get() ->
+                            emitBlocking("游戏已崩溃（约 ${sec}s），请返回重试")
+                        gameProgress.get() && sec >= 40 ->
+                            emitBlocking("仍在加载…${sec}s（可玩小恐龙；一直黑屏请返回）")
                         gameProgress.get() ->
-                            emitBlocking("游戏仍在加载/运行中…已等待 ${sec}s（模组加载时黑屏正常，可玩加载页小恐龙）")
+                            emitBlocking("游戏加载中…${sec}s")
                         jvmCreated.get() ->
-                            emitBlocking("游戏仍在加载/运行中…已等待 ${sec}s（JVM 已创建，模组加载中请勿退出）")
-                        sec >= 90 ->
-                            emitBlocking("游戏仍在加载/运行中…已等待 ${sec}s（若已见主菜单可点「强制进入游戏」）")
+                            emitBlocking("JVM 已创建，加载中…${sec}s")
+                        sec >= 60 ->
+                            emitBlocking("JVM 启动较慢…${sec}s（可强制进入或返回）")
                         else ->
-                            emitBlocking("JVM 仍在启动中…已等待 ${sec}s（创建虚拟机 / 加载主类）")
+                            emitBlocking("正在创建 JVM…${sec}s")
                     }
+                    if (fatalSeen.get()) break
                 }
             }
 

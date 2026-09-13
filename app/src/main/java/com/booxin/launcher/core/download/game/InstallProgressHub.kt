@@ -1,13 +1,14 @@
 package com.booxin.launcher.core.download.game
 
 import com.booxin.launcher.AppContainer
+import com.booxin.launcher.core.community.CommunityInstallHub
 import com.booxin.launcher.core.java.JavaInstallProgress
 import com.booxin.launcher.core.java.JavaInstallState
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 
 /**
- * Merges vanilla / loader / Java install progress for the global status bar.
+ * Merges vanilla / loader / Java / community install progress for the global status bar.
  */
 object InstallProgressHub {
 
@@ -18,27 +19,27 @@ object InstallProgressHub {
         val active: Boolean
     )
 
-    fun snapshots(): Flow<Snapshot?> = combine(
-        AppContainer.repository.installProgress,
-        AppContainer.repository.forgeInstallProgress,
-        AppContainer.repository.fabricInstallProgress,
-        AppContainer.repository.quiltInstallProgress,
-        AppContainer.repository.optiFineInstallProgress,
-        AppContainer.javaEnvironment.progress
-    ) { values ->
-        val vanilla = values[0] as GameInstallProgress?
-        val forge = values[1] as GameInstallProgress?
-        val fabric = values[2] as GameInstallProgress?
-        val quilt = values[3] as GameInstallProgress?
-        val optiFine = values[4] as GameInstallProgress?
-        val java = values[5] as JavaInstallProgress?
-
-        pickGame(optiFine)
-            ?: pickGame(quilt)
-            ?: pickGame(fabric)
-            ?: pickGame(forge)
-            ?: pickGame(vanilla)
-            ?: pickJava(java)
+    fun snapshots(): Flow<Snapshot?> {
+        val gameFlow = combine(
+            AppContainer.repository.installProgress,
+            AppContainer.repository.forgeInstallProgress,
+            AppContainer.repository.fabricInstallProgress,
+            AppContainer.repository.quiltInstallProgress,
+            AppContainer.repository.optiFineInstallProgress
+        ) { vanilla, forge, fabric, quilt, optiFine ->
+            pickGame(optiFine)
+                ?: pickGame(quilt)
+                ?: pickGame(fabric)
+                ?: pickGame(forge)
+                ?: pickGame(vanilla)
+        }
+        return combine(
+            gameFlow,
+            AppContainer.javaEnvironment.progress,
+            CommunityInstallHub.snapshots()
+        ) { game, java, community ->
+            game ?: pickJava(java) ?: community
+        }
     }
 
     private fun pickGame(progress: GameInstallProgress?): Snapshot? {

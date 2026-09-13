@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/resource.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -2088,6 +2089,15 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_bridge) {
 
     JavaVM *jvm = NULL;
     JNIEnv *jenv = NULL;
+    /* ColorOS: raise nice so Render/JVM are less likely to be background-throttled. */
+    {
+        const char *boost = getenv("BOOXIN_OEM_BOOST");
+        if (boost && boost[0] == '1') {
+            errno = 0;
+            int rc = setpriority(PRIO_PROCESS, 0, -10);
+            LOGI("BOOXIN_OEM_BOOST setpriority(-10) rc=%d errno=%d", rc, errno);
+        }
+    }
     /* Forge/modpacks: CreateJavaVM can take a while with a huge module-path. */
     launch_log_line(ANDROID_LOG_INFO,
         "JNI_CreateJavaVM starting (nOptions=%d) — please wait…", pa.nOpts);
@@ -2158,11 +2168,19 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_bridge) {
     const char *windowing = getenv("BOOXIN_WINDOWING");
     int sdl_like = windowing && strcmp(windowing, "sdl") == 0;
     const char *skipPre = getenv("BOOXIN_SKIP_GLFW_PREINIT");
-    int skip_glfw_preinit = (skipPre && skipPre[0] && skipPre[0] != '0') || launchwrapper_like;
+    /* Pre-1.13 / true LWJGL2 LaunchWrapper needs early bridge+awt. OptiFine 1.17+
+     * still uses launchwrapper.Launch but LWJGL3/GLFW — early System.load binds
+     * libbooxin_bridge to the wrong ClassLoader → already-loaded + nglfw* ULE. */
+    const char *legacyLwjgl2 = getenv("BOOXIN_LEGACY_LWJGL2");
+    int is_legacy_lwjgl2 = legacyLwjgl2 && legacyLwjgl2[0] && legacyLwjgl2[0] != '0';
+    int skip_glfw_preinit = (skipPre && skipPre[0] && skipPre[0] != '0') ||
+        launchwrapper_like;
     if (skip_glfw_preinit && !isolated_loader && !sdl_like) {
         launch_log_line(ANDROID_LOG_INFO,
             launchwrapper_like
-                ? "skip GLFW preinit (LaunchWrapper / legacy LWJGL2)"
+                ? (is_legacy_lwjgl2
+                    ? "skip GLFW preinit (LaunchWrapper / legacy LWJGL2)"
+                    : "skip GLFW preinit (OptiFine LaunchWrapper / LWJGL3)")
                 : "skip GLFW preinit (OEM) — renderer unchanged, GLFW loads at glfwInit");
     } else if (!isolated_loader && !sdl_like) {
         launch_log_line(ANDROID_LOG_INFO, "GLFW preinit starting…");
@@ -2182,9 +2200,11 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_bridge) {
     /* ColorOS/realme sets SKIP_GLFW but still needs GLFW.<clinit> to System.load
      * the bridge on the LWJGL jar ClassLoader. Early HotSpotNativeLoader.load
      * binds the .so to a different loader → "already loaded in another classloader"
-     * and nglfw* stay unresolved (vanilla 26.2 crash). LaunchWrapper keeps early load. */
+     * and nglfw* stay unresolved (vanilla 26.2 / OptiFine LaunchWrapper).
+     * Only true legacy LWJGL2 LaunchWrapper keeps early load. */
+    int force_early_bridge = launchwrapper_like && is_legacy_lwjgl2;
     int oem_defer_bridge_java_load =
-        skip_glfw_preinit && !launchwrapper_like && !isolated_loader && !sdl_like;
+        skip_glfw_preinit && !force_early_bridge && !isolated_loader && !sdl_like;
 
     if (!isolated_loader && !sdl_like && !oem_defer_bridge_java_load) {
         launch_log_line(ANDROID_LOG_INFO, "HotSpot System.load(booxin_bridge)…");
@@ -2214,13 +2234,16 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_bridge) {
             }
         }
         force_input_bridge_ready("after HotSpot booxin_bridge load");
-        if (launchwrapper_like) {
+        if (force_early_bridge) {
             hotspot_load_legacy_awt(jenv);
         }
     } else if (oem_defer_bridge_java_load) {
         launch_log_line(ANDROID_LOG_INFO,
-            "OEM — skip early HotSpot System.load(booxin_bridge); "
-            "GLFW.<clinit> loads on LWJGL ClassLoader");
+            launchwrapper_like
+                ? "OptiFine/LaunchWrapper — skip early System.load(booxin_bridge); "
+                  "GLFW.<clinit> loads on LWJGL ClassLoader"
+                : "OEM — skip early HotSpot System.load(booxin_bridge); "
+                  "GLFW.<clinit> loads on LWJGL ClassLoader");
         {
             void *lib = open_booxin_bridge();
             typedef void *(*ensure_fn)(void);
@@ -2252,45 +2275,42 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_bridge) {
         log_booxin_environ("after OEM HotSpot ensure (deferred Java load)");
         force_input_bridge_ready("after OEM deferred bridge ensure");
     } else if (sdl_like) {
-        LOGI("SDL windowing — load liblwjgl + bridge (no GLFW preinit)");
+        /* 26.3+ SDL: do NOT early System.load liblwjgl / libbooxin_bridge.
+         * JNI System.load (or HotSpotNativeLoader) binds the .so to the wrong
+         * ClassLoader; org.lwjgl.system.Library / SDL.<clinit> then die with
+         * "already loaded in another classloader" (vanilla 26.3-snapshot).
+         * Let LWJGL load natives on its own ClassLoader; invokePZ uses
+         * RegisterNatives later. Only dlopen + shared window here. */
+        LOGI("SDL windowing — skip early System.load(lwjgl/bridge); "
+             "LWJGL ClassLoader loads natives (no GLFW preinit)");
         {
-            const char *nativeDir = getenv("BOOXIN_NATIVEDIR");
-            if (!nativeDir || !nativeDir[0]) nativeDir = getenv("POJAV_NATIVEDIR");
-            if (!nativeDir || !nativeDir[0]) nativeDir = getenv("FCL_NATIVEDIR");
-            char lwjgl[PATH_MAX];
-            char bridge[PATH_MAX];
-            if (nativeDir && nativeDir[0]) {
-                snprintf(lwjgl, sizeof(lwjgl), "%s/liblwjgl.so", nativeDir);
-                snprintf(bridge, sizeof(bridge), "%s/libbooxin_bridge.so", nativeDir);
-                /* AppClassLoader System.load so MemoryUtil + invokePZ shims resolve. */
-                if (!hotspot_system_load_absolute(jenv, lwjgl)) {
-                    LOGW("SDL: System.load(liblwjgl) failed — MemoryUtil may break");
-                }
-                if (!hotspot_system_load_absolute(jenv, bridge)) {
-                    LOGW("SDL: System.load(booxin_bridge) failed — invokePZ shims missing");
-                }
-            } else {
-                LOGW("SDL: *NATIVEDIR unset — cannot preload lwjgl/bridge");
-            }
             void *lib = open_booxin_bridge();
             typedef void *(*ensure_fn)(void);
+            typedef void (*retain_fn)(void *);
             ensure_fn ensure = lib
                 ? (ensure_fn)dlsym(lib, "booxin_ensure_native_window")
                 : NULL;
+            retain_fn retain = lib
+                ? (retain_fn)dlsym(lib, "booxin_retain_native_window")
+                : NULL;
+            if (retain && booxin_shared_native_window) {
+                retain(booxin_shared_native_window);
+            }
             void *win = ensure ? ensure() : NULL;
-            LOGI("SDL-like ensure native window=%p", win);
+            if (!win && booxin_shared_native_window) {
+                win = booxin_shared_native_window;
+            }
+            LOGI("SDL-like ensure native window=%p shared=%p",
+                 win, booxin_shared_native_window);
             struct booxin_bridge_environ_s **pp = lib
                 ? (struct booxin_bridge_environ_s **)dlsym(lib, "booxin_environ")
                 : NULL;
             if (pp && *pp) {
                 (*pp)->runtimeJavaVMPtr = jvm;
                 (*pp)->runtimeJNIEnvPtr_JRE = jenv;
+                if (win) (*pp)->nativeWindow = win;
             }
-            typedef void (*bind_fn)(JNIEnv *);
-            bind_fn bind = lib
-                ? (bind_fn)dlsym(lib, "booxin_bind_glfw_input_buffers")
-                : NULL;
-            if (bind) bind(jenv);
+            /* Do NOT bind_glfw_input_buffers — SDL has no GLFW; FindClass stalls/ULE. */
         }
         log_booxin_environ("after SDL HotSpot ensure");
         force_input_bridge_ready("after SDL HotSpot ensure");
@@ -2525,6 +2545,16 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_bridge) {
                             jclass boot = load_class_via_loader(
                                 artEnv, g_art_class_loader,
                                 "com.booxin.launcher.core.launch.BooxinSdlBootstrap");
+                            if (!boot) {
+                                /* Fallback: ART FindClass (same App ClassLoader). */
+                                boot = (*artEnv)->FindClass(
+                                    artEnv,
+                                    "com/booxin/launcher/core/launch/BooxinSdlBootstrap");
+                                if ((*artEnv)->ExceptionCheck(artEnv)) {
+                                    (*artEnv)->ExceptionClear(artEnv);
+                                    boot = NULL;
+                                }
+                            }
                             if (boot) {
                                 jmethodID finish = (*artEnv)->GetStaticMethodID(
                                     artEnv, boot, "finishSdlAndroidInitFromArt", "()Z");
@@ -2535,13 +2565,26 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_bridge) {
                                         log_exception(artEnv, "finishSdlAndroidInitFromArt");
                                     else
                                         LOGI("finishSdlAndroidInitFromArt → %d", (int)ok);
+                                } else if ((*artEnv)->ExceptionCheck(artEnv)) {
+                                    log_exception(artEnv, "finishSdlAndroidInitFromArt mid");
                                 }
                                 (*artEnv)->DeleteLocalRef(artEnv, boot);
                             } else {
                                 LOGW("SDL: BooxinSdlBootstrap missing via ClassLoader");
                             }
                         }
-                        if (need_detach) (*art)->DetachCurrentThread(art);
+                        /*
+                         * Do NOT DetachCurrentThread here. finishSdl → nativeSetupJNI
+                         * stores this thread's ART JNIEnv in SDL pthread-TLS. Detaching
+                         * leaves a stale env; Android_JNI_GetEnv then returns it and
+                         * GetManifestEnvironmentVariables / SDL_Init SIGSEGV (null vtable).
+                         * Keep the HotSpot launch thread attached to ART for SDL_Init.
+                         */
+                        if (need_detach) {
+                            LOGI("SDL: keeping HotSpot thread attached to ART "
+                                 "(SDL Android_JNI TLS)");
+                        }
+                        (void)need_detach;
                     } else if (!g_sdl_jni_onload_done) {
                         /* Last resort: JNI_OnLoad without Java frame (may miss classes). */
                         JavaVM *vm = art ? art : jvm;
@@ -2599,6 +2642,48 @@ static jint launch_embedded(LaunchCtx *ctx, bool with_bridge) {
                             LOGI("booxin_sdl_rebind_lwjgl_gl_set_attribute rc=%d", rrc);
                         } else {
                             LOGW("booxin_sdl_rebind missing");
+                        }
+                    }
+                    /*
+                     * Refresh SDL Android_JNI TLS on this HotSpot thread right before
+                     * main(). nativeSetupJNI → Android_JNI_SetEnv(ART) so later
+                     * SDL_Init / getenv → GetManifestEnvironmentVariables has a live
+                     * JNIEnv (Render thread will AttachCurrentThread on first use).
+                     */
+                    if (art && g_art_class_loader) {
+                        JNIEnv *artEnv = NULL;
+                        jint get = (*art)->GetEnv(art, (void **)&artEnv, JNI_VERSION_1_6);
+                        if (get == JNI_EDETACHED) {
+                            if ((*art)->AttachCurrentThread(art, &artEnv, NULL) != 0)
+                                artEnv = NULL;
+                        }
+                        if (artEnv) {
+                            jclass act = load_class_via_loader(
+                                artEnv, g_art_class_loader, "org.libsdl.app.SDLActivity");
+                            if (!act) {
+                                act = (*artEnv)->FindClass(
+                                    artEnv, "org/libsdl/app/SDLActivity");
+                                if ((*artEnv)->ExceptionCheck(artEnv)) {
+                                    (*artEnv)->ExceptionClear(artEnv);
+                                    act = NULL;
+                                }
+                            }
+                            if (act) {
+                                jmethodID setup = (*artEnv)->GetStaticMethodID(
+                                    artEnv, act, "nativeSetupJNI", "()V");
+                                if (setup) {
+                                    (*artEnv)->CallStaticVoidMethod(artEnv, act, setup);
+                                    if ((*artEnv)->ExceptionCheck(artEnv))
+                                        log_exception(artEnv, "SDLActivity.nativeSetupJNI");
+                                    else
+                                        LOGI("SDL: refreshed nativeSetupJNI on launch thread");
+                                } else if ((*artEnv)->ExceptionCheck(artEnv)) {
+                                    log_exception(artEnv, "SDLActivity.nativeSetupJNI mid");
+                                }
+                                (*artEnv)->DeleteLocalRef(artEnv, act);
+                            } else {
+                                LOGW("SDL: SDLActivity missing for nativeSetupJNI refresh");
+                            }
                         }
                     }
                 }

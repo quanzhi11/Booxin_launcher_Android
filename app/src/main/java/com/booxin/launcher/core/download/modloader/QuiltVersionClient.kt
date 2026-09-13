@@ -86,7 +86,7 @@ class QuiltVersionClient {
 
     companion object {
         fun quiltVersionId(mcVersion: String, loaderVersion: String): String =
-            "$mcVersion-quilt-$loaderVersion"
+            com.booxin.launcher.core.version.VersionInstanceNameGenerator.quilt(mcVersion, loaderVersion)
 
         private val VERSION_COMPARATOR = Comparator<String> { a, b ->
             compareVersionParts(a, b)

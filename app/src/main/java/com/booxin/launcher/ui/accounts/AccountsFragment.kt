@@ -133,17 +133,13 @@ class AccountsFragment : Fragment() {
                 arrayOf(
                     getString(R.string.accounts_microsoft),
                     getString(R.string.accounts_offline),
-                    getString(R.string.accounts_third_party_coming)
+                    getString(R.string.accounts_third_party)
                 )
             ) { _, which ->
                 when (which) {
                     0 -> startMicrosoftLogin()
                     1 -> showAddOfflineDialog()
-                    2 -> Toast.makeText(
-                        requireContext(),
-                        R.string.ai_feature_coming,
-                        Toast.LENGTH_SHORT
-                    ).show()
+                    2 -> showAddThirdPartyDialog()
                 }
             }
             .setNegativeButton(android.R.string.cancel, null)
@@ -186,6 +182,75 @@ class AccountsFragment : Fragment() {
             }
         }
         dialog.show()
+    }
+
+    private fun showAddThirdPartyDialog() {
+        val dialogBinding = com.booxin.launcher.databinding.DialogThirdPartyLoginBinding.inflate(
+            layoutInflater
+        )
+        dialogBinding.inputThirdPartyServer.setText(
+            com.booxin.launcher.core.auth.ThirdPartyAuthService.DEFAULT_SERVER_URL
+        )
+        val dialog = MaterialAlertDialogBuilder(requireContext())
+            .setTitle(R.string.accounts_third_party)
+            .setView(dialogBinding.root)
+            .setPositiveButton(android.R.string.ok, null)
+            .setNegativeButton(android.R.string.cancel, null)
+            .create()
+        dialog.setOnShowListener {
+            dialogBinding.root.isVerticalScrollBarEnabled = true
+            dialogBinding.root.scrollBarStyle = android.view.View.SCROLLBARS_INSIDE_OVERLAY
+
+            dialog.getButton(androidx.appcompat.app.AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val server = dialogBinding.inputThirdPartyServer.text?.toString().orEmpty()
+                val user = dialogBinding.inputThirdPartyUsername.text?.toString().orEmpty().trim()
+                val pass = dialogBinding.inputThirdPartyPassword.text?.toString().orEmpty()
+                if (user.isBlank() || pass.isBlank()) {
+                    Toast.makeText(
+                        requireContext(),
+                        getString(R.string.accounts_third_party_failed, "请填写用户名和密码"),
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    return@setOnClickListener
+                }
+                dialog.dismiss()
+                startThirdPartyLogin(server, user, pass)
+            }
+        }
+        dialog.show()
+    }
+
+    private fun startThirdPartyLogin(serverUrl: String, username: String, password: String) {
+        loginJob?.cancel()
+        Toast.makeText(requireContext(), R.string.accounts_third_party_logging_in, Toast.LENGTH_SHORT)
+            .show()
+        loginJob = viewLifecycleOwner.lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                com.booxin.launcher.core.auth.ThirdPartyAuthService.login(
+                    serverUrl,
+                    username,
+                    password
+                )
+            }
+            if (!isAdded) return@launch
+            result.onSuccess { account ->
+                AppContainer.repository.upsertThirdPartyAccount(account)
+                Toast.makeText(
+                    requireContext(),
+                    getString(R.string.accounts_third_party_ok, account.name),
+                    Toast.LENGTH_SHORT
+                ).show()
+            }.onFailure {
+                Toast.makeText(
+                    requireContext(),
+                    getString(
+                        R.string.accounts_third_party_failed,
+                        it.message ?: "未知错误"
+                    ),
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
     }
 
     private fun showSkinDialog(account: LauncherAccount) {

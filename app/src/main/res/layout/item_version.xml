@@ -5,7 +5,9 @@
     android:layout_height="wrap_content"
     android:layout_marginBottom="10dp"
     android:background="@drawable/bg_surface_card"
+    android:clickable="true"
     android:elevation="1dp"
+    android:focusable="true"
     android:gravity="center_vertical"
     android:orientation="horizontal"
     android:padding="16dp">
@@ -44,14 +46,28 @@
         android:paddingVertical="4dp"
         android:textColor="@color/white"
         android:textSize="11sp"
-            tools:text="正式版" />
+        tools:text="正式版" />
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/buttonVersionMore"
+        style="@style/Widget.Material3.Button.TextButton"
+        android:layout_width="36dp"
+        android:layout_height="36dp"
+        android:layout_marginStart="4dp"
+        android:insetTop="0dp"
+        android:insetBottom="0dp"
+        android:minWidth="0dp"
+        android:padding="0dp"
+        android:text="⋮"
+        android:textSize="18sp"
+        android:visibility="gone" />
 
     <com.google.android.material.button.MaterialButton
         android:id="@+id/buttonManageVersion"
         style="@style/Widget.Material3.Button.TextButton"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_marginStart="8dp"
+        android:layout_marginStart="4dp"
         android:minWidth="0dp"
         android:text="@string/version_manage_entry" />
 </LinearLayout>

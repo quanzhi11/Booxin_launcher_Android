@@ -15,7 +15,7 @@ import kotlin.random.Random
 
 /**
  * Chrome-style offline dinosaur runner for the launch loading screen.
- * Tap / hold to jump. Runs only while [running] is true.
+ * Tap to jump. Obstacle height/spacing stay within a clearable jump arc.
  */
 class DinoGameView @JvmOverloads constructor(
     context: Context,
@@ -64,7 +64,7 @@ class DinoGameView @JvmOverloads constructor(
     private var velocityY = 0f
     private var onGround = true
     private var scrollX = 0f
-    private var speed = 380f
+    private var speed = 280f
     private var score = 0
     private var highScore = 0
     private var spawnCooldown = 0f
@@ -110,7 +110,6 @@ class DinoGameView @JvmOverloads constructor(
     fun resumeGame() {
         if (!isShown || width <= 0) return
         if (!alive) {
-            // Stay stopped until tap restarts.
             invalidate()
             return
         }
@@ -146,12 +145,12 @@ class DinoGameView @JvmOverloads constructor(
         if (!keepHighScore) highScore = max(highScore, score)
         else highScore = max(highScore, score)
         score = 0
-        speed = 380f
+        speed = 280f
         velocityY = 0f
         onGround = true
         alive = true
         scrollX = 0f
-        spawnCooldown = 1.2f
+        spawnCooldown = 1.1f
         obstacles.clear()
         animPhase = 0f
         if (height > 0) {
@@ -171,19 +170,30 @@ class DinoGameView @JvmOverloads constructor(
             return
         }
         if (onGround) {
-            velocityY = -height * 1.55f
+            // Slightly higher jump than gravity so mid-height cactus is always clearable.
+            velocityY = -height * 1.85f
             onGround = false
         }
+    }
+
+    /** Horizontal travel while airborne at [speed] — used for min gap. */
+    private fun jumpClearDistance(): Float {
+        if (height <= 0) return 220f
+        // Approximate air time from jump/gravity (same coeffs as step).
+        val v0 = height * 1.85f
+        val g = height * 3.6f
+        val air = (2f * v0 / g).coerceIn(0.35f, 0.9f)
+        return speed * air * 0.85f
     }
 
     private fun step(dt: Float) {
         if (!alive) return
         animPhase += dt * 10f
-        speed = min(720f, speed + dt * 8f)
+        speed = min(520f, speed + dt * 5f)
         scrollX += speed * dt
         score = (scrollX / 18f).toInt()
 
-        velocityY += height * 4.2f * dt
+        velocityY += height * 3.6f * dt
         dinoY += velocityY * dt
         val floor = groundY - dinoH
         if (dinoY >= floor) {
@@ -194,12 +204,27 @@ class DinoGameView @JvmOverloads constructor(
 
         spawnCooldown -= dt
         if (spawnCooldown <= 0f) {
-            val h = dinoH * (0.55f + Random.nextFloat() * 0.55f)
-            val w = dinoW * (0.35f + Random.nextFloat() * 0.35f)
-            obstacles += Obstacle(width + 20f, w, h)
-            spawnCooldown = 0.9f + Random.nextFloat() * 1.1f
+            // At most one extra cactus, and only with a jumpable gap between them.
+            val twin = Random.nextFloat() < 0.18f
+            val baseH = dinoH * (0.35f + Random.nextFloat() * 0.4f) // ≤ ~0.75 body
+            val baseW = dinoW * (0.28f + Random.nextFloat() * 0.35f)
+            var x = width + 24f
+            obstacles += Obstacle(x, baseW, baseH)
+            if (twin) {
+                val gap = jumpClearDistance() * (0.55f + Random.nextFloat() * 0.25f)
+                x += baseW + gap
+                val h2 = dinoH * (0.35f + Random.nextFloat() * 0.35f)
+                val w2 = dinoW * (0.28f + Random.nextFloat() * 0.3f)
+                obstacles += Obstacle(x, w2, h2)
+            }
+            // Next spawn after player can land + react.
+            val minGap = jumpClearDistance() * 1.15f + dinoW
+            spawnCooldown = (minGap / speed).coerceIn(0.85f, 2.2f) +
+                Random.nextFloat() * 0.55f
         }
 
+        val hitPadX = dinoW * 0.22f
+        val hitPadTop = dinoH * 0.18f
         val iter = obstacles.iterator()
         while (iter.hasNext()) {
             val o = iter.next()
@@ -208,7 +233,12 @@ class DinoGameView @JvmOverloads constructor(
                 iter.remove()
                 continue
             }
-            dinoRect.set(dinoX + dinoW * 0.15f, dinoY + dinoH * 0.1f, dinoX + dinoW * 0.85f, dinoY + dinoH)
+            dinoRect.set(
+                dinoX + hitPadX,
+                dinoY + hitPadTop,
+                dinoX + dinoW - hitPadX,
+                dinoY + dinoH
+            )
             obstacleRect.set(o.x, groundY - o.h, o.x + o.w, groundY)
             if (RectF.intersects(dinoRect, obstacleRect)) {
                 alive = false
@@ -223,7 +253,6 @@ class DinoGameView @JvmOverloads constructor(
         canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), skyPaint)
         canvas.drawLine(0f, groundY, width.toFloat(), groundY, groundPaint)
 
-        // Ground dashes
         var gx = -((scrollX * 0.5f) % 40f)
         while (gx < width) {
             canvas.drawLine(gx, groundY + 6f, gx + 18f, groundY + 6f, groundPaint)
@@ -246,31 +275,48 @@ class DinoGameView @JvmOverloads constructor(
 
     private fun drawDino(canvas: Canvas, x: Float, y: Float, w: Float, h: Float) {
         dinoPath.reset()
-        // Body
-        dinoPath.addRoundRect(RectF(x + w * 0.15f, y + h * 0.25f, x + w * 0.75f, y + h * 0.85f), 4f, 4f, Path.Direction.CW)
-        // Head
-        dinoPath.addRoundRect(RectF(x + w * 0.45f, y, x + w * 0.95f, y + h * 0.4f), 4f, 4f, Path.Direction.CW)
-        // Tail
+        dinoPath.addRoundRect(
+            RectF(x + w * 0.15f, y + h * 0.25f, x + w * 0.75f, y + h * 0.85f),
+            4f,
+            4f,
+            Path.Direction.CW
+        )
+        dinoPath.addRoundRect(
+            RectF(x + w * 0.45f, y, x + w * 0.95f, y + h * 0.4f),
+            4f,
+            4f,
+            Path.Direction.CW
+        )
         dinoPath.moveTo(x + w * 0.15f, y + h * 0.45f)
         dinoPath.lineTo(x, y + h * 0.55f)
         dinoPath.lineTo(x + w * 0.15f, y + h * 0.65f)
         dinoPath.close()
-        // Legs (run cycle)
         val leg = if (onGround && alive) {
             if ((animPhase.toInt() % 2) == 0) 0f else h * 0.06f
-        } else 0f
+        } else {
+            0f
+        }
         dinoPath.addRect(x + w * 0.25f, y + h * 0.8f, x + w * 0.38f, y + h + leg, Path.Direction.CW)
         dinoPath.addRect(x + w * 0.48f, y + h * 0.8f, x + w * 0.61f, y + h - leg, Path.Direction.CW)
         canvas.drawPath(dinoPath, dinoPaint)
-        // Eye
         canvas.drawCircle(x + w * 0.78f, y + h * 0.16f, w * 0.05f, skyPaint)
     }
 
     private fun drawCactus(canvas: Canvas, x: Float, y: Float, w: Float, h: Float) {
         cactusPath.reset()
         cactusPath.addRoundRect(RectF(x + w * 0.3f, y, x + w * 0.7f, y + h), 3f, 3f, Path.Direction.CW)
-        cactusPath.addRoundRect(RectF(x, y + h * 0.25f, x + w * 0.4f, y + h * 0.45f), 3f, 3f, Path.Direction.CW)
-        cactusPath.addRoundRect(RectF(x + w * 0.6f, y + h * 0.35f, x + w, y + h * 0.55f), 3f, 3f, Path.Direction.CW)
+        cactusPath.addRoundRect(
+            RectF(x, y + h * 0.25f, x + w * 0.4f, y + h * 0.45f),
+            3f,
+            3f,
+            Path.Direction.CW
+        )
+        cactusPath.addRoundRect(
+            RectF(x + w * 0.6f, y + h * 0.35f, x + w, y + h * 0.55f),
+            3f,
+            3f,
+            Path.Direction.CW
+        )
         canvas.drawPath(cactusPath, cactusPaint)
     }
 

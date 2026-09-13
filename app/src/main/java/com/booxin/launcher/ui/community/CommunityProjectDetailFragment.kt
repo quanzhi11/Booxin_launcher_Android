@@ -5,20 +5,24 @@ import android.text.method.LinkMovementMethod
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.ArrayAdapter
+import android.widget.TextView
 import android.widget.Toast
 import androidx.core.os.bundleOf
 import androidx.core.view.isVisible
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.lifecycleScope
 import androidx.navigation.fragment.findNavController
-import androidx.recyclerview.widget.LinearLayoutManager
 import coil.load
 import com.booxin.launcher.AppContainer
+import com.booxin.launcher.BooxinApp
 import com.booxin.launcher.R
 import com.booxin.launcher.core.community.CommunityDescriptionTranslator
+import com.booxin.launcher.core.community.CommunityInstallHub
 import com.booxin.launcher.core.download.game.VersionJsonMerger
 import com.booxin.launcher.data.model.CommunityContentType
 import com.booxin.launcher.data.model.CommunityLoader
+import com.booxin.launcher.data.model.GameVersion
 import com.booxin.launcher.data.model.InstallTargetRecommendation
 import com.booxin.launcher.data.model.ModpackInstallProgress
 import com.booxin.launcher.data.model.ModrinthProject
@@ -26,6 +30,7 @@ import com.booxin.launcher.data.model.ModrinthProjectVersion
 import com.booxin.launcher.data.model.ModrinthResolvedDependency
 import com.booxin.launcher.databinding.FragmentCommunityProjectDetailBinding
 import com.booxin.launcher.databinding.ItemCommunityDependencyBinding
+import com.google.android.material.color.MaterialColors
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import java.text.NumberFormat
 import java.util.Locale
@@ -49,11 +54,6 @@ class CommunityProjectDetailFragment : Fragment() {
     private var fullDescription: String = ""
     private var loadJob: Job? = null
     private var depsJob: Job? = null
-
-    private val versionAdapter = CommunityVersionAdapter(
-        onInstall = ::onInstallVersion,
-        onSelect = ::onSelectVersion
-    )
     private var translateJob: Job? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -78,12 +78,19 @@ class CommunityProjectDetailFragment : Fragment() {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
         binding.buttonBack.setOnClickListener { findNavController().navigateUp() }
-        binding.recyclerVersions.layoutManager = LinearLayoutManager(requireContext())
-        binding.recyclerVersions.adapter = versionAdapter
+        binding.buttonDownload.setOnClickListener { onDownloadClicked() }
         binding.buttonExpandDescription.setOnClickListener { toggleDescription() }
         binding.textDescription.movementMethod = LinkMovementMethod.getInstance()
+        binding.buttonDownload.setText(downloadButtonLabel())
         updateDependenciesSectionVisibility()
         loadDetail()
+    }
+
+    private fun downloadButtonLabel(): Int = when (contentType) {
+        CommunityContentType.MOD -> R.string.community_download_mod
+        CommunityContentType.SHADER -> R.string.community_download_shader
+        CommunityContentType.RESOURCE_PACK -> R.string.community_download_resourcepack
+        CommunityContentType.MODPACK -> R.string.community_download_modpack
     }
 
     private fun updateDependenciesSectionVisibility() {
@@ -107,7 +114,6 @@ class CommunityProjectDetailFragment : Fragment() {
         loadJob = viewLifecycleOwner.lifecycleScope.launch {
             showLoading(getString(R.string.community_loading_detail))
             val repo = AppContainer.communityRepository
-            // Fetch project + versions in parallel; paint project as soon as it arrives.
             val projectDeferred = async { repo.getProject(projectId) }
             val versionsDeferred = async { repo.getProjectVersions(projectId) }
 
@@ -127,10 +133,9 @@ class CommunityProjectDetailFragment : Fragment() {
             if (_binding == null) return@launch
             project = loadedProject
             bindProject(loadedProject)
-            // Keep a light versions placeholder while the (often larger) versions call finishes.
+            binding.buttonDownload.isEnabled = false
             binding.textVersionsEmpty.isVisible = true
             binding.textVersionsEmpty.text = getString(R.string.community_loading_versions)
-            versionAdapter.submit(emptyList(), null)
             hideLoading()
 
             val loadedVersions = versionsDeferred.await().getOrElse { err ->
@@ -149,18 +154,15 @@ class CommunityProjectDetailFragment : Fragment() {
                 emptyList()
             }
             if (_binding == null) return@launch
-            binding.textVersionsEmpty.text = getString(R.string.community_versions_empty)
             val prepared = withContext(Dispatchers.Default) {
                 prepareVersionRows(loadedVersions)
             }
             if (_binding == null) return@launch
             versions = prepared.map { it.first }
             selectedVersion = pickDefaultVersion(prepared)
-            bindVersionRows(
-                prepared.map { (version, targetId) ->
-                    version to targetId?.let { getString(R.string.community_recommended_short, it) }
-                }
-            )
+            binding.buttonDownload.isEnabled = versions.isNotEmpty()
+            binding.textVersionsEmpty.isVisible = versions.isEmpty()
+            binding.textVersionsEmpty.text = getString(R.string.community_versions_empty)
             refreshDependencies()
         }
     }
@@ -298,16 +300,60 @@ class CommunityProjectDetailFragment : Fragment() {
         }
     }
 
-    private fun bindVersionRows(rows: List<Pair<ModrinthProjectVersion, String?>>) {
-        val b = _binding ?: return
-        b.textVersionsEmpty.isVisible = rows.isEmpty()
-        versionAdapter.submit(rows, selectedVersion?.id)
+    private fun onDownloadClicked() {
+        val preferred = selectedVersion
+        if (versions.isEmpty()) {
+            Toast.makeText(requireContext(), R.string.community_versions_empty, Toast.LENGTH_SHORT).show()
+            return
+        }
+        when (contentType) {
+            CommunityContentType.MOD,
+            CommunityContentType.SHADER,
+            CommunityContentType.RESOURCE_PACK -> showLocalTargetThenRemote(preferredRemote = preferred)
+            CommunityContentType.MODPACK -> pickModpackVersionThenInstall(preferred)
+        }
     }
 
-    private fun onSelectVersion(version: ModrinthProjectVersion) {
-        selectedVersion = version
-        versionAdapter.select(version.id)
-        refreshDependencies()
+    /** Pick a remote modpack file version, then always create a new local instance. */
+    private fun pickModpackVersionThenInstall(preferredRemote: ModrinthProjectVersion?) {
+        if (versions.isEmpty()) {
+            Toast.makeText(requireContext(), R.string.community_versions_empty, Toast.LENGTH_SHORT).show()
+            return
+        }
+        val ordered = buildList {
+            val pref = preferredRemote?.takeIf { p -> versions.any { it.id == p.id } }
+            if (pref != null) add(pref)
+            versions.filter { pref == null || it.id != pref.id }.forEach { add(it) }
+        }
+        val labels = ordered.map { version ->
+            val number = version.versionNumber.ifBlank { version.name }
+            val meta = buildList {
+                add(version.versionType)
+                addAll(version.loaders.take(2))
+                addAll(version.gameVersions.take(3))
+            }.joinToString(" · ")
+            "$number\n$meta"
+        }.toTypedArray()
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle(R.string.community_pick_modpack_version)
+            .setItems(labels) { _, which ->
+                val version = ordered[which]
+                selectedVersion = version
+                val defaultName = buildString {
+                    append(
+                        project?.title?.trim().orEmpty()
+                            .ifBlank { version.name.ifBlank { version.versionNumber } }
+                            .ifBlank { "整合包" }
+                    )
+                    val ver = version.versionNumber.trim()
+                    if (ver.isNotEmpty() && !contains(ver)) {
+                        append(' ')
+                        append(ver)
+                    }
+                }
+                doInstallModpack(version, defaultName)
+            }
+            .show()
     }
 
     private fun refreshDependencies() {
@@ -379,36 +425,159 @@ class CommunityProjectDetailFragment : Fragment() {
         }
     }
 
-    private fun onInstallVersion(version: ModrinthProjectVersion) {
-        selectedVersion = version
-        versionAdapter.select(version.id)
-        refreshDependencies()
-        when (contentType) {
-            CommunityContentType.MOD,
-            CommunityContentType.SHADER,
-            CommunityContentType.RESOURCE_PACK -> showTargetPicker(version)
-            CommunityContentType.MODPACK -> installModpack(version)
-        }
-    }
+    private data class LocalTargetRow(
+        val version: GameVersion,
+        val vanilla: Boolean,
+        val enabled: Boolean,
+        val label: String
+    )
 
-    private fun showTargetPicker(version: ModrinthProjectVersion) {
-        val targets = AppContainer.communityRepository.recommendTargets(contentType, version)
-        if (targets.isEmpty()) {
+    /** Step 1: pick local install target → Step 2: pick compatible remote file version. */
+    private fun showLocalTargetThenRemote(preferredRemote: ModrinthProjectVersion?) {
+        val locals = AppContainer.repository.installedVersions.value
+        if (locals.isEmpty()) {
+            Toast.makeText(requireContext(), R.string.community_no_local_target, Toast.LENGTH_LONG).show()
+            return
+        }
+        val selectedId = AppContainer.repository.session.value.selectedVersionId
+        val modsNeedLoader = contentType == CommunityContentType.MOD
+        val rows = locals.map { item ->
+            val vanilla = CommunityLoader.fromVersionId(item.id) == CommunityLoader.ANY
+            val compatibleFiles = AppContainer.communityRepository.filterCompatibleVersions(
+                item.id,
+                contentType,
+                versions
+            )
+            val enabled = when {
+                modsNeedLoader && vanilla -> false
+                compatibleFiles.isEmpty() -> false
+                else -> true
+            }
+            val prefix = when {
+                vanilla -> getString(R.string.community_target_vanilla_prefix)
+                item.id == selectedId -> getString(R.string.community_recommended_prefix)
+                else -> getString(R.string.community_target_prefix)
+            }
+            val suffix = when {
+                vanilla && modsNeedLoader -> "\n${getString(R.string.community_vanilla_cannot_mod)}"
+                !enabled && !vanilla -> "\n${getString(R.string.community_target_loader_mismatch)}"
+                else -> ""
+            }
+            LocalTargetRow(
+                version = item,
+                vanilla = vanilla,
+                enabled = enabled,
+                label = "$prefix ${item.id}$suffix"
+            )
+        }.sortedWith(
+            // Compatible loader instances first; vanilla / mismatched last (gray).
+            compareBy<LocalTargetRow> { !it.enabled }
+                .thenBy { it.vanilla }
+                .thenByDescending { it.enabled && it.version.id == selectedId }
+                .thenBy { it.version.id }
+        )
+        if (modsNeedLoader && rows.none { it.enabled }) {
+            Toast.makeText(requireContext(), R.string.community_no_modloader_target, Toast.LENGTH_LONG).show()
+            return
+        }
+        if (rows.none { it.enabled }) {
             Toast.makeText(requireContext(), R.string.community_no_compatible_target, Toast.LENGTH_LONG).show()
             return
         }
-        val labels = targets.map { target ->
-            val prefix = if (target.recommended) {
-                getString(R.string.community_recommended_prefix)
-            } else {
-                getString(R.string.community_target_prefix)
+        val ctx = requireContext()
+        val enabledColor = MaterialColors.getColor(
+            ctx,
+            com.google.android.material.R.attr.colorOnSurface,
+            0xFF1C1B1F.toInt()
+        )
+        val disabledColor = MaterialColors.getColor(
+            ctx,
+            com.google.android.material.R.attr.colorOnSurfaceVariant,
+            0xFF79747E.toInt()
+        )
+        val adapter = object : ArrayAdapter<String>(
+            ctx,
+            android.R.layout.simple_list_item_1,
+            rows.map { it.label }
+        ) {
+            override fun isEnabled(position: Int): Boolean = rows[position].enabled
+            override fun areAllItemsEnabled(): Boolean = rows.all { it.enabled }
+            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+                val view = super.getView(position, convertView, parent)
+                val text = view.findViewById<TextView>(android.R.id.text1)
+                val row = rows[position]
+                text.setTextColor(if (row.vanilla || !row.enabled) disabledColor else enabledColor)
+                text.alpha = when {
+                    !row.enabled -> 0.55f
+                    row.vanilla -> 0.72f
+                    else -> 1f
+                }
+                return view
             }
-            "$prefix ${target.versionId}\n${target.reason}"
+        }
+        MaterialAlertDialogBuilder(ctx)
+            .setTitle(R.string.community_pick_target)
+            .setAdapter(adapter) { _, which ->
+                val row = rows.getOrNull(which) ?: return@setAdapter
+                if (!row.enabled) {
+                    Toast.makeText(
+                        ctx,
+                        if (row.vanilla) R.string.community_vanilla_cannot_mod
+                        else R.string.community_target_loader_mismatch,
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    return@setAdapter
+                }
+                showRemoteVersionPicker(row.version.id, preferredRemote)
+            }
+            .show()
+    }
+
+    private fun showRemoteVersionPicker(
+        targetVersionId: String,
+        preferredRemote: ModrinthProjectVersion?
+    ) {
+        val compatible = AppContainer.communityRepository.filterCompatibleVersions(
+            targetVersionId,
+            contentType,
+            versions
+        )
+        if (compatible.isEmpty()) {
+            Toast.makeText(
+                requireContext(),
+                getString(R.string.community_no_compatible_remote, targetVersionId),
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+        val ordered = buildList {
+            val pref = preferredRemote?.takeIf { p -> compatible.any { it.id == p.id } }
+            if (pref != null) add(pref)
+            compatible.filter { pref == null || it.id != pref.id }.forEach { add(it) }
+        }
+        val labels = ordered.map { version ->
+            val number = version.versionNumber.ifBlank { version.name }
+            val meta = buildList {
+                add(version.versionType)
+                addAll(version.loaders.take(2))
+                addAll(version.gameVersions.take(3))
+            }.joinToString(" · ")
+            "$number\n$meta"
         }.toTypedArray()
         MaterialAlertDialogBuilder(requireContext())
-            .setTitle(R.string.community_pick_target)
+            .setTitle(R.string.community_pick_remote_version)
             .setItems(labels) { _, which ->
-                installIntoTarget(targets[which], version)
+                val version = ordered[which]
+                selectedVersion = version
+                refreshDependencies()
+                installIntoTarget(
+                    InstallTargetRecommendation(
+                        versionId = targetVersionId,
+                        reason = "",
+                        recommended = true
+                    ),
+                    version
+                )
             }
             .show()
     }
@@ -417,94 +586,115 @@ class CommunityProjectDetailFragment : Fragment() {
         target: InstallTargetRecommendation,
         version: ModrinthProjectVersion
     ) {
-        viewLifecycleOwner.lifecycleScope.launch {
-            showLoading(getString(R.string.community_installing_target, target.versionId))
+        val title = project?.title?.ifBlank { version.name } ?: version.name
+        val jobId = CommunityInstallHub.begin(title)
+        // Survive leaving this page (same pattern as DownloadFragment.runInstallJob).
+        AppContainer.appScope.launch {
+            withContext(Dispatchers.Main) {
+                _binding?.let {
+                    showLoading(getString(R.string.community_installing_target, target.versionId))
+                }
+            }
             var lastUiAt = 0L
             val result = AppContainer.communityRepository.installVersionFile(
                 contentType = contentType,
                 targetVersionId = target.versionId,
                 version = version,
                 onProgress = { p ->
+                    CommunityInstallHub.update(jobId, p)
                     val now = System.currentTimeMillis()
                     if (p.bytesDownloaded >= 0L && now - lastUiAt < 200L) return@installVersionFile
                     lastUiAt = now
                     val line = formatInstallProgress(p)
-                    viewLifecycleOwner.lifecycleScope.launch(Dispatchers.Main.immediate) {
+                    AppContainer.appScope.launch(Dispatchers.Main.immediate) {
                         if (_binding == null) return@launch
                         showLoading(line)
                     }
                 }
             )
-            hideLoading()
-            result.fold(
-                onSuccess = {
-                    Toast.makeText(
-                        requireContext(),
-                        getString(R.string.community_install_done, it.name, target.versionId),
-                        Toast.LENGTH_SHORT
-                    ).show()
-                },
-                onFailure = { err ->
-                    Toast.makeText(
-                        requireContext(),
-                        getString(R.string.community_install_failed, err.message ?: "unknown"),
-                        Toast.LENGTH_LONG
-                    ).show()
-                }
-            )
+            withContext(Dispatchers.Main) {
+                _binding?.let { hideLoading() }
+                val appCtx = BooxinApp.getAppContext()
+                result.fold(
+                    onSuccess = {
+                        CommunityInstallHub.succeed(jobId, it.name)
+                        Toast.makeText(
+                            appCtx,
+                            appCtx.getString(
+                                R.string.community_install_done,
+                                it.name,
+                                target.versionId
+                            ),
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    },
+                    onFailure = { err ->
+                        CommunityInstallHub.fail(jobId, err.message ?: "unknown")
+                        Toast.makeText(
+                            appCtx,
+                            appCtx.getString(
+                                R.string.community_install_failed,
+                                err.message ?: "unknown"
+                            ),
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                )
+            }
         }
     }
 
-    private fun installModpack(version: ModrinthProjectVersion) {
-        val compatibleTargets = AppContainer.communityRepository.recommendTargets(
-            CommunityContentType.MODPACK,
-            version
-        )
-        val options = compatibleTargets.map { it.versionId } + getString(R.string.community_auto_create_target)
-        MaterialAlertDialogBuilder(requireContext())
-            .setTitle(R.string.community_pick_target)
-            .setItems(options.toTypedArray()) { _, which ->
-                val target = compatibleTargets.getOrNull(which)?.versionId
-                doInstallModpack(target, version)
+    private fun doInstallModpack(version: ModrinthProjectVersion, instanceDisplayName: String) {
+        val jobId = CommunityInstallHub.begin(instanceDisplayName)
+        AppContainer.appScope.launch {
+            withContext(Dispatchers.Main) {
+                _binding?.let {
+                    showLoading(getString(R.string.community_installing_modpack))
+                }
             }
-            .show()
-    }
-
-    private fun doInstallModpack(targetVersionId: String?, version: ModrinthProjectVersion) {
-        viewLifecycleOwner.lifecycleScope.launch {
-            showLoading(getString(R.string.community_installing_modpack))
             var lastUiAt = 0L
             val result = AppContainer.communityRepository.installModpack(
-                requestedTargetVersionId = targetVersionId,
+                requestedTargetVersionId = null,
                 version = version,
+                instanceDisplayName = instanceDisplayName,
+                forceNewInstance = true,
                 onProgress = { p ->
+                    CommunityInstallHub.update(jobId, p)
                     val now = System.currentTimeMillis()
                     if (p.bytesDownloaded >= 0L && now - lastUiAt < 200L) return@installModpack
                     lastUiAt = now
                     val line = formatInstallProgress(p)
-                    viewLifecycleOwner.lifecycleScope.launch(Dispatchers.Main.immediate) {
+                    AppContainer.appScope.launch(Dispatchers.Main.immediate) {
                         if (_binding == null) return@launch
                         showLoading(line)
                     }
                 }
             )
-            hideLoading()
-            result.fold(
-                onSuccess = { target ->
-                    Toast.makeText(
-                        requireContext(),
-                        getString(R.string.community_modpack_done, target),
-                        Toast.LENGTH_LONG
-                    ).show()
-                },
-                onFailure = { err ->
-                    Toast.makeText(
-                        requireContext(),
-                        getString(R.string.community_install_failed, err.message ?: "unknown"),
-                        Toast.LENGTH_LONG
-                    ).show()
-                }
-            )
+            withContext(Dispatchers.Main) {
+                _binding?.let { hideLoading() }
+                val appCtx = BooxinApp.getAppContext()
+                result.fold(
+                    onSuccess = { target ->
+                        CommunityInstallHub.succeed(jobId, target)
+                        Toast.makeText(
+                            appCtx,
+                            appCtx.getString(R.string.community_modpack_done, target),
+                            Toast.LENGTH_LONG
+                        ).show()
+                    },
+                    onFailure = { err ->
+                        CommunityInstallHub.fail(jobId, err.message ?: "unknown")
+                        Toast.makeText(
+                            appCtx,
+                            appCtx.getString(
+                                R.string.community_install_failed,
+                                err.message ?: "unknown"
+                            ),
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                )
+            }
         }
     }
 
