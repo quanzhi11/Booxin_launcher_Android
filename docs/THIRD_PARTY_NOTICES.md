@@ -22,7 +22,8 @@
 | FreeType | `libfreetype.so` | 绿 | FTL / GPL 双许可（使用 FTL） |
 | shaderc / SPIRV-Cross | `libshaderc.so`, `libspirv-cross-c-shared.so` | 绿 | Apache-2.0 |
 | GL4ES | `libgl4es_114.so` | 绿 | MIT；保留 NOTICE |
-| BooxinGlues Path A（自研） | 编排 + `libbooxingl.so` + GL4ES/Zink/ANGLE | 绿 | Apache-2.0 编排；GL4ES/Mesa **MIT**；ANGLE **BSD** 动态加载。见 `xrq/booxin-glues/docs/PATH_A_CLEANROOM.md` |
+| BooxinGlues | 编排 + 内置 `libOSMesa_25.so`（Mesa OSMesa/Zink） | 绿 | 编排 Apache-2.0；Mesa **MIT**（`MESA_MIT_LICENSE.txt`）。不替换 MG/REL/MCrender/GL4ES |
+| BooxinZink（旧名） | 同 BooxinGlues / `libOSMesa_25.so` | 绿 | 见 `assets/licenses/BOOXIN_ZINK_NOTICE.txt` |
 | ANGLE（可选插件） | `libEGL_angle.so` / `libGLESv2_angle.so` | 绿 | Chromium ANGLE（BSD 系）；作 GLES/EGL 驱动 |
 | MobileGlues（可选） | `libmobileglues*.so` | 黄 | **LGPL-2.1**，仅手动 `MOBILE_GLUES`；全文 `assets/licenses/MOBILEGLUES_LGPL-2.1.txt` |
 | OpenJDK / HotSpot（嵌入式 JRE） | 用户数据目录 Java home | 黄 | GPL-2 + Classpath Exception |

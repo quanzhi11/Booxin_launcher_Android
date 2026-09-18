@@ -1,0 +1,17 @@
+BooxinGlues — notices
+
+Copyright 2026 Booxin
+
+1) Booxin orchestration (Java/Kotlin/C under com.booxin.launcher /
+   booxin_bridge) — Apache License 2.0, except where a file states otherwise.
+
+2) Mesa OSMesa / Zink — MIT
+   Bundled as jniLibs/.../libOSMesa_25.so (BooxinGlues / BooxinZink).
+   See MESA_MIT_LICENSE.txt and BOOXIN_ZINK_NOTICE.txt.
+
+3) Optional / other backends (not part of the Mesa binary above)
+   - GL4ES — MIT (ptitSeb)
+   - ANGLE — BSD-style (Google), when used as a plugin
+   - MobileGlues — LGPL-2.1, manual option only; see MOBILEGLUES_*
+
+BooxinGlues is additive. It does not replace MobileGlues / REL / MCrender / GL4ES.

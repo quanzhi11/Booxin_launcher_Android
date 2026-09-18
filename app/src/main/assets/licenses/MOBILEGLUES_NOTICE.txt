@@ -1,0 +1,12 @@
+MobileGlues
+Copyright (c) 2025-2026 MobileGL-Dev
+
+This application dynamically loads MobileGlues (or a Booxin-maintained fork)
+as a shared library under the GNU Lesser General Public License, version 2.1.
+See MOBILEGLUES_LGPL-2.1.txt in this folder.
+
+Upstream source: https://github.com/MobileGL-Dev/MobileGlues
+Booxin engine tree / patches: https://github.com/ (publish your engine/ fork URL here)
+
+You may replace the MobileGlues shared library used by the game process
+(under the app's runtime natives directory) with a compatible LGPL build.

@@ -1,0 +1,27 @@
+BooxinGlues / BooxinZink — third-party notice
+
+Product name in settings: BooxinGlues
+(legacy preference id BOOXIN_ZINK maps to the same stack)
+
+What Booxin owns
+----------------
+Launcher wiring only (env, staging, Vulkan/SDL hooks under com.booxin.launcher
+and app/src/main/cpp/booxin_bridge). That code is Apache-2.0 unless a file
+says otherwise.
+
+What is upstream
+----------------
+libOSMesa_25.so — Mesa 3D (MIT), OSMesa build with Zink Gallium driver.
+  Source: https://gitlab.freedesktop.org/mesa/mesa
+  License copy: assets/licenses/MESA_MIT_LICENSE.txt
+  Binary origin: same Mesa25 / Zink.Mesa25 native libs used by the optional
+  "Vulkan Zink" plugin path in this launcher.
+
+Not replaced by BooxinGlues
+---------------------------
+MobileGlues, REL, MCrender, GL4ES, and other plugin renderers stay independent.
+
+Redistribution
+--------------
+Keep MESA_MIT_LICENSE.txt (and this NOTICE) with any binary that includes
+libOSMesa_25.so. Do not remove Mesa copyright / permission notices.

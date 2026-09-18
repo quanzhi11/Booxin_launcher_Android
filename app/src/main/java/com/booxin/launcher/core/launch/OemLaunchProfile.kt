@@ -78,17 +78,16 @@ object OemLaunchProfile {
     fun needsClasspathJar(): Boolean = needsClasspathMitigation()
 
     /**
-     * On vivo/iQOO, Huawei/Honor and ColorOS, holy GL4ES / BooxinGlues Path A
-     * commonly fails (map buffer / no TextureView frames / Mojang black screen).
-     * Auto and user picks of those kinds are remapped to MobileGlues.
-     * REL / MCrender / plugins are never swapped.
+     * On vivo/iQOO, Huawei/Honor and ColorOS, holy GL4ES commonly fails
+     * (map buffer / no TextureView frames / Mojang black screen).
+     * Auto and user picks of GL4ES are remapped to MobileGlues.
+     * BooxinGlues（26.3+ Zink 插件）/ REL / MCrender 不替换。
      */
     fun shouldUpgradeGl4esToMobileGlues(): Boolean = needsClasspathMitigation()
 
     /** True when [kind] would stage holy GL4ES and this OEM must avoid it. */
     fun shouldForceMobileGlues(kind: GlRendererKind): Boolean =
-        shouldUpgradeGl4esToMobileGlues() &&
-            (kind == GlRendererKind.GL4ES || kind == GlRendererKind.BOOXIN_GLUES)
+        shouldUpgradeGl4esToMobileGlues() && kind == GlRendererKind.GL4ES
 
     /**
      * OriginOS often ignores [android.view.TextureView.setTransform], so wallpaper
@@ -102,6 +101,14 @@ object OemLaunchProfile {
      */
     fun needsPatientForceRebind(): Boolean =
         isHuaweiFamily() || isVivoFamily() || isOplusFamily()
+
+    /**
+     * ColorOS often demotes `:game` and resets TextureView BufferQueue size on
+     * resume without destroying the Surface — GLFW stays at the locked buffer
+     * while the producer becomes full-view → game draws only in the bottom-left
+     * (rest cleared red). Always re-apply buffer size + window nudge on resume.
+     */
+    fun needsResumeSurfaceRepair(): Boolean = isOplusFamily()
 
     /**
      * ColorOS often thermal-throttles and deprioritizes `:game` under QUALITY/high RD.

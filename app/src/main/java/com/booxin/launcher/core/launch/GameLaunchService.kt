@@ -357,6 +357,8 @@ class GameLaunchService : Service() {
         )
         val compat = ModCompatPrep.prepare(gameDirForCompat, versionId)
         compat.notes.forEach { appendLog(it) }
+        // Stash for MobileGlues config a few steps below.
+        val needsMgCompute = compat.needsComputeShader
 
         val java = AppContainer.javaEnvironment.ensureForMinecraft(versionId).getOrElse {
             return LaunchOutcome.Failed("Java 不可用: ${it.message}")
@@ -406,8 +408,7 @@ class GameLaunchService : Service() {
             // holy GL4ES + 降分辨率：Mojang 后常黑屏。MobileGlues 保留调优缩放（否则
             // 全分辨率 + Auto guiScale 会把界面放得过大）。
             val resScale =
-                if ((rendererKind == com.booxin.launcher.core.launch.GlRendererKind.GL4ES ||
-                        rendererKind == com.booxin.launcher.core.launch.GlRendererKind.BOOXIN_GLUES) &&
+                if (rendererKind == com.booxin.launcher.core.launch.GlRendererKind.GL4ES &&
                     launchTune.resolutionScale < 0.99f
                 ) {
                     appendLog(
@@ -442,15 +443,20 @@ class GameLaunchService : Service() {
             com.booxin.launcher.core.runtime.RendererCrashHeal.markMitigationsApplied(versionId)
         }
         // MobileGlues official backend: write its own config.json (GLSL cache / no compute path).
-        if (rendererKind == com.booxin.launcher.core.launch.GlRendererKind.MOBILE_GLUES ||
-            rendererKind == com.booxin.launcher.core.launch.GlRendererKind.BOOXIN_GLUES
-        ) {
+        if (rendererKind == com.booxin.launcher.core.launch.GlRendererKind.MOBILE_GLUES) {
             com.booxin.launcher.core.runtime.MobileGluesConfig.writeProfile(
                 this@GameLaunchService,
                 launchTune,
-                mcVersionId = mcVersionId ?: versionId
+                mcVersionId = mcVersionId ?: versionId,
+                enableComputeShader = needsMgCompute
             )
-            appendLog("已写入 MobileGlues 性能配置（官方后端自读取）")
+            appendLog(
+                if (needsMgCompute) {
+                    "已写入 MobileGlues 性能配置（含 compute 扩展）"
+                } else {
+                    "已写入 MobileGlues 性能配置（官方后端自读取）"
+                }
+            )
         }
         if (rendererKind == com.booxin.launcher.core.launch.GlRendererKind.MCRENDER) {
             com.booxin.launcher.core.runtime.McRenderConfig.ensureForLaunch(
@@ -482,13 +488,20 @@ class GameLaunchService : Service() {
                 com.booxin.launcher.core.LauncherPaths.versionsDir,
                 versionId
             )
+            val preferVulkan =
+                rendererKind == com.booxin.launcher.core.launch.GlRendererKind.BOOXIN_GLUES ||
+                    rendererKind == com.booxin.launcher.core.launch.GlRendererKind.BOOXIN_ZINK
             GameOptionsPatch.applyWindowOverrides(
                 gameDir,
                 width,
                 height,
                 launchTune,
-                relMipmapCap = relGuard?.mipmapLevels
+                relMipmapCap = relGuard?.mipmapLevels,
+                preferVulkanApi = preferVulkan
             )
+            if (preferVulkan) {
+                appendLog("BooxinGlues：preferredGraphicsBackend=vulkan（并清除上次崩溃强制的 OpenGL）")
+            }
             if (versionId.contains("optifine", ignoreCase = true)) {
                 if (GameOptionsPatch.disableOptiFineShadersOnce(gameDir)) {
                     appendLog("OptiFine：已关闭从其他启动器带入的光影（避免卡死），可在游戏内重新开启")
@@ -518,6 +531,8 @@ class GameLaunchService : Service() {
             appendLog(
                 "OEM 渲染：${userRenderer.displayName} 在此机型易黑屏/无法启动，已改用 MobileGlues"
             )
+        } else if (userRenderer != null && userRenderer != rendererKind) {
+            appendLog("渲染器：26.3+ 使用 ${rendererKind.displayName}")
         } else if (userRenderer != null) {
             appendLog("渲染器：用户指定 ${userRenderer.displayName}（不自动更换）")
         } else if (

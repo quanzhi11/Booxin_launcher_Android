@@ -1,0 +1,4 @@
+LWJGL - SDL bindings (org.lwjgl:lwjgl-sdl)
+License: BSD-3-Clause
+https://www.lwjgl.org/license
+Source: https://repo1.maven.org/maven2/org/lwjgl/lwjgl-sdl/

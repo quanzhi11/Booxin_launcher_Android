@@ -1,0 +1,9 @@
+BooxinGlues 1.0.0
+
+Booxin integration: Apache-2.0 (see LICENSE).
+Mesa OSMesa / Zink binary: MIT (see licenses/MESA_MIT_LICENSE.txt).
+
+libOSMesa_25.so is a Mesa build. Runtime selects Zink via
+GALLIUM_DRIVER=zink / MESA_LOADER_DRIVER_OVERRIDE=zink.
+
+Redistribution of the .so must keep the Mesa MIT notice.

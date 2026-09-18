@@ -27,7 +27,13 @@ object RendererInstaller {
         if (!kind.requiresPlugin) return true
         PluginManager.findByKind(kind)?.let { return it.installed && it.enabled }
         val pkg = RendererPackages.forKind(kind) ?: return false
-        return isInstalled(pkg)
+        if (isInstalled(pkg)) return true
+        // BooxinGlues (26.3+) shares Mesa Zink libs with stock Zink / branded APK.
+        if (kind == GlRendererKind.BOOXIN_GLUES || kind == GlRendererKind.BOOXIN_ZINK) {
+            return isInstalled(GlRendererKind.VULKAN_ZINK) ||
+                (RendererPackages.forKind(GlRendererKind.BOOXIN_GLUES)?.let { isInstalled(it) } == true)
+        }
+        return false
     }
 
     fun isInstalled(pkg: RendererPackage): Boolean {
@@ -48,15 +54,29 @@ object RendererInstaller {
         val pkg = RendererPackages.forKind(kind) ?: return null
         val pluginGl = File(PluginInstaller.installDir(pkg.id), pkg.glLib)
         if (pluginGl.isFile) return pluginGl
-        return File(installDir(pkg), pkg.glLib).takeIf { it.isFile }
+        File(installDir(pkg), pkg.glLib).takeIf { it.isFile }?.let { return it }
+        // 与 stock Zink 共用 Mesa 库，禁止再回调 BOOXIN_GLUES（会递归）。
+        if (kind == GlRendererKind.BOOXIN_GLUES || kind == GlRendererKind.BOOXIN_ZINK) {
+            return glLibrary(GlRendererKind.VULKAN_ZINK)
+        }
+        return null
     }
 
     fun pluginNativeDir(kind: GlRendererKind): File? {
         PluginManager.enabledRendererNativeDir(kind)?.let { return it }
-        val pkg = RendererPackages.forKind(kind) ?: return null
-        val pluginDir = PluginInstaller.installDir(pkg.id)
-        if (PluginInstaller.isReady(pluginDir, pkg.glLib)) return pluginDir
-        return installDir(pkg).takeIf { isInstalled(pkg) }
+        val pkg = RendererPackages.forKind(kind)
+        if (pkg != null) {
+            val pluginDir = PluginInstaller.installDir(pkg.id)
+            if (PluginInstaller.isReady(pluginDir, pkg.glLib)) return pluginDir
+            installDir(pkg).takeIf { isInstalled(pkg) }?.let { return it }
+        }
+        if (kind == GlRendererKind.BOOXIN_GLUES || kind == GlRendererKind.BOOXIN_ZINK) {
+            return pluginNativeDir(GlRendererKind.VULKAN_ZINK)
+                ?: RendererPackages.forKind(GlRendererKind.BOOXIN_GLUES)?.let { p ->
+                    installDir(p).takeIf { isInstalled(p) }
+                }
+        }
+        return null
     }
 
     suspend fun ensureInstalled(kind: GlRendererKind): Result<File> = withContext(Dispatchers.IO) {
@@ -73,6 +93,10 @@ object RendererInstaller {
                 }
             }
             PluginManager.enabledRendererNativeDir(kind)?.let { return@runCatching it }
+            // BooxinGlues 与 stock Zink 共用 Mesa25 库。
+            if (kind == GlRendererKind.BOOXIN_GLUES || kind == GlRendererKind.BOOXIN_ZINK) {
+                pluginNativeDir(GlRendererKind.VULKAN_ZINK)?.let { return@runCatching it }
+            }
             val pkg = requireNotNull(RendererPackages.forKind(kind)) {
                 "未知渲染器: ${kind.displayName}"
             }
@@ -229,6 +253,8 @@ object RendererInstaller {
                 fileName.contains("mcrender", ignoreCase = true)
             com.booxin.launcher.core.launch.GlRendererKind.KRYPTON ->
                 fileName.contains("ng_gl4es", ignoreCase = true)
+            com.booxin.launcher.core.launch.GlRendererKind.BOOXIN_GLUES,
+            com.booxin.launcher.core.launch.GlRendererKind.BOOXIN_ZINK,
             com.booxin.launcher.core.launch.GlRendererKind.VULKAN_ZINK,
             com.booxin.launcher.core.launch.GlRendererKind.VIRGL,
             com.booxin.launcher.core.launch.GlRendererKind.FREEDRENO ->

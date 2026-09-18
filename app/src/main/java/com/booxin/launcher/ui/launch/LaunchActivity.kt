@@ -7,6 +7,7 @@ import android.content.BroadcastReceiver
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -59,6 +60,7 @@ import com.booxin.launcher.core.runtime.GameRuntimeBackends
 import com.booxin.launcher.databinding.ActivityLaunchBinding
 import com.booxin.launcher.ui.launch.input.BooxinSdlInput
 import com.booxin.launcher.ui.launch.input.ControlLayoutController
+import com.booxin.launcher.ui.launch.input.FclControllerImporter
 import com.booxin.launcher.ui.launch.input.GameGyroscope
 import com.booxin.launcher.ui.launch.input.GameInput
 import com.booxin.launcher.ui.launch.input.GestureMode
@@ -147,6 +149,7 @@ class LaunchActivity : AppCompatActivity() {
         "Reload of ResourceManager",
         "Narrator library successfully loaded",
         "Sound engine started",
+        "Using graphics backend Vulkan",
         "Backend library GL",
         "Loading Minecraft",
         "OpenGL debug",
@@ -175,6 +178,8 @@ class LaunchActivity : AppCompatActivity() {
     private var gameProgressSeen = false
     private var modLoadingSeen = false
     private var softHideScheduled = false
+    /** Second soft-hide pass for Vulkan when GL_SwapWindow present count stays 0. */
+    private var softHideVulkanGraceDone = false
     private var overlaySoftHide: Runnable? = null
 
     /** TextureView producer frames — proves GL actually swapped into the surface. */
@@ -360,6 +365,14 @@ class LaunchActivity : AppCompatActivity() {
         ActivityResultContracts.RequestPermission()
     ) {
         maybeStartGameService()
+    }
+
+    /** Pick an FCL controller JSON and convert to Booxin control layout. */
+    private val pickFclController = registerForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri == null) return@registerForActivityResult
+        importFclControllerFromUri(uri)
     }
 
     /** Held Surface for the current TextureView SurfaceTexture (LWJGL path only). */
@@ -955,6 +968,8 @@ class LaunchActivity : AppCompatActivity() {
         // Rebind ONLY when TextureView actually tore down the producer.
         // A live Surface + setupBridgeWindow on resume re-enters ART JNI_OnLoad
         // and used to clobber HotSpot → SIGSEGV → bounce to MainActivity.
+        // ColorOS exception: Surface stays "live" but BufferQueue size is reset
+        // → small bottom-left game + red clear; must nudge without full destroy.
         binding.surfaceGame.post {
             if (isFinishing) return@post
             if (!isGameSessionActive() || !binding.surfaceGame.isAvailable) return@post
@@ -962,10 +977,17 @@ class LaunchActivity : AppCompatActivity() {
                 Log.i(TAG, "onResume: surface lost — full rebind")
                 performForceRenderRebind("onResume")
                 scheduleResumeRebindWatchdog()
+            } else if (OemLaunchProfile.needsResumeSurfaceRepair()) {
+                Log.i(TAG, "onResume: ColorOS live surface — buffer/size repair")
+                repairSurfaceAfterResume("onResume-oplus")
+                // Late layout settle on ColorOS.
+                mainHandler.postDelayed({
+                    if (!isFinishing && isGameSessionActive()) {
+                        repairSurfaceAfterResume("onResume-oplus-delayed")
+                    }
+                }, 320L)
             } else {
                 Log.i(TAG, "onResume: surface still live — skip setupBridgeWindow")
-                // Do not rebind / maybePrepare / sendUpdateWindowSize aggressively.
-                // Focus attrs above are enough; GL keeps presenting.
             }
             runCatching { GameRuntimeBackends.current().enableInput() }
             scheduleInputArmRetries()
@@ -974,6 +996,60 @@ class LaunchActivity : AppCompatActivity() {
         if (::gyroscope.isInitialized && LaunchControlPrefs.isGyroEnabled(this)) {
             gyroscope.enable()
         }
+    }
+
+    /**
+     * Re-apply SurfaceTexture buffer size + GLFW window nudge without tearing
+     * down EGL (safe when ColorOS kept the producer valid).
+     */
+    private fun repairSurfaceAfterResume(reason: String) {
+        val viewW = if (isSdlLaunch) {
+            binding.surfaceGameSdl.width.coerceAtLeast(surfaceWidth).coerceAtLeast(1)
+        } else {
+            binding.surfaceGame.width.coerceAtLeast(surfaceWidth).coerceAtLeast(1)
+        }
+        val viewH = if (isSdlLaunch) {
+            binding.surfaceGameSdl.height.coerceAtLeast(surfaceHeight).coerceAtLeast(1)
+        } else {
+            binding.surfaceGame.height.coerceAtLeast(surfaceHeight).coerceAtLeast(1)
+        }
+        GameSurfaceBridge.noteViewSize(viewW, viewH)
+        val bufW = GameSurfaceBridge.bufferWidthOr(
+            if (gameBufferWidth > 1) gameBufferWidth else viewW
+        )
+        val bufH = GameSurfaceBridge.bufferHeightOr(
+            if (gameBufferHeight > 1) gameBufferHeight else viewH
+        )
+        if (bufW <= 1 || bufH <= 1) return
+        if (isSdlLaunch) {
+            runCatching { binding.surfaceGameSdl.holder.setFixedSize(bufW, bufH) }
+        } else {
+            runCatching {
+                binding.surfaceGame.surfaceTexture?.setDefaultBufferSize(bufW, bufH)
+            }
+        }
+        if (!GameSurfaceBridge.renderSizeLocked) {
+            GameSurfaceBridge.onSurfaceSizeChanged(bufW, bufH)
+        }
+        runCatching { GameSurfaceBridge.rebindIfPossible() }
+        if (isSdlLaunch) {
+            GameSurfaceBridge.currentSurface()?.let { surf ->
+                runCatching {
+                    BooxinSdlBootstrap.reattachSurface(applicationContext, surf)
+                }
+            }
+        }
+        runCatching {
+            BooxinBridge.sendUpdateWindowSize(bufW, bufH)
+            if (bufW > 2 && bufH > 2) {
+                mainHandler.postDelayed({
+                    BooxinBridge.sendUpdateWindowSize(bufW - 1, bufH)
+                    BooxinBridge.sendUpdateWindowSize(bufW, bufH)
+                }, 60L)
+            }
+        }
+        appendLog("恢复后修复 Surface（$reason）缓冲 ${bufW}x${bufH} 视图 ${viewW}x${viewH}")
+        Log.i(TAG, "repairSurfaceAfterResume $reason buf=${bufW}x${bufH} view=${viewW}x${viewH}")
     }
 
     override fun onPause() {
@@ -1583,6 +1659,7 @@ class LaunchActivity : AppCompatActivity() {
         overlaySoftHide?.let { mainHandler.removeCallbacks(it) }
         overlaySoftHide = null
         softHideScheduled = false
+        softHideVulkanGraceDone = false
         frameHideRunnable?.let { mainHandler.removeCallbacks(it) }
         frameHideRunnable = null
         frameHideArmed = false
@@ -1667,6 +1744,25 @@ class LaunchActivity : AppCompatActivity() {
                         )
                         updateLoadingUi(100, "进入游戏")
                         hideOverlayIfNeeded(force = true, allowWithoutBridge = true)
+                        return@Runnable
+                    }
+                    // Vulkan (BooxinGlues) never hits GL_SwapWindow; present count may
+                    // stay 0 until vkQueuePresentKHR hook lands. After Sound/Vulkan
+                    // ready, peel once instead of looping "等待呈现" forever.
+                    if (gameProgressSeen && textureFrameCount == 0L && softHideVulkanGraceDone) {
+                        appendLog("SDL：Vulkan/客户端已就绪且仍无 present 计数，关闭遮罩（避免黑屏卡死）")
+                        updateLoadingUi(100, "进入游戏")
+                        hideOverlayIfNeeded(force = true, allowWithoutBridge = true)
+                        return@Runnable
+                    }
+                    if (gameProgressSeen && textureFrameCount == 0L && !softHideVulkanGraceDone) {
+                        softHideVulkanGraceDone = true
+                        appendLog(
+                            "SDL：等待呈现（present=${textureFrameCount} tex=${textureUpdatedCount}）…"
+                        )
+                        updateLoadingUi(94, "游戏已就绪，即将进入…")
+                        scheduleSoftHideAfterRender(3_500L)
+                        startSdlPresentPoll()
                         return@Runnable
                     }
                     appendLog(
@@ -1955,6 +2051,7 @@ class LaunchActivity : AppCompatActivity() {
         val layouts = controlLayout.availableLayouts()
         val content = LayoutInflater.from(this).inflate(R.layout.dialog_control_menu, null)
         val coreGrid = content.findViewById<GridLayout>(R.id.gridControlMenuCore)
+        val layoutsScroll = content.findViewById<android.widget.ScrollView>(R.id.scrollControlMenuLayouts)
         val pluginColumn = content.findViewById<LinearLayout>(R.id.columnControlMenuPlugin)
         val dialog = AlertDialog.Builder(this)
             .setTitle(R.string.control_menu_title)
@@ -1980,6 +2077,9 @@ class LaunchActivity : AppCompatActivity() {
                 setControlsVisible(true)
                 controlLayout.enterEditMode()
             },
+            MenuEntry(getString(R.string.control_menu_import_fcl), R.drawable.ic_control_menu_import) {
+                pickFclController.launch(arrayOf("application/json", "application/octet-stream", "*/*"))
+            },
             MenuEntry(hideLabel, R.drawable.ic_control_menu_visibility) {
                 setControlsVisible(!controlsVisible)
             },
@@ -2002,9 +2102,10 @@ class LaunchActivity : AppCompatActivity() {
         }
 
         if (layouts.size > 1) {
-            pluginColumn.visibility = View.VISIBLE
+            layoutsScroll.visibility = View.VISIBLE
+            pluginColumn.removeAllViews()
             val header = TextView(this).apply {
-                text = getString(R.string.control_menu_plugin_section)
+                text = getString(R.string.control_menu_layouts_section)
                 setTextColor(0xCCFFFFFF.toInt())
                 textSize = 12f
                 setPadding(8, 0, 8, 8)
@@ -2041,11 +2142,57 @@ class LaunchActivity : AppCompatActivity() {
                     }
                 )
             }
+            // Cap height so many FCL panels scroll instead of overflowing the dialog.
+            val maxScrollH = (resources.displayMetrics.heightPixels * 0.55f).toInt()
+                .coerceAtLeast((220 * resources.displayMetrics.density).toInt())
+            layoutsScroll.isScrollbarFadingEnabled = false
+            layoutsScroll.isVerticalScrollBarEnabled = true
+            layoutsScroll.post {
+                val child = layoutsScroll.getChildAt(0) ?: return@post
+                child.measure(
+                    View.MeasureSpec.makeMeasureSpec(layoutsScroll.width, View.MeasureSpec.EXACTLY),
+                    View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+                )
+                val need = child.measuredHeight
+                val lp = layoutsScroll.layoutParams
+                lp.height = if (need > maxScrollH) maxScrollH else ViewGroup.LayoutParams.WRAP_CONTENT
+                layoutsScroll.layoutParams = lp
+            }
         } else {
-            pluginColumn.visibility = View.GONE
+            layoutsScroll.visibility = View.GONE
         }
 
         dialog.show()
+    }
+
+    private fun importFclControllerFromUri(uri: Uri) {
+        try {
+            val text = contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                ?: throw IllegalArgumentException("读不了这个文件")
+            val (hostW, hostH) = controlLayout.hostSizePx()
+            val result = FclControllerImporter.parse(
+                text = text,
+                screenW = hostW,
+                screenH = hostH,
+                metrics = resources.displayMetrics
+            )
+            controlLayout.importFclController(result)
+            setControlsVisible(true)
+            Toast.makeText(
+                this,
+                getString(R.string.control_fcl_import_success_panels, result.panels.size),
+                Toast.LENGTH_SHORT
+            ).show()
+        } catch (e: Exception) {
+            Toast.makeText(
+                this,
+                getString(
+                    R.string.control_fcl_import_failed,
+                    e.message?.take(60) ?: "未知错误"
+                ),
+                Toast.LENGTH_SHORT
+            ).show()
+        }
     }
 
     private fun inflateControlMenuButton(

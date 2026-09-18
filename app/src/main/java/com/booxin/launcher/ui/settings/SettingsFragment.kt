@@ -816,6 +816,8 @@ class SettingsFragment : Fragment() {
                 GlRendererKind.MOBILE_GLUES -> "${kind.displayName} · LGPL 兼容（高级）"
                 GlRendererKind.MCRENDER -> "${kind.displayName} · 新 GLES 翻译器（内置）"
                 GlRendererKind.REL -> "${kind.displayName} · OpenREL（部分骁龙进世界可能崩溃，慎用）"
+                GlRendererKind.BOOXIN_GLUES ->
+                    "${kind.displayName} · 内置 · 仅 26.3+ · Vulkan"
                 else -> kind.displayName
             }
             kind to "$name（$status）"
@@ -875,12 +877,22 @@ class SettingsFragment : Fragment() {
             val id = when (mode) {
                 BooxinLaunchTune.Mode.AUTO -> R.id.buttonTuneAuto
                 BooxinLaunchTune.Mode.SMOOTH -> R.id.buttonTuneSmooth
+                BooxinLaunchTune.Mode.STABLE -> R.id.buttonTuneStable
                 BooxinLaunchTune.Mode.BALANCED -> R.id.buttonTuneBalanced
                 BooxinLaunchTune.Mode.QUALITY -> R.id.buttonTuneQuality
                 BooxinLaunchTune.Mode.CUSTOM -> R.id.buttonTuneCustom
             }
             suppressingLaunchTuneToggle = true
-            b.toggleLaunchTune.check(id)
+            if (id == R.id.buttonTuneBalanced ||
+                id == R.id.buttonTuneQuality ||
+                id == R.id.buttonTuneCustom
+            ) {
+                b.toggleLaunchTune.clearChecked()
+                b.toggleLaunchTuneMore.check(id)
+            } else {
+                b.toggleLaunchTuneMore.clearChecked()
+                b.toggleLaunchTune.check(id)
+            }
             suppressingLaunchTuneToggle = false
         }
 
@@ -892,19 +904,28 @@ class SettingsFragment : Fragment() {
             )
         }
 
-        selectButton(LauncherPrefs.launchTuneMode())
-        refreshSummary()
-
-        b.toggleLaunchTune.addOnButtonCheckedListener { _: MaterialButtonToggleGroup, checkedId, isChecked ->
-            if (!isChecked || suppressingLaunchTuneToggle) return@addOnButtonCheckedListener
+        fun onTuneChecked(checkedId: Int) {
             val mode = when (checkedId) {
                 R.id.buttonTuneAuto -> BooxinLaunchTune.Mode.AUTO
                 R.id.buttonTuneSmooth -> BooxinLaunchTune.Mode.SMOOTH
+                R.id.buttonTuneStable -> BooxinLaunchTune.Mode.STABLE
                 R.id.buttonTuneBalanced -> BooxinLaunchTune.Mode.BALANCED
                 R.id.buttonTuneQuality -> BooxinLaunchTune.Mode.QUALITY
                 R.id.buttonTuneCustom -> BooxinLaunchTune.Mode.CUSTOM
-                else -> return@addOnButtonCheckedListener
+                else -> return
             }
+            // Keep the two rows mutually exclusive.
+            suppressingLaunchTuneToggle = true
+            if (checkedId == R.id.buttonTuneBalanced ||
+                checkedId == R.id.buttonTuneQuality ||
+                checkedId == R.id.buttonTuneCustom
+            ) {
+                b.toggleLaunchTune.clearChecked()
+            } else {
+                b.toggleLaunchTuneMore.clearChecked()
+            }
+            suppressingLaunchTuneToggle = false
+
             BooxinLaunchTune.applyPresetToPrefs(requireContext(), mode)
             if (mode != BooxinLaunchTune.Mode.CUSTOM && mode != BooxinLaunchTune.Mode.AUTO) {
                 setupMemorySlider()
@@ -922,12 +943,24 @@ class SettingsFragment : Fragment() {
             }
             refreshSummary()
         }
+
+        selectButton(LauncherPrefs.launchTuneMode())
+        refreshSummary()
+
+        b.toggleLaunchTune.addOnButtonCheckedListener { _: MaterialButtonToggleGroup, checkedId, isChecked ->
+            if (!isChecked || suppressingLaunchTuneToggle) return@addOnButtonCheckedListener
+            onTuneChecked(checkedId)
+        }
+        b.toggleLaunchTuneMore.addOnButtonCheckedListener { _: MaterialButtonToggleGroup, checkedId, isChecked ->
+            if (!isChecked || suppressingLaunchTuneToggle) return@addOnButtonCheckedListener
+            onTuneChecked(checkedId)
+        }
     }
 
     private fun setupMemorySlider() {
         val b = _binding ?: return
-        val maxAllowed = BooxinLaunchTune.recommendedHeapMb(requireContext()).toFloat()
-            .coerceAtLeast(LauncherPrefs.recommendedMaxMb().toFloat())
+        val maxAllowed = LauncherPrefs.recommendedMaxMb(requireContext()).toFloat()
+            .coerceAtLeast(BooxinLaunchTune.recommendedHeapMb(requireContext()).toFloat())
             .coerceAtMost(LauncherPrefs.MEMORY_MAX_MB.toFloat())
         b.sliderMemory.valueFrom = LauncherPrefs.MEMORY_MIN_MB.toFloat()
         b.sliderMemory.valueTo = maxAllowed
@@ -961,13 +994,28 @@ class SettingsFragment : Fragment() {
         val id = when (mode) {
             BooxinLaunchTune.Mode.AUTO -> R.id.buttonTuneAuto
             BooxinLaunchTune.Mode.SMOOTH -> R.id.buttonTuneSmooth
+            BooxinLaunchTune.Mode.STABLE -> R.id.buttonTuneStable
             BooxinLaunchTune.Mode.BALANCED -> R.id.buttonTuneBalanced
             BooxinLaunchTune.Mode.QUALITY -> R.id.buttonTuneQuality
             BooxinLaunchTune.Mode.CUSTOM -> R.id.buttonTuneCustom
         }
-        if (b.toggleLaunchTune.checkedButtonId != id) {
+        val onMoreRow = id == R.id.buttonTuneBalanced ||
+            id == R.id.buttonTuneQuality ||
+            id == R.id.buttonTuneCustom
+        val already = if (onMoreRow) {
+            b.toggleLaunchTuneMore.checkedButtonId == id
+        } else {
+            b.toggleLaunchTune.checkedButtonId == id
+        }
+        if (!already) {
             suppressingLaunchTuneToggle = true
-            b.toggleLaunchTune.check(id)
+            if (onMoreRow) {
+                b.toggleLaunchTune.clearChecked()
+                b.toggleLaunchTuneMore.check(id)
+            } else {
+                b.toggleLaunchTuneMore.clearChecked()
+                b.toggleLaunchTune.check(id)
+            }
             suppressingLaunchTuneToggle = false
         }
         val resolved = BooxinLaunchTune.resolve(requireContext())

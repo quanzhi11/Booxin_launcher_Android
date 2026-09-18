@@ -23,6 +23,7 @@ tools/mobileglues/
 tools/*.log
 *.txt
 !app/src/main/assets/**/version
+!app/src/main/assets/licenses/**
 !**/CMakeLists.txt
 !**/proguard-rules.pro
 clean_c_drive.py

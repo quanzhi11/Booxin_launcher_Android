@@ -44,9 +44,12 @@ object LauncherPrefs {
 
     /** Soft floor / ceiling for the settings slider (MB). */
     const val MEMORY_MIN_MB = 512
-    const val MEMORY_MAX_MB = 8192
+    /** Absolute slider ceiling; per-device cap is [recommendedMaxMb]. */
+    const val MEMORY_MAX_MB = 32768
     const val MEMORY_STEP_MB = 256
     const val MEMORY_DEFAULT_MB = 2048
+    /** Keep this many GB free for Android / GPU / other apps when sizing -Xmx. */
+    const val MEMORY_DEVICE_RESERVE_MB = 4096
 
     const val RENDER_DISTANCE_MIN = 2
     const val RENDER_DISTANCE_MAX = 32
@@ -89,6 +92,19 @@ object LauncherPrefs {
             }
             edit.apply()
         }
+        // One-shot: rename deprecated BOOXIN_ZINK preference → BOOXIN_GLUES.
+        if (!prefs.getBoolean("renderer_booxin_zink_to_glues_v1", false)) {
+            val raw = prefs.getString(KEY_RENDERER, null)
+            val last = prefs.getString(KEY_RENDERER_LAST_MANUAL, null)
+            val edit = prefs.edit().putBoolean("renderer_booxin_zink_to_glues_v1", true)
+            if (raw == GlRendererKind.BOOXIN_ZINK.name) {
+                edit.putString(KEY_RENDERER, GlRendererKind.BOOXIN_GLUES.name)
+            }
+            if (last == GlRendererKind.BOOXIN_ZINK.name) {
+                edit.putString(KEY_RENDERER_LAST_MANUAL, GlRendererKind.BOOXIN_GLUES.name)
+            }
+            edit.apply()
+        }
     }
 
     fun maxMemoryMb(): Int {
@@ -126,11 +142,16 @@ object LauncherPrefs {
         return min(MEMORY_MAX_MB, max(MEMORY_MIN_MB, stepped))
     }
 
-    /** Device-aware upper bound so the slider does not offer impossible heaps. */
-    fun recommendedMaxMb(): Int {
+    /** Device-aware upper bound: roughly total RAM − 4GB (never above MEMORY_MAX_MB). */
+    fun recommendedMaxMb(context: Context? = null): Int {
+        val totalMb = context?.let {
+            runCatching { BooxinLaunchTune.totalRamMb(it) }.getOrDefault(0L)
+        } ?: 0L
+        if (totalMb > 0L) {
+            val ceiling = (totalMb - MEMORY_DEVICE_RESERVE_MB).toInt()
+            return clampMemory(max(MEMORY_MIN_MB, ceiling))
+        }
         val runtimeMax = (Runtime.getRuntime().maxMemory() / (1024L * 1024L)).toInt()
-        // Game runs in :game process; allow up to ~70% of a typical phone heap budget,
-        // but never above MEMORY_MAX_MB.
         val deviceHint = max(MEMORY_DEFAULT_MB, runtimeMax.coerceAtLeast(1024) * 2)
         return clampMemory(min(MEMORY_MAX_MB, deviceHint))
     }
@@ -221,9 +242,7 @@ object LauncherPrefs {
         if (enabled) {
             setRendererPreference(RENDERER_AUTO)
         } else {
-            val last = lastManualRendererKind()
-                ?.takeUnless { it == GlRendererKind.BOOXIN_GLUES }
-                ?: GlRendererKind.MOBILE_GLUES
+            val last = lastManualRendererKind() ?: GlRendererKind.MOBILE_GLUES
             setRendererKind(last)
         }
     }
