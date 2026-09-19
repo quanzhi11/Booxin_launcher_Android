@@ -86,4 +86,5 @@
                 android:value="forge_installer" />
         </service>
     </application>
+    
 </manifest>
